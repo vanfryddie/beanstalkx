@@ -339,18 +339,60 @@ def _department_shift_pairs_for_login(login):
     return pairs
 
 
+def _site_department_shift_pairs():
+    """Every (department, shift) the whole site is responsible for.
+
+    The site-wide counterpart to _department_shift_pairs_for_login. It
+    exists because Indirect Roles, Ambassador Availability and
+    Ambassador Readiness have no tracked_items importer at all — their
+    real engines are driven off a set of department+shift pairs, so
+    without one they cannot be scored, and a site-wide view that passed
+    no pairs silently fell through to a generic scorer reading sections
+    nothing ever writes. That is why those three read "no data" on
+    Regional Overview and Reporting while showing real numbers on a
+    manager's own card.
+
+    Departments come from three sources so nothing tracked is missed:
+    the Ambassador department list, every department the Indirect Roles
+    model actually carries a role for (matched via its home process,
+    which may be stored under an informal alias), and every department
+    any manager on site is assigned to. Crossed with all three shifts,
+    since a site runs all of them.
+    """
+    departments = set(db.AMBASSADOR_DEPARTMENTS)
+
+    for section in db.compute_ir_overview():
+        for role in section["roles"]:
+            home_process = role.get("home_process")
+            if home_process:
+                departments.add(db.normalize_department(home_process))
+
+    for row in db.get_roster_by_roles(["am", "om", "som"]):
+        if row.get("department"):
+            departments.add(db.normalize_department(row["department"]))
+
+    return {(department, shift) for department in departments if department
+            for shift in db.SHIFTS}
+
+
 def _indirect_roles_card_for_am(login):
-    """Builds the Indirect Roles tile from every department+shift this
-    login is responsible for — their own, or (for an OM/SOM) the
-    deduplicated set across their whole reporting tree — using the
-    actual Indirect Role engine, not the generic tracked_items sections,
-    which have no importer feeding them and are always empty.
+    """This manager's Indirect Roles tile — every department+shift they
+    are responsible for, their own or (for an OM/SOM) the deduplicated
+    set across their whole reporting tree."""
+    return _indirect_roles_card_for_pairs(_department_shift_pairs_for_login(login))
+
+
+def _indirect_roles_card_for_pairs(pairs):
+    """Builds the Indirect Roles tile over a set of (department, shift)
+    pairs — one manager's, or the whole site's (see
+    _site_department_shift_pairs) — using the actual Indirect Role
+    engine, not the generic tracked_items sections, which have no
+    importer feeding them and are always empty.
     Trained-with-practice counts toward compliance; trained-without-
     practice ('risk') and not-trained-but-with-practice ('gap') both
     count against it, even when the raw headcount already meets target
     — hitting a number isn't enough if the people behind it aren't
     actually ready."""
-    pairs = _department_shift_pairs_for_login(login)
     if not pairs:
         return None
     overview = db.compute_ir_overview()
@@ -497,14 +539,20 @@ def get_xt_gap_and_retention_for_login(login, scenario="general"):
 
 
 def _ambassador_scorecard_for_am(login):
-    """Builds the Ambassador Availability tile from every department+
-    shift this login is responsible for (see _department_shift_pairs_for_login),
-    aggregated across the deduplicated set — instead of the generic
-    tracked_items staffing_instructor scorer. Returns None if none of
-    those department+shift pairs land on a tracked Ambassador
-    department — the caller falls back to the old generic scorer in
-    that case."""
-    pairs = _department_shift_pairs_for_login(login)
+    """This manager's Ambassador Availability tile — see
+    _department_shift_pairs_for_login for what they're held responsible
+    for."""
+    return _ambassador_scorecard_for_pairs(_department_shift_pairs_for_login(login))
+
+
+def _ambassador_scorecard_for_pairs(pairs):
+    """Builds the Ambassador Availability tile over a set of
+    (department, shift) pairs — one manager's, or the whole site's —
+    instead of the generic tracked_items staffing_instructor scorer,
+    which no importer feeds. Returns None if none of those pairs land
+    on a tracked Ambassador department, which is a genuinely different
+    answer from a zero: it means this scope has no ambassador
+    departments to score at all."""
     relevant = [(d, s) for d, s in pairs if d in db.AMBASSADOR_DEPARTMENTS]
     if not relevant:
         return None
@@ -527,6 +575,17 @@ def _ambassador_scorecard_for_am(login):
         })
     if not matched:
         return None
+    # get_ambassador_gap_summary returns a row per department even when
+    # that department has no ambassadors and no target, so "matched" is
+    # not evidence there is anything to score. With no target AND nobody
+    # in post there is no availability to measure, and the old
+    # "target_sum <= 0 -> 100" made that read as a perfect score — which
+    # at site scope also pulled the site's Total L&D Score up on the
+    # strength of a metric nobody had configured. No data is its own
+    # answer. A department that has ambassadors but no target set still
+    # scores 100: there are people and no shortfall to be short of.
+    if target_sum <= 0 and current_sum <= 0:
+        return None
     gap_sum = current_sum - target_sum
     pct_ok = 100 if target_sum <= 0 else max(0, min(100, round(100 * current_sum / target_sum)))
     departments = sorted({d for d, _ in relevant})
@@ -542,12 +601,17 @@ def _ambassador_scorecard_for_am(login):
 
 
 def _ambassador_readiness_card_for_am(login):
-    """Builds the Ambassador Readiness tile: what fraction of ambassadors
-    across every department+shift this login is responsible for have
-    reached 20 hours on EVERY one of their tracked processes. Returns None under the same
-    conditions as _ambassador_scorecard_for_am, plus when there's
-    nobody with a trackable process list to evaluate."""
-    pairs = _department_shift_pairs_for_login(login)
+    """This manager's Ambassador Readiness tile."""
+    return _ambassador_readiness_card_for_pairs(_department_shift_pairs_for_login(login))
+
+
+def _ambassador_readiness_card_for_pairs(pairs):
+    """Builds the Ambassador Readiness tile over a set of (department,
+    shift) pairs — one manager's, or the whole site's: what fraction of
+    those ambassadors have reached 20 hours on EVERY one of their
+    tracked processes. Returns None under the same conditions as
+    _ambassador_scorecard_for_pairs, plus when there's nobody with a
+    trackable process list to evaluate."""
     relevant = [(d, s) for d, s in pairs if d in db.AMBASSADOR_DEPARTMENTS]
     if not relevant:
         return None
@@ -594,13 +658,31 @@ def _build_scorecard_categories(am_scope, fc_scope, single_am_login=None):
     it's scored from xt_hours.proficiency_status (see
     db.get_xt_compliance_score) rather than the tracked_items staffing_xt
     section, which has no CSV importer feeding it and is always empty.
-    Ambassador Availability and Ambassador Readiness are special-cased
-    too, when single_am_login is given and resolves to a tracked
-    Ambassador department: scored from that AM's own department+shift
-    ambassador data instead of the generic staffing_instructor section.
-    Every other category, and these two when no single-AM context
-    applies (a trainer's multi-AM view, org-wide), still comes from
-    db.scorecard() as before."""
+    Indirect Roles, Ambassador Availability and Ambassador Readiness are
+    special-cased the same way, scored from the Indirect Role and
+    Ambassador engines over a set of (department, shift) pairs rather
+    than from staffing sections no importer writes. The pairs come from
+    the manager when there is one and from the whole site otherwise, so
+    these three are scored at site and regional scope too — see
+    _site_department_shift_pairs. Every other category still comes from
+    db.scorecard()."""
+    # Indirect Roles and the two Ambassador metrics are computed by
+    # dedicated engines keyed on (department, shift) pairs, never from
+    # tracked_items. A manager's pairs come from their own org; a
+    # site-wide call (am_scope None and no single_am_login — Reporting
+    # and Regional Overview) gets the whole site's. Without this, those
+    # three fell back to db.scorecard() over staffing_indirect_coverage
+    # and staffing_instructor, which no importer has ever written, so
+    # they read "no data" at site level while working per manager.
+    # A narrower multi-AM scope (a Trainer's assigned AMs) keeps the old
+    # fallback rather than silently widening to the whole site.
+    if single_am_login:
+        engine_pairs = _department_shift_pairs_for_login(single_am_login)
+    elif am_scope is None:
+        engine_pairs = _site_department_shift_pairs()
+    else:
+        engine_pairs = None
+
     categories = []
     scores_for_avg = []
     for key, label, sections in db.SCORECARD_CATEGORIES:
@@ -612,12 +694,12 @@ def _build_scorecard_categories(am_scope, fc_scope, single_am_login=None):
                 "proficient": xt["proficient"], "refresh": xt["refresh"],
                 "practice": xt["practice"], "lapsed": xt["lapsed"],
             }
-        elif key == "indirect_roles" and single_am_login:
-            card = _indirect_roles_card_for_am(single_am_login) or db.scorecard(sections, am_login=am_scope, fc=fc_scope)
-        elif key == "instructor_mgmt" and single_am_login:
-            card = _ambassador_scorecard_for_am(single_am_login) or db.scorecard(sections, am_login=am_scope, fc=fc_scope)
-        elif key == "ambassador_readiness" and single_am_login:
-            card = _ambassador_readiness_card_for_am(single_am_login) or {"ok": 0, "risk": 0, "gap": 0, "total": 0, "pct_ok": None}
+        elif key == "indirect_roles" and engine_pairs:
+            card = _indirect_roles_card_for_pairs(engine_pairs) or db.scorecard(sections, am_login=am_scope, fc=fc_scope)
+        elif key == "instructor_mgmt" and engine_pairs:
+            card = _ambassador_scorecard_for_pairs(engine_pairs) or db.scorecard(sections, am_login=am_scope, fc=fc_scope)
+        elif key == "ambassador_readiness" and engine_pairs:
+            card = _ambassador_readiness_card_for_pairs(engine_pairs) or {"ok": 0, "risk": 0, "gap": 0, "total": 0, "pct_ok": None}
         elif sections:
             card = db.scorecard(sections, am_login=am_scope, fc=fc_scope)
         else:
