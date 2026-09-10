@@ -7228,6 +7228,50 @@ def get_site_weekly_composite_series(weeks=8):
     return series
 
 
+def get_site_weekly_metric_series(weeks=8):
+    """Per-metric weekly history for the current site — {metric_key:
+    [(week_start, value)]} — the sparkline behind each metric card on
+    Reporting.
+
+    Same basis and same caveat as get_site_weekly_composite_series: each
+    point is the mean across whichever managers were snapshotted that
+    week, which is not the same quantity as the live site-wide rollup
+    shown as the card's headline figure. Weeks with no snapshot for a
+    metric are absent from that metric's series rather than plotted as
+    zero.
+    """
+    cutoff = (date.today() - timedelta(weeks=weeks)).isoformat()
+    placeholders = ",".join("?" * len(OLR_METRIC_KEYS))
+    conn = get_db()
+    rows = conn.execute(
+        f"SELECT week_start, metric_key, AVG(value) AS avg_value FROM olr_weekly_metrics "
+        f"WHERE week_start >= ? AND metric_key IN ({placeholders}) AND value IS NOT NULL "
+        f"GROUP BY week_start, metric_key ORDER BY week_start",
+        [cutoff] + list(OLR_METRIC_KEYS),
+    ).fetchall()
+    conn.close()
+
+    series = {key: [] for key in OLR_METRIC_KEYS}
+    for r in rows:
+        series[r["metric_key"]].append((r["week_start"], round(r["avg_value"], 1)))
+    return series
+
+
+def get_login_weekly_composite_series(login, weeks=8):
+    """One manager's own Total L&D composite week by week, for the trend
+    on their card in SOM/OM Overview. Reads the same snapshots as the
+    OLR page, so a manager's trend here and on their OLR agree."""
+    cutoff = (date.today() - timedelta(weeks=weeks)).isoformat()
+    weekly = get_olr_weekly_series(login, since=cutoff)
+    out = []
+    for week_start in sorted(weekly):
+        composite = _olr_composite({k: v for k, v in weekly[week_start].items()
+                                    if k in OLR_METRIC_KEYS})
+        if composite is not None:
+            out.append((week_start, round(composite, 1)))
+    return out
+
+
 def get_week_plan_utilisation(week_start):
     """Seats booked against seats offered on the current site's approved
     training plan for one week. Slots with no capacity set contribute

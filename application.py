@@ -1558,10 +1558,10 @@ def api_category_detail(key):
     return render_template(
         "category_detail_fragment.html",
         category_label=label,
+        am_breakdown=am_breakdown,
         category_key=key,
         items=items,
         card=card,
-        am_breakdown=am_breakdown,
         xt_records=xt_records,
         xt_refresh_at_risk=xt_refresh_at_risk,
         xt_am_standards=xt_am_standards,
@@ -1811,6 +1811,207 @@ def _series_delta(series):
         return None
     change = round(series[-1][1] - series[-2][1], 1)
     return 0.0 if change == -0.0 else change
+
+
+# Where each metric's detail actually lives, so a Reporting tile is a way
+# in rather than a dead end. A metric with no deeper page of its own
+# stays unlinked instead of pointing somewhere that won't answer the
+# question it raises.
+METRIC_DETAIL_ROUTES = {
+    "safety_compliance": ("scorecards", {"tab": "manager_rankings", "metric": "safety_compliance"}),
+    "de_tech": ("scorecards", {"tab": "manager_rankings", "metric": "de_tech"}),
+    "indirect_roles": ("indirect_roles_overview", {"tab": "overview"}),
+    "cross_training": ("cross_training", {}),
+    "instructor_mgmt": ("scorecards", {"tab": "ambassador_hours"}),
+    "ambassador_readiness": ("ambassador_management", {"shift": "early"}),
+    "bts_compliance": ("scorecards", {"tab": "manager_rankings", "metric": "bts_compliance"}),
+}
+
+
+def _metric_detail_url(metric_key):
+    entry = METRIC_DETAIL_ROUTES.get(metric_key)
+    if not entry:
+        return None
+    endpoint, params = entry
+    try:
+        return url_for(endpoint, **params)
+    except Exception:
+        # A route that has been renamed shouldn't take the dashboard down
+        # with it — the tile simply stops being a link.
+        return None
+
+
+def get_site_ld_dashboard():
+    """The Reporting tab: every L&D metric for the site currently in
+    context, at site-wide scope, with its own trend and a way into the
+    tab that explains it.
+
+    Deliberately metric-shaped, not manager-shaped — SOM/OM Overview and
+    Compliance Rankings are where this same data gets broken down by
+    person, and repeating that here would make three tabs that answer
+    the same question.
+    """
+    categories, overall_score = _build_scorecard_categories(None, None)
+    metric_series = db.get_site_weekly_metric_series(weeks=REGIONAL_TREND_WEEKS)
+    trend = db.get_site_weekly_composite_series(weeks=REGIONAL_TREND_WEEKS)
+    current_week = db.week_start_for()
+
+    metrics = []
+    for category in categories:
+        key = category["key"]
+        card = category["card"]
+        series = metric_series.get(key) or []
+        metrics.append({
+            "key": key,
+            "label": category["label"],
+            "score": card["pct_ok"],
+            "ok": card.get("ok"),
+            "risk": card.get("risk"),
+            "gap": card.get("gap"),
+            "total": card.get("total"),
+            "status": _metric_status(card["pct_ok"]),
+            "series": series,
+            "delta": _series_delta(series),
+            "href": _metric_detail_url(key),
+        })
+
+    scored = [m for m in metrics if m["score"] is not None]
+    below = [m for m in scored if m["score"] < SAFETY_COMPLIANCE_TARGET]
+    below.sort(key=lambda m: m["score"])
+
+    return {
+        "site_code": db.get_current_site(),
+        "site": db.get_site(db.get_current_site()),
+        "metrics": metrics,
+        "metrics_scored": len(scored),
+        "metrics_with_no_data": len(metrics) - len(scored),
+        "below_target": below,
+        "on_target": len(scored) - len(below),
+        "total_score": round(overall_score, 1) if overall_score is not None else None,
+        "status": _site_status(overall_score),
+        "trend": trend,
+        "trend_delta": _series_delta(trend),
+        "plan": db.get_week_plan_utilisation(current_week),
+        "week_start": current_week,
+        "manager_count": len(db.get_roster_by_roles(["am", "om", "som"])),
+        "open_escalations": len(db.get_all_open_record_escalations()),
+        "safety_health": db.get_safety_compliance_health(),
+        "trend_weeks": REGIONAL_TREND_WEEKS,
+        "metric_target": SAFETY_COMPLIANCE_TARGET,
+        "site_stable_at": SITE_STABLE_AT,
+    }
+
+
+def get_org_ld_dashboard(viewer_login, role):
+    """SOM/OM Overview: the same shape as Regional Overview, one level
+    down — a card per manager in the viewer's own org on this site
+    instead of a card per site.
+
+    Scope is the viewer's actual reporting tree (self plus every direct
+    and indirect report via reports_to). An admin-tier viewer has no
+    operational tree of their own, so they see every AM/OM/SOM at the
+    site — the same population Compliance Rankings covers.
+    """
+    is_admin_tier = role in ADMIN_TIER_ROLES
+    roster = {r["login"]: r for r in db.get_roster_by_roles(["am", "om", "som"])}
+
+    if is_admin_tier:
+        scope_logins = list(roster)
+        scope_label = "every manager on site"
+    else:
+        descendants = db.get_descendant_ams(viewer_login)
+        scope_logins = [l for l in descendants if l in roster]
+        scope_label = "your reporting line"
+
+    managers = []
+    for login in scope_logins:
+        row = roster.get(login) or {}
+        full = _compute_ld_metrics_full(login)
+        metrics = {k: v["pct_ok"] for k, v in full.items()}
+        scored = [v for v in metrics.values() if v is not None]
+        total = round(sum(scored) / len(scored), 1) if scored else None
+        series = db.get_login_weekly_composite_series(login, weeks=REGIONAL_TREND_WEEKS)
+        worst = min(
+            ((k, db.SCORECARD_CATEGORY_MAP[k][0], v) for k, v in metrics.items() if v is not None),
+            key=lambda t: t[2], default=None,
+        )
+        managers.append({
+            "login": login,
+            "full_name": row.get("full_name") or login,
+            "role": row.get("role"),
+            "role_label": ROLES.get(row.get("role"), row.get("role")),
+            "department": db.normalize_department(row.get("department")) if row.get("department") else None,
+            "shift": db.SHIFTS.get(row.get("shift")) if row.get("shift") else None,
+            "metrics": metrics,
+            "total_score": total,
+            "status": _site_status(total),
+            "series": series,
+            "trend_delta": _series_delta(series),
+            "report_count": len(db.get_descendant_ams(login)),
+            "gap_total": sum(v["gap"] or 0 for v in full.values()),
+            "metrics_below_target": sum(1 for v in metrics.values()
+                                        if v is not None and v < SAFETY_COMPLIANCE_TARGET),
+            "focus_metric_label": worst[1] if worst else None,
+            "focus_metric_score": worst[2] if worst else None,
+        })
+
+    managers.sort(key=lambda m: (m["total_score"] if m["total_score"] is not None else 999,
+                                 m["full_name"].lower()))
+
+    scored_totals = [m["total_score"] for m in managers if m["total_score"] is not None]
+
+    attention = []
+    for manager in managers:
+        for key, label, _sections in LD_METRICS:
+            value = manager["metrics"].get(key)
+            if value is not None and value < SAFETY_COMPLIANCE_TARGET:
+                attention.append({
+                    "login": manager["login"],
+                    "full_name": manager["full_name"],
+                    "metric_key": key,
+                    "metric_label": label,
+                    "score": value,
+                    "shortfall": round(SAFETY_COMPLIANCE_TARGET - value, 1),
+                    "severity": _metric_status(value),
+                })
+    attention.sort(key=lambda a: (a["score"], a["full_name"].lower()))
+
+    metric_rollup = []
+    for key, label, _sections in LD_METRICS:
+        values = [m["metrics"][key] for m in managers if m["metrics"].get(key) is not None]
+        metric_rollup.append({
+            "key": key,
+            "label": label,
+            "avg": round(sum(values) / len(values), 1) if values else None,
+            "reporting": len(values),
+            "below": sum(1 for v in values if v < SAFETY_COMPLIANCE_TARGET),
+        })
+
+    weeks = {}
+    for manager in managers:
+        for week_start, value in manager["series"]:
+            weeks.setdefault(week_start, []).append(value)
+    org_trend = [(w, round(sum(v) / len(v), 1)) for w, v in sorted(weeks.items())]
+
+    return {
+        "managers": managers,
+        "manager_count": len(managers),
+        "scope_label": scope_label,
+        "is_admin_tier": is_admin_tier,
+        "viewer_login": viewer_login,
+        "avg_total_score": round(sum(scored_totals) / len(scored_totals), 1) if scored_totals else None,
+        "managers_on_target": sum(1 for m in managers if m["status"] == "good"),
+        "managers_needing_attention": sum(1 for m in managers if m["status"] in ("watch", "serious")),
+        "managers_without_data": sum(1 for m in managers if m["total_score"] is None),
+        "attention": attention,
+        "metric_rollup": metric_rollup,
+        "org_trend": org_trend,
+        "org_trend_delta": _series_delta(org_trend),
+        "trend_weeks": REGIONAL_TREND_WEEKS,
+        "metric_target": SAFETY_COMPLIANCE_TARGET,
+        "site_stable_at": SITE_STABLE_AT,
+        "site_code": db.get_current_site(),
+    }
 
 
 def get_regional_overview(region=None, status=None):
@@ -2672,20 +2873,6 @@ def scorecards():
         "instructor_hours": db.scorecard(["staffing_instructor"]),
     }
 
-    am_breakdown = []
-    if tab == "som_om":
-        for am_login in db.all_ams():
-            scores = []
-            for _key, _label, sections in db.SCORECARD_CATEGORIES:
-                card = db.scorecard(sections, am_login=am_login)
-                if card["pct_ok"] is not None:
-                    scores.append(card["pct_ok"])
-            am_breakdown.append({
-                "am_login": am_login,
-                "score": round(sum(scores) / len(scores)) if scores else None,
-            })
-        am_breakdown.sort(key=lambda r: (r["score"] if r["score"] is not None else 999))
-
     ambassador_attendance_report = None
     ambassador_attendance_shift = None
     ambassador_attendance_cards = None
@@ -2711,12 +2898,11 @@ def scorecards():
         **_login_context(),
         ld_overall=ld_overall,
         leadership=leadership,
-        safety_health=db.get_safety_compliance_health() if tab == "reporting" else None,
-        xt_site_compliance=db.get_xt_site_compliance() if tab == "reporting" else None,
-        ir_summary_site=db.summarize_ir_overview(db.compute_ir_overview()) if tab == "reporting" else None,
+        site=get_site_ld_dashboard() if tab == "reporting" else None,
+        org=get_org_ld_dashboard(login_id, role) if tab == "som_om" else None,
+        today=date.today(),
         tab=tab,
         can_see_som_om=can_see_som_om,
-        am_breakdown=am_breakdown,
         ambassador_attendance_report=ambassador_attendance_report,
         ambassador_attendance_shift=ambassador_attendance_shift,
         ambassador_attendance_cards=ambassador_attendance_cards,

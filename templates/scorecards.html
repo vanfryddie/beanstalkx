@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_dashboard.html" as dash %}
 {% block title %}Reporting — L&D Operations Console{% endblock %}
 {% block content %}
 <div class="reporting-page">
@@ -33,9 +34,6 @@
     <p class="page-sub">Compare manager compliance, overdue risk and recent movement.</p>
   </div>
 </div>
-{% else %}
-<h1 class="page-title">Reporting</h1>
-<p class="page-sub">Data flows from section records up through two topic scorecards, into one overall L&D Scorecard, and finally the Senior Leadership Scorecard — each level trading detail for aggregation.</p>
 {% endif %}
 
 {% if can_see_som_om %}
@@ -611,29 +609,205 @@ function ldocOpenEscalationSenior(login) {
 {% endif %}
 
 {% elif tab == 'som_om' %}
-<p class="page-sub" style="margin-top:-8px;">Every Area Manager's combined L&D score, worst first — pick one to open their AM Overview.</p>
-<div class="panel" style="padding:0;">
-  {% if am_breakdown %}
-  <table>
-    <thead><tr><th>Area Manager</th><th>Combined score</th><th></th></tr></thead>
-    <tbody>
-      {% for r in am_breakdown %}
-      <tr>
-        <td class="mono">{{ r.am_login }}</td>
-        <td>
-          {% if r.score is not none %}
-          <span class="pill pill-{{ 'ok' if r.score >= 90 else ('risk' if r.score >= 70 else 'gap') }}">{{ r.score }}%</span>
-          {% else %}<span style="color:var(--text-lo);">no data</span>{% endif %}
-        </td>
-        <td><a class="btn btn-ghost btn-sm" href="{{ url_for('overview', am=r.am_login) }}">View AM Overview →</a></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="empty-state">No Area Managers with data yet.</div>
-  {% endif %}
+<section class="dash-hero dash-hero-tight">
+  <div class="dash-hero-text">
+    <p class="dash-eyebrow">SOM / OM Overview · {{ org.site_code }}</p>
+    {% if org.manager_count == 0 %}
+      <h1 class="dash-headline">No managers <span class="dim">report to you on this site.</span></h1>
+    {% elif org.managers_needing_attention == 0 %}
+      <h1 class="dash-headline">Your whole org <span class="dim">is on target.</span></h1>
+    {% else %}
+      <h1 class="dash-headline">{{ org.managers_needing_attention }}
+        manager{{ 's' if org.managers_needing_attention != 1 }}
+        <span class="dim">need{{ '' if org.managers_needing_attention != 1 else 's' }} support.</span></h1>
+    {% endif %}
+    <p class="dash-meta">
+      {{ org.manager_count }} manager{{ 's' if org.manager_count != 1 }} across {{ org.scope_label }}
+      {%- if org.managers_without_data %} · {{ org.managers_without_data }} with no data yet{% endif %}
+    </p>
+  </div>
+</section>
+
+{% if org.manager_count %}
+<section class="dash-summary">
+  <div class="dash-summary-story">
+    <h2>
+      {{ org.managers_on_target }} of {{ org.manager_count }} manager{{ 's' if org.manager_count != 1 }}
+      {{ 'is' if org.managers_on_target == 1 else 'are' }} at or above {{ org.site_stable_at }}%.
+    </h2>
+    <p>
+      {% set worst = org.managers | selectattr('total_score') | sort(attribute='total_score') | first %}
+      {% if worst %}{{ worst.full_name }} is lowest at {{ worst.total_score }}%{% if worst.focus_metric_label %},
+        held down by {{ worst.focus_metric_label }}{% endif %}.{% endif %}
+      {% if org.attention %}
+        {{ org.attention | length }} manager-metric combination{{ 's' if org.attention|length != 1 }}
+        {{ 'is' if org.attention|length == 1 else 'are' }} below the {{ org.metric_target }}% target.
+      {% else %}
+        Nothing in your org is below the {{ org.metric_target }}% target.
+      {% endif %}
+    </p>
+    <span class="dash-chip">
+      <i class="dash-dot dash-dot-{{ 'good' if not org.managers_without_data else 'watch' }}"></i>
+      {{ org.manager_count - org.managers_without_data }} of {{ org.manager_count }} reporting
+    </span>
+  </div>
+  <div class="dash-summary-stats">
+    <div class="dash-stat">
+      <span class="dash-stat-label">Average Total L&amp;D Score</span>
+      {{ dash.figure(org.avg_total_score) }}
+      {{ dash.delta(org.org_trend_delta) }}
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Managers needing support</span>
+      {{ dash.figure(org.managers_needing_attention, suffix='') }}
+      <span class="dash-stat-sub">Below {{ org.site_stable_at }}% overall</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Below-target metrics</span>
+      {{ dash.figure(org.attention | length, suffix='') }}
+      <span class="dash-stat-sub">Across your org</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Org trend</span>
+      <span class="dash-stat-spark">{{ dash.spark(org.org_trend, 148, 40) }}</span>
+      <span class="dash-stat-sub">{{ org.trend_weeks }}-week snapshot average</span>
+    </div>
+  </div>
+</section>
+
+<h2 class="dash-section-label">Metric coverage across your org</h2>
+<div class="dash-metric-strip">
+  {% for m in org.metric_rollup %}
+  {{ dash.metric_card(
+       m.label, m.avg, org.metric_target,
+       (m.below ~ ' of ' ~ m.reporting ~ ' below target') if m.below
+       else ('All ' ~ m.reporting ~ ' on target') if m.reporting
+       else 'No manager has data for this metric') }}
+  {% endfor %}
 </div>
+
+<h2 class="dash-section-label">Managers</h2>
+<div class="dash-entity-grid">
+  {% for m in org.managers %}
+  <article class="dash-entity-card dash-entity-{{ m.status or 'none' }}">
+    <header class="dash-entity-head">
+      <div>
+        <h3 class="dash-entity-title">{{ m.full_name }}</h3>
+        <p class="dash-entity-sub">
+          {{ m.role_label }}{% if m.department %} · {{ m.department }}{% endif %}{% if m.shift %} · {{ m.shift }}{% endif %}
+        </p>
+      </div>
+      {{ dash.status_pill(m.status) }}
+    </header>
+    <div class="dash-entity-figure-row">
+      <div>
+        {{ dash.figure(m.total_score, large=true) }}
+        <span class="dash-stat-label">Total L&amp;D Score</span>
+        {{ dash.delta(m.trend_delta) }}
+      </div>
+      <div class="dash-entity-spark">{{ dash.spark(m.series, 132, 38) }}</div>
+    </div>
+    {{ dash.mini_metrics(m.metrics, ld_metrics, org.metric_target) }}
+    <footer class="dash-entity-foot">
+      <div class="dash-entity-facts">
+        <span title="Metrics below the {{ org.metric_target }}% target">{{ m.metrics_below_target }} below target</span>
+        {% if m.report_count %}<span title="Managers reporting up to this person">{{ m.report_count }} report{{ 's' if m.report_count != 1 }}</span>{% endif %}
+        <span title="Open gaps across every metric">{{ m.gap_total }} gap{{ 's' if m.gap_total != 1 }}</span>
+      </div>
+      <a class="btn btn-ghost btn-sm" href="{{ url_for('overview', am=m.login) }}">Open scorecard</a>
+    </footer>
+  </article>
+  {% endfor %}
+</div>
+
+<div class="dash-split">
+  <section class="dash-panel">
+    <header class="dash-panel-head">
+      <div>
+        <h2>Attention</h2>
+        <p>Every manager-metric below the {{ org.metric_target }}% target, worst first</p>
+      </div>
+      <span class="dash-count">{{ org.attention | length }}</span>
+    </header>
+    {% if org.attention %}
+    <ul class="dash-attention">
+      {% for a in org.attention[:12] %}
+      <li>
+        <i class="dash-dot dash-dot-{{ a.severity }}"></i>
+        <div class="dash-attention-main">
+          <strong>{{ a.metric_label }}</strong>
+          <span>{{ a.full_name }}</span>
+        </div>
+        <div class="dash-attention-num">
+          <strong class="mono">{{ a.score }}%</strong>
+          <span class="mono">&minus;{{ a.shortfall }} pts</span>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if org.attention | length > 12 %}
+    <p class="dash-panel-foot">{{ org.attention | length - 12 }} more below target — see the table below.</p>
+    {% endif %}
+    {% else %}
+    <div class="dash-empty">Nothing in your org is below target.</div>
+    {% endif %}
+  </section>
+
+  <section class="dash-panel">
+    <header class="dash-panel-head">
+      <div>
+        <h2>Where to look next</h2>
+        <p>This tab is the roll-up — these go deeper</p>
+      </div>
+    </header>
+    <ul class="dash-links">
+      <li><a href="{{ url_for('scorecards', tab='manager_rankings') }}">Compliance Rankings<span>Every manager ranked on each metric</span></a></li>
+      <li><a href="{{ url_for('scorecards', tab='reporting') }}">Reporting<span>The same metrics at whole-site scope</span></a></li>
+      <li><a href="{{ url_for('scorecards', tab='escalations') }}">Escalations<span>Open items by senior leader</span></a></li>
+    </ul>
+  </section>
+</div>
+
+<details class="dash-table-wrap">
+  <summary>
+    <span>Full comparison — every manager on every metric</span>
+    <span class="dash-summary-hint">The same numbers as above, as a table</span>
+  </summary>
+  <div class="dash-table-scroll">
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th scope="col">Manager</th>
+          {% for key, label, _s in ld_metrics %}<th scope="col" class="num">{{ label }}</th>{% endfor %}
+          <th scope="col" class="num">Total</th>
+          <th scope="col" class="num">Gaps</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in org.managers %}
+        <tr>
+          <th scope="row">
+            <strong>{{ m.full_name }}</strong>
+            <span>{{ m.role_label }}{% if m.department %} · {{ m.department }}{% endif %}</span>
+          </th>
+          {% for key, label, _s in ld_metrics %}
+          {% set v = m.metrics.get(key) %}
+          <td class="num mono {{ 'is-below' if v is not none and v < org.metric_target }}">{{ v ~ '%' if v is not none else '—' }}</td>
+          {% endfor %}
+          <td class="num mono total">{{ m.total_score ~ '%' if m.total_score is not none else '—' }}</td>
+          <td class="num mono">{{ m.gap_total }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% else %}
+<div class="dash-empty dash-empty-page">
+  {% if org.is_admin_tier %}No Area or Operations Managers are set up on this site yet.
+  {% else %}Nobody reports to you on this site yet. Reporting lines are set in L&amp;D Settings.{% endif %}
+</div>
+{% endif %}
 
 {% elif tab == 'manager_rankings' %}
 <div class="ld-rank-switcher" role="tablist" aria-label="Choose ranking metric">
@@ -1084,82 +1258,189 @@ function ldocOpenEscalationSenior(login) {
 </script>
 
 {% else %}
-<div class="rp-overview">
-  <section class="rp-surface rp-site-health" aria-labelledby="rpSiteHealthTitle">
-    <header class="rp-surface-head">
-      <div><h2 id="rpSiteHealthTitle">Site health</h2><p>The six signals requiring the closest operational attention.</p></div>
-      <span>Current reporting period</span>
-    </header>
-    <div class="rp-health-grid">
-      <article class="rp-health-item {{ 'rp-tone-ok' if safety_health.pct is not none and safety_health.pct >= 95 else 'rp-tone-attention' }}">
-        <span>Safety compliance</span>
-        <strong>{{ safety_health.pct if safety_health.pct is not none else '—' }}{% if safety_health.pct is not none %}%{% endif %}</strong>
-        <small>Overall health</small>
-      </article>
-      <article class="rp-health-item {{ 'rp-tone-attention' if safety_health.overdue else 'rp-tone-ok' }}">
-        <span>Overdue records</span>
-        <strong>{{ safety_health.overdue }}</strong>
-        <small>Safety compliance</small>
-      </article>
-      <article class="rp-health-item {{ 'rp-tone-attention' if safety_health.overdue_managers else 'rp-tone-ok' }}">
-        <span>Managers affected</span>
-        <strong>{{ safety_health.overdue_managers }}</strong>
-        <small>With overdue records</small>
-      </article>
-      <article class="rp-health-item {{ 'rp-tone-ok' if xt_site_compliance.pct is not none and xt_site_compliance.pct >= 97 else 'rp-tone-attention' }}">
-        <span>Cross-Training</span>
-        <strong>{{ xt_site_compliance.pct if xt_site_compliance.pct is not none else '—' }}{% if xt_site_compliance.pct is not none %}%{% endif %}</strong>
-        <small>{{ xt_site_compliance.excess }} trained above target</small>
-      </article>
-      <article class="rp-health-item {{ 'rp-tone-ok' if ir_summary_site.overall_pct is not none and ir_summary_site.overall_pct >= 97 else 'rp-tone-attention' }}">
-        <span>Indirect Roles</span>
-        <strong>{{ ir_summary_site.overall_pct if ir_summary_site.overall_pct is not none else '—' }}{% if ir_summary_site.overall_pct is not none %}%{% endif %}</strong>
-        <small>Overall compliance</small>
-      </article>
-      <article class="rp-health-item {{ 'rp-tone-attention' if ir_summary_site.people_needing_action else 'rp-tone-ok' }}">
-        <span>Training gaps</span>
-        <strong>{{ ir_summary_site.people_needing_action }}</strong>
-        <small>Indirect Roles</small>
-      </article>
+<section class="dash-hero dash-hero-tight">
+  <div class="dash-hero-text">
+    <p class="dash-eyebrow">Reporting · {{ site.site_code }}</p>
+    {% if site.below_target %}
+      <h1 class="dash-headline">{{ site.below_target | length }}
+        metric{{ 's' if site.below_target|length != 1 }}
+        <span class="dim">{{ 'are' if site.below_target|length != 1 else 'is' }} below target.</span></h1>
+    {% elif site.metrics_scored %}
+      <h1 class="dash-headline">Every measured metric <span class="dim">is on target.</span></h1>
+    {% else %}
+      <h1 class="dash-headline">No L&amp;D data <span class="dim">loaded for this site yet.</span></h1>
+    {% endif %}
+    <p class="dash-meta">
+      {{ today.strftime('%A, %-d %B') }} · Week {{ today.isocalendar()[1] }} ·
+      {{ site.manager_count }} manager{{ 's' if site.manager_count != 1 }}
+      {%- if site.metrics_with_no_data %} · {{ site.metrics_with_no_data }} metric{{ 's' if site.metrics_with_no_data != 1 }} with no data{% endif %}
+    </p>
+  </div>
+</section>
+
+<section class="dash-summary">
+  <div class="dash-summary-story">
+    <h2>
+      {% if site.metrics_scored %}
+        {{ site.on_target }} of {{ site.metrics_scored }} measured metric{{ 's' if site.metrics_scored != 1 }}
+        {{ 'is' if site.on_target == 1 else 'are' }} at or above {{ site.metric_target }}%.
+      {% else %}
+        Nothing is measurable yet on this site.
+      {% endif %}
+    </h2>
+    <p>
+      {% if site.below_target %}
+        {{ site.below_target[0].label }} is lowest at {{ site.below_target[0].score }}%.
+      {% endif %}
+      {% if site.safety_health and site.safety_health.overdue %}
+        {{ site.safety_health.overdue }} Safety record{{ 's' if site.safety_health.overdue != 1 }}
+        {{ 'is' if site.safety_health.overdue == 1 else 'are' }} overdue across
+        {{ site.safety_health.overdue_managers }} manager{{ 's' if site.safety_health.overdue_managers != 1 }}.
+      {% endif %}
+      {% if site.metrics_with_no_data %}
+        {{ site.metrics_with_no_data }} metric{{ 's' if site.metrics_with_no_data != 1 }}
+        {{ 'has' if site.metrics_with_no_data == 1 else 'have' }} no data loaded, so
+        {{ 'it is' if site.metrics_with_no_data == 1 else 'they are' }} not scored either way.
+      {% endif %}
+    </p>
+    <span class="dash-chip">
+      <i class="dash-dot dash-dot-{{ 'good' if not site.metrics_with_no_data else 'watch' }}"></i>
+      {{ site.metrics_scored }} of {{ site.metrics | length }} metrics reporting
+    </span>
+  </div>
+  <div class="dash-summary-stats">
+    <div class="dash-stat">
+      <span class="dash-stat-label">Total L&amp;D Score</span>
+      {{ dash.figure(site.total_score) }}
+      {{ dash.delta(site.trend_delta) }}
     </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Metrics below target</span>
+      {{ dash.figure(site.below_target | length, suffix='') }}
+      <span class="dash-stat-sub">Below {{ site.metric_target }}%</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Open escalations</span>
+      {{ dash.figure(site.open_escalations, suffix='') }}
+      <span class="dash-stat-sub">On this site</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Site trend</span>
+      <span class="dash-stat-spark">{{ dash.spark(site.trend, 148, 40) }}</span>
+      <span class="dash-stat-sub">{{ site.trend_weeks }}-week snapshot average</span>
+    </div>
+  </div>
+</section>
+
+<h2 class="dash-section-label">The seven L&amp;D metrics</h2>
+<div class="dash-metric-strip dash-metric-strip-lg">
+  {% for m in site.metrics %}
+  {{ dash.metric_card(
+       m.label, m.score, site.metric_target,
+       (m.gap ~ ' in gap · ' ~ m.risk ~ ' at risk of ' ~ m.total) if m.total
+       else 'No records loaded for this metric',
+       href=m.href, series=m.series) }}
+  {% endfor %}
+</div>
+
+<div class="dash-split">
+  <section class="dash-panel">
+    <header class="dash-panel-head">
+      <div>
+        <h2>Attention</h2>
+        <p>Metrics below the {{ site.metric_target }}% target, worst first</p>
+      </div>
+      <span class="dash-count">{{ site.below_target | length }}</span>
+    </header>
+    {% if site.below_target %}
+    <ul class="dash-attention">
+      {% for m in site.below_target %}
+      <li>
+        <i class="dash-dot dash-dot-{{ m.status }}"></i>
+        <div class="dash-attention-main">
+          <strong>{% if m.href %}<a href="{{ m.href }}">{{ m.label }}</a>{% else %}{{ m.label }}{% endif %}</strong>
+          <span>{{ m.gap }} in gap · {{ m.risk }} at risk · {{ m.total }} records</span>
+        </div>
+        <div class="dash-attention-num">
+          <strong class="mono">{{ m.score }}%</strong>
+          <span class="mono">&minus;{{ (site.metric_target - m.score) | round(1) }} pts</span>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="dash-empty">
+      {% if site.metrics_scored %}Every measured metric is at or above target.
+      {% else %}Nothing is measurable yet — load data from L&amp;D Settings.{% endif %}
+    </div>
+    {% endif %}
   </section>
 
-  <section class="rp-surface rp-scorecard rp-overall">
-    <header class="rp-surface-head">
-      <div><h2>L&amp;D Scorecard</h2><p>One consolidated view of compliance and staffing performance.</p></div>
-      <span>Overall</span>
+  <section class="dash-panel">
+    <header class="dash-panel-head">
+      <div>
+        <h2>This week</h2>
+        <p>Approved training plan, week of {{ site.week_start }}</p>
+      </div>
     </header>
-    <div class="rp-metric-grid rp-metric-grid--4">
-      <div class="rp-metric rp-tone-ok"><strong>{{ ld_overall.ok }}</strong><span><i></i>On track</span></div>
-      <div class="rp-metric rp-tone-attention"><strong>{{ ld_overall.risk }}</strong><span><i></i>At risk</span></div>
-      <div class="rp-metric rp-tone-critical"><strong>{{ ld_overall.gap }}</strong><span><i></i>Gap</span></div>
-      <div class="rp-metric rp-tone-primary"><strong>{{ ld_overall.pct_ok if ld_overall.pct_ok is not none else '—' }}{% if ld_overall.pct_ok is not none %}%{% endif %}</strong><span><i></i>On-track rate</span></div>
+    {% if site.plan.pct is not none %}
+    <div class="dash-plan">
+      {{ dash.figure(site.plan.pct, large=true) }}
+      <span class="dash-stat-label">Seats booked</span>
+      <div class="dash-meter dash-meter-lg" role="img" aria-label="{{ site.plan.booked }} of {{ site.plan.capacity }} seats booked">
+        <span class="dash-meter-fill dash-meter-good" style="width:{{ site.plan.pct if site.plan.pct <= 100 else 100 }}%"></span>
+      </div>
+      <p class="dash-plan-sub">
+        {{ site.plan.booked }} of {{ site.plan.capacity }} seats across {{ site.plan.slots }}
+        slot{{ 's' if site.plan.slots != 1 }} · {{ site.plan.seats_free }} still free
+      </p>
     </div>
-  </section>
-
-  <section class="rp-surface rp-leadership">
-    <header class="rp-surface-head">
-      <div><h2>Senior Leadership</h2><p>Network-critical staffing signals for Cross-Training, Indirect Roles and Ambassador Practice.</p></div>
-    </header>
-    <div class="rp-leadership-grid">
-      <article class="{{ 'rp-tone-critical' if leadership.xt.gap else ('rp-tone-attention' if leadership.xt.risk else 'rp-tone-ok') }}">
-        <span>Cross-Training status</span>
-        <strong>{{ leadership.xt.pct_ok if leadership.xt.pct_ok is not none else '—' }}{% if leadership.xt.pct_ok is not none %}%{% endif %}</strong>
-        <small>{{ leadership.xt.total }} records</small>
-      </article>
-      <article class="{{ 'rp-tone-critical' if leadership.indirect_roles.gap else ('rp-tone-attention' if leadership.indirect_roles.risk else 'rp-tone-ok') }}">
-        <span>Indirect Roles staffing</span>
-        <strong>{{ leadership.indirect_roles.pct_ok if leadership.indirect_roles.pct_ok is not none else '—' }}{% if leadership.indirect_roles.pct_ok is not none %}%{% endif %}</strong>
-        <small>{{ leadership.indirect_roles.total }} records</small>
-      </article>
-      <article class="{{ 'rp-tone-critical' if leadership.instructor_hours.gap else ('rp-tone-attention' if leadership.instructor_hours.risk else 'rp-tone-ok') }}">
-        <span>Ambassador Practice capacity</span>
-        <strong>{{ leadership.instructor_hours.pct_ok if leadership.instructor_hours.pct_ok is not none else '—' }}{% if leadership.instructor_hours.pct_ok is not none %}%{% endif %}</strong>
-        <small>{{ leadership.instructor_hours.total }} records</small>
-      </article>
+    {% else %}
+    <div class="dash-empty">
+      No approved training slots with a capacity set for this week, so there are no seats to measure yet.
     </div>
+    {% endif %}
+    <ul class="dash-links dash-links-tight">
+      <li><a href="{{ url_for('scorecards', tab='som_om') }}">SOM/OM Overview<span>The same metrics, per manager</span></a></li>
+      <li><a href="{{ url_for('scorecards', tab='manager_rankings') }}">Compliance Rankings<span>Every manager ranked on each metric</span></a></li>
+    </ul>
   </section>
 </div>
+
+<details class="dash-table-wrap">
+  <summary>
+    <span>Full breakdown — every metric's records</span>
+    <span class="dash-summary-hint">The same numbers as above, as a table</span>
+  </summary>
+  <div class="dash-table-scroll">
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th scope="col">Metric</th>
+          <th scope="col" class="num">On track</th>
+          <th scope="col" class="num">At risk</th>
+          <th scope="col" class="num">Gap</th>
+          <th scope="col" class="num">Records</th>
+          <th scope="col" class="num">Score</th>
+          <th scope="col" class="num">8-week</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in site.metrics %}
+        <tr>
+          <th scope="row"><strong>{{ m.label }}</strong></th>
+          <td class="num mono">{{ m.ok if m.total else '—' }}</td>
+          <td class="num mono">{{ m.risk if m.total else '—' }}</td>
+          <td class="num mono">{{ m.gap if m.total else '—' }}</td>
+          <td class="num mono">{{ m.total or '—' }}</td>
+          <td class="num mono total {{ 'is-below' if m.score is not none and m.score < site.metric_target }}">{{ m.score ~ '%' if m.score is not none else '—' }}</td>
+          <td class="num mono">{% if m.delta is none %}—{% elif m.delta > 0 %}+{{ m.delta }}{% else %}{{ m.delta }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
 {% endif %}
 </div>
 <script>

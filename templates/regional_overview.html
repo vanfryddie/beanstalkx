@@ -1,75 +1,38 @@
 {% extends "base.html" %}
 {% block title %}Regional Overview — L&D Operations Console{% endblock %}
 
-{% macro spark(series, width=132, height=34, tone='blue') -%}
-{#- An 8-week trend drawn straight from the OLR weekly snapshots. One
-    series, so no legend: the card title names it. Values stay in the
-    title attribute and in the comparison table at the foot of the page,
-    so the line is never the only way to read a number. -#}
-{%- if series and series|length > 1 -%}
-  {%- set values = series | map(attribute=1) | list -%}
-  {%- set lo = values | min -%}
-  {%- set hi = values | max -%}
-  {%- set span = (hi - lo) if (hi - lo) > 0.5 else 0.5 -%}
-  {%- set step = (width - 4) / (series|length - 1) -%}
-  <svg class="rgn-spark rgn-spark-{{ tone }}" viewBox="0 0 {{ width }} {{ height }}"
-       width="{{ width }}" height="{{ height }}" preserveAspectRatio="none"
-       role="img" aria-label="{{ series|length }} week trend, {{ values[0] }}% to {{ values[-1] }}%">
-    <title>{% for w, v in series %}{{ w }}: {{ v }}%{% if not loop.last %} · {% endif %}{% endfor %}</title>
-    <polyline class="rgn-spark-line"
-      points="{% for w, v in series %}{{ (2 + loop.index0 * step) | round(2) }},{{ (height - 4 - ((v - lo) / span) * (height - 9)) | round(2) }} {% endfor %}" />
-    {%- set last = series[-1] -%}
-    <circle class="rgn-spark-dot" r="2.6"
-      cx="{{ (2 + (series|length - 1) * step) | round(2) }}"
-      cy="{{ (height - 4 - ((last[1] - lo) / span) * (height - 9)) | round(2) }}" />
-  </svg>
-{%- else -%}
-  <span class="rgn-spark-empty" title="A trend needs at least two weekly snapshots">Not enough history yet</span>
-{%- endif -%}
-{%- endmacro %}
-
-{% macro delta(value) -%}
-{%- if value is none -%}
-  <span class="rgn-delta rgn-delta-none" title="Needs two weekly snapshots to compare">No comparison yet</span>
-{%- elif value > 0 -%}
-  <span class="rgn-delta rgn-delta-up">&#9650; {{ value }} pts</span>
-{%- elif value < 0 -%}
-  <span class="rgn-delta rgn-delta-down">&#9660; {{ value | abs }} pts</span>
-{%- else -%}
-  <span class="rgn-delta rgn-delta-flat">No change</span>
-{%- endif -%}
-{%- endmacro %}
+{% import "_dashboard.html" as dash %}
 
 {% block content %}
-<section class="rgn-hero">
-  <div class="rgn-hero-text">
-    <p class="rgn-eyebrow">Regional Overview</p>
+<section class="dash-hero">
+  <div class="dash-hero-text">
+    <p class="dash-eyebrow">Regional Overview</p>
     {% if overview.site_count == 0 %}
-      <h1 class="rgn-headline">No sites <span class="dim">match this view.</span></h1>
+      <h1 class="dash-headline">No sites <span class="dim">match this view.</span></h1>
     {% elif overview.sites_needing_attention == 0 %}
-      <h1 class="rgn-headline">Every site <span class="dim">is on target.</span></h1>
+      <h1 class="dash-headline">Every site <span class="dim">is on target.</span></h1>
     {% else %}
-      <h1 class="rgn-headline">{{ overview.sites_needing_attention }}
+      <h1 class="dash-headline">{{ overview.sites_needing_attention }}
         site{{ 's' if overview.sites_needing_attention != 1 }}
         <span class="dim">need{{ '' if overview.sites_needing_attention != 1 else 's' }} your attention.</span></h1>
     {% endif %}
-    <p class="rgn-meta">
+    <p class="dash-meta">
       {{ today.strftime('%A, %-d %B') }} · Week {{ today.isocalendar()[1] }} ·
       {{ overview.site_count }} site{{ 's' if overview.site_count != 1 }}
       {%- if overview.is_filtered %} shown{% endif %} · {{ overview.manager_count }} managers
     </p>
   </div>
 
-  <form class="rgn-filters" method="get" action="{{ url_for('regional_overview') }}">
-    <label class="sr-only" for="rgnRegion">Region</label>
-    <select id="rgnRegion" name="region" onchange="this.form.submit()">
+  <form class="dash-filters" method="get" action="{{ url_for('regional_overview') }}">
+    <label class="sr-only" for="dashRegion">Region</label>
+    <select id="dashRegion" name="region" onchange="this.form.submit()">
       <option value="">All regions</option>
       {% for r in overview.all_regions %}
       <option value="{{ r }}" {{ 'selected' if overview.active_region == r }}>{{ r }}</option>
       {% endfor %}
     </select>
-    <label class="sr-only" for="rgnStatus">Status</label>
-    <select id="rgnStatus" name="status" onchange="this.form.submit()">
+    <label class="sr-only" for="dashStatus">Status</label>
+    <select id="dashStatus" name="status" onchange="this.form.submit()">
       <option value="">All statuses</option>
       <option value="good"    {{ 'selected' if overview.active_status == 'good' }}>On target</option>
       <option value="watch"   {{ 'selected' if overview.active_status == 'watch' }}>Watch</option>
@@ -83,8 +46,8 @@
 </section>
 
 {% if overview.site_count %}
-<section class="rgn-summary">
-  <div class="rgn-summary-story">
+<section class="dash-summary">
+  <div class="dash-summary-story">
     <h2>
       {% if overview.sites_needing_attention == 0 %}
         The region is stable across all {{ overview.site_count }} site{{ 's' if overview.site_count != 1 }}.
@@ -110,101 +73,72 @@
         {{ 'has' if overview.sites_without_data == 1 else 'have' }} no data loaded yet.
       {% endif %}
     </p>
-    <span class="rgn-chip">
-      <i class="rgn-dot rgn-dot-{{ 'good' if not overview.sites_without_data else 'watch' }}"></i>
+    <span class="dash-chip">
+      <i class="dash-dot dash-dot-{{ 'good' if not overview.sites_without_data else 'watch' }}"></i>
       {{ overview.site_count - overview.sites_without_data }} of {{ overview.site_count }} sites reporting
     </span>
   </div>
 
-  <div class="rgn-summary-stats">
-    <div class="rgn-stat">
-      <span class="rgn-stat-label">Average Total L&amp;D Score</span>
-      <strong class="rgn-figure">{{ overview.avg_total_score if overview.avg_total_score is not none else '—' }}{% if overview.avg_total_score is not none %}<i>%</i>{% endif %}</strong>
-      {{ delta(overview.region_trend_delta) }}
+  <div class="dash-summary-stats">
+    <div class="dash-stat">
+      <span class="dash-stat-label">Average Total L&amp;D Score</span>
+      <strong class="dash-figure">{{ overview.avg_total_score if overview.avg_total_score is not none else '—' }}{% if overview.avg_total_score is not none %}<i>%</i>{% endif %}</strong>
+      {{ dash.delta(overview.region_trend_delta) }}
     </div>
-    <div class="rgn-stat">
-      <span class="rgn-stat-label">Sites needing attention</span>
-      <strong class="rgn-figure">{{ overview.sites_needing_attention }}</strong>
-      <span class="rgn-stat-sub">Below {{ overview.site_stable_at }}% overall</span>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Sites needing attention</span>
+      <strong class="dash-figure">{{ overview.sites_needing_attention }}</strong>
+      <span class="dash-stat-sub">Below {{ overview.site_stable_at }}% overall</span>
     </div>
-    <div class="rgn-stat">
-      <span class="rgn-stat-label">Open escalations</span>
-      <strong class="rgn-figure">{{ overview.total_open_escalations }}</strong>
-      <span class="rgn-stat-sub">Across the region</span>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Open escalations</span>
+      <strong class="dash-figure">{{ overview.total_open_escalations }}</strong>
+      <span class="dash-stat-sub">Across the region</span>
     </div>
-    <div class="rgn-stat">
-      <span class="rgn-stat-label">Region trend</span>
-      <span class="rgn-stat-spark">{{ spark(overview.region_trend, 148, 40) }}</span>
-      <span class="rgn-stat-sub">{{ overview.trend_weeks }}-week snapshot average</span>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Region trend</span>
+      <span class="dash-stat-spark">{{ dash.spark(overview.region_trend, 148, 40) }}</span>
+      <span class="dash-stat-sub">{{ overview.trend_weeks }}-week snapshot average</span>
     </div>
   </div>
 </section>
 
-<h2 class="rgn-section-label">Metric coverage across the region</h2>
-<div class="rgn-metric-strip">
+<h2 class="dash-section-label">Metric coverage across the region</h2>
+<div class="dash-metric-strip">
   {% for m in overview.metric_rollup %}
-  <article class="rgn-metric-card">
-    <div class="rgn-metric-head">
-      <span class="rgn-metric-name">{{ m.label }}</span>
-      <i class="rgn-dot rgn-dot-{{ 'none' if m.avg is none else ('good' if m.avg >= overview.metric_target else ('watch' if m.avg >= 75 else 'serious')) }}"></i>
-    </div>
-    <strong class="rgn-metric-figure">{{ m.avg if m.avg is not none else '—' }}{% if m.avg is not none %}<i>%</i>{% endif %}</strong>
-    {% if m.avg is not none %}
-    <div class="rgn-meter" role="img" aria-label="{{ m.label }} regional average {{ m.avg }} percent, target {{ overview.metric_target }} percent">
-      <span class="rgn-meter-fill rgn-meter-{{ 'good' if m.avg >= overview.metric_target else ('watch' if m.avg >= 75 else 'serious') }}" style="width:{{ m.avg }}%"></span>
-      <span class="rgn-meter-target" style="left:{{ overview.metric_target }}%" title="Target {{ overview.metric_target }}%"></span>
-    </div>
-    <span class="rgn-metric-sub">
-      {% if m.sites_below %}{{ m.sites_below }} of {{ m.sites_reporting }} site{{ 's' if m.sites_reporting != 1 }} below target{% else %}All {{ m.sites_reporting }} reporting site{{ 's' if m.sites_reporting != 1 }} on target{% endif %}
-    </span>
-    {% else %}
-    <span class="rgn-metric-sub">No site has data for this metric</span>
-    {% endif %}
-  </article>
+  {{ dash.metric_card(
+       m.label, m.avg, overview.metric_target,
+       (m.sites_below ~ ' of ' ~ m.sites_reporting ~ ' sites below target') if m.sites_below
+       else ('All ' ~ m.sites_reporting ~ ' reporting site' ~ ('s' if m.sites_reporting != 1 else '') ~ ' on target') if m.sites_reporting
+       else 'No site has data for this metric') }}
   {% endfor %}
 </div>
 
-<h2 class="rgn-section-label">Sites</h2>
-<div class="rgn-site-grid">
+<h2 class="dash-section-label">Sites</h2>
+<div class="dash-entity-grid">
   {% for s in overview.sites | sort(attribute='total_score') %}
-  <article class="rgn-site-card rgn-site-{{ s.status or 'none' }}">
-    <header class="rgn-site-head">
+  <article class="dash-entity-card dash-entity-{{ s.status or 'none' }}">
+    <header class="dash-entity-head">
       <div>
-        <h3 class="rgn-site-code">{{ s.site_code }}</h3>
-        <p class="rgn-site-name">{{ s.site_name }}{% if s.region %} · {{ s.region }}{% endif %}</p>
+        <h3 class="dash-entity-title">{{ s.site_code }}</h3>
+        <p class="dash-entity-sub">{{ s.site_name }}{% if s.region %} · {{ s.region }}{% endif %}</p>
       </div>
-      <span class="rgn-status-pill rgn-status-{{ s.status or 'none' }}">
-        <i class="rgn-dot rgn-dot-{{ s.status or 'none' }}"></i>
-        {% if s.status == 'good' %}On target{% elif s.status == 'watch' %}Watch{% elif s.status == 'serious' %}Needs action{% else %}No data{% endif %}
-      </span>
+      {{ dash.status_pill(s.status) }}
     </header>
 
-    <div class="rgn-site-figure-row">
+    <div class="dash-entity-figure-row">
       <div>
-        <strong class="rgn-figure rgn-figure-lg">{{ s.total_score if s.total_score is not none else '—' }}{% if s.total_score is not none %}<i>%</i>{% endif %}</strong>
-        <span class="rgn-stat-label">Total L&amp;D Score</span>
-        {{ delta(s.trend_delta) }}
+        <strong class="dash-figure dash-figure-lg">{{ s.total_score if s.total_score is not none else '—' }}{% if s.total_score is not none %}<i>%</i>{% endif %}</strong>
+        <span class="dash-stat-label">Total L&amp;D Score</span>
+        {{ dash.delta(s.trend_delta) }}
       </div>
-      <div class="rgn-site-spark">{{ spark(s.trend, 132, 38, 'blue') }}</div>
+      <div class="dash-entity-spark">{{ dash.spark(s.trend, 132, 38) }}</div>
     </div>
 
-    <div class="rgn-site-metrics">
-      {% for key, label, _s in ld_metrics %}
-      {% set v = s.metrics.get(key) %}
-      <div class="rgn-mini" title="{{ label }}: {{ v ~ '%' if v is not none else 'no data' }} (target {{ overview.metric_target }}%)">
-        <span class="rgn-mini-label">{{ label }}</span>
-        <span class="rgn-mini-track">
-          {% if v is not none %}
-          <span class="rgn-mini-fill rgn-meter-{{ 'good' if v >= overview.metric_target else ('watch' if v >= 75 else 'serious') }}" style="width:{{ v }}%"></span>
-          {% endif %}
-        </span>
-        <span class="rgn-mini-value mono">{{ v ~ '%' if v is not none else '—' }}</span>
-      </div>
-      {% endfor %}
-    </div>
+    {{ dash.mini_metrics(s.metrics, ld_metrics, overview.metric_target) }}
 
-    <footer class="rgn-site-foot">
-      <div class="rgn-site-facts">
+    <footer class="dash-entity-foot">
+      <div class="dash-entity-facts">
         <span title="Metrics below the {{ overview.metric_target }}% target">{{ s.metrics_below_target }} below target</span>
         <span title="Open escalations at this site">{{ s.open_escalations }} escalation{{ 's' if s.open_escalations != 1 }}</span>
         <span title="Managers with a scorecard at this site">{{ s.manager_count }} manager{{ 's' if s.manager_count != 1 }}</span>
@@ -218,25 +152,25 @@
   {% endfor %}
 </div>
 
-<div class="rgn-split">
-  <section class="rgn-panel">
-    <header class="rgn-panel-head">
+<div class="dash-split">
+  <section class="dash-panel">
+    <header class="dash-panel-head">
       <div>
         <h2>Attention</h2>
         <p>Every metric below the {{ overview.metric_target }}% target, worst first</p>
       </div>
-      <span class="rgn-count">{{ overview.attention | length }}</span>
+      <span class="dash-count">{{ overview.attention | length }}</span>
     </header>
     {% if overview.attention %}
-    <ul class="rgn-attention">
+    <ul class="dash-attention">
       {% for a in overview.attention[:12] %}
       <li>
-        <i class="rgn-dot rgn-dot-{{ a.severity }}"></i>
-        <div class="rgn-attention-main">
+        <i class="dash-dot dash-dot-{{ a.severity }}"></i>
+        <div class="dash-attention-main">
           <strong>{{ a.metric_label }}</strong>
           <span>{{ a.site_name }} · {{ a.site_code }}</span>
         </div>
-        <div class="rgn-attention-num">
+        <div class="dash-attention-num">
           <strong class="mono">{{ a.score }}%</strong>
           <span class="mono">−{{ a.shortfall }} pts</span>
         </div>
@@ -244,47 +178,47 @@
       {% endfor %}
     </ul>
     {% if overview.attention | length > 12 %}
-    <p class="rgn-panel-foot">{{ overview.attention | length - 12 }} more below target — see the full comparison below.</p>
+    <p class="dash-panel-foot">{{ overview.attention | length - 12 }} more below target — see the full comparison below.</p>
     {% endif %}
     {% else %}
-    <div class="rgn-empty">Nothing in the region is below target.</div>
+    <div class="dash-empty">Nothing in the region is below target.</div>
     {% endif %}
   </section>
 
-  <section class="rgn-panel">
-    <header class="rgn-panel-head">
+  <section class="dash-panel">
+    <header class="dash-panel-head">
       <div>
         <h2>This week</h2>
         <p>Approved training plan, week of {{ overview.week_start }}</p>
       </div>
     </header>
     {% if overview.plan.pct is not none %}
-    <div class="rgn-plan">
-      <strong class="rgn-figure rgn-figure-lg">{{ overview.plan.pct }}<i>%</i></strong>
-      <span class="rgn-stat-label">Seats booked</span>
-      <div class="rgn-meter rgn-meter-lg" role="img" aria-label="{{ overview.plan.booked }} of {{ overview.plan.capacity }} seats booked">
-        <span class="rgn-meter-fill rgn-meter-good" style="width:{{ overview.plan.pct if overview.plan.pct <= 100 else 100 }}%"></span>
+    <div class="dash-plan">
+      <strong class="dash-figure dash-figure-lg">{{ overview.plan.pct }}<i>%</i></strong>
+      <span class="dash-stat-label">Seats booked</span>
+      <div class="dash-meter dash-meter-lg" role="img" aria-label="{{ overview.plan.booked }} of {{ overview.plan.capacity }} seats booked">
+        <span class="dash-meter-fill dash-meter-good" style="width:{{ overview.plan.pct if overview.plan.pct <= 100 else 100 }}%"></span>
       </div>
-      <p class="rgn-plan-sub">
+      <p class="dash-plan-sub">
         {{ overview.plan.booked }} of {{ overview.plan.capacity }} seats across the region ·
         {{ overview.plan.seats_free }} still free
       </p>
     </div>
     {% else %}
-    <div class="rgn-empty">
+    <div class="dash-empty">
       No approved training slots with a capacity set for this week, so there are no seats to measure yet.
     </div>
     {% endif %}
   </section>
 </div>
 
-<details class="rgn-table-wrap">
+<details class="dash-table-wrap">
   <summary>
     <span>Full comparison — every site on every metric</span>
-    <span class="rgn-summary-hint">The same numbers as above, as a table</span>
+    <span class="dash-summary-hint">The same numbers as above, as a table</span>
   </summary>
-  <div class="rgn-table-scroll">
-    <table class="rgn-table">
+  <div class="dash-table-scroll">
+    <table class="dash-table">
       <thead>
         <tr>
           <th scope="col">Site</th>
@@ -309,8 +243,8 @@
           <td class="num mono">{{ s.open_escalations }}</td>
           <td>
             {% if s.focus_metric_label %}
-            <span class="rgn-status-pill rgn-status-{{ 'good' if s.focus_metric_score >= overview.metric_target else ('watch' if s.focus_metric_score >= 75 else 'serious') }}">{{ s.focus_metric_label }} · {{ s.focus_metric_score }}%</span>
-            {% else %}<span class="rgn-muted">No data yet</span>{% endif %}
+            <span class="dash-status-pill dash-status-{{ 'good' if s.focus_metric_score >= overview.metric_target else ('watch' if s.focus_metric_score >= 75 else 'serious') }}">{{ s.focus_metric_label }} · {{ s.focus_metric_score }}%</span>
+            {% else %}<span class="dash-muted">No data yet</span>{% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -320,7 +254,7 @@
 </details>
 
 {% else %}
-<div class="rgn-empty rgn-empty-page">
+<div class="dash-empty dash-empty-page">
   {% if overview.is_filtered %}
     No site matches this filter.
     <a href="{{ url_for('regional_overview') }}">Show every site</a>

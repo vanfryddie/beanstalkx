@@ -1,0 +1,118 @@
+{#- Shared dashboard components.
+
+    Regional Overview, Reporting and SOM/OM Overview are the same kind of
+    page at three altitudes — a region of sites, one site's metrics, one
+    manager's org — so they share these marks rather than each growing
+    its own sparkline and meter. Import with:
+
+      {% import "_dashboard.html" as dash %}
+
+    Every mark here follows the same two rules: a value is never
+    reachable only by hovering (each page carries a table with the same
+    numbers), and "no data" renders as its own neutral state rather than
+    as a zero, because not knowing is not the same as doing badly.
+-#}
+
+{% macro spark(series, width=132, height=34) -%}
+{#- One series, so no legend — the card title names it. -#}
+{%- if series and series|length > 1 -%}
+  {%- set values = series | map(attribute=1) | list -%}
+  {%- set lo = values | min -%}
+  {%- set hi = values | max -%}
+  {%- set span = (hi - lo) if (hi - lo) > 0.5 else 0.5 -%}
+  {%- set step = (width - 4) / (series|length - 1) -%}
+  <svg class="dash-spark" viewBox="0 0 {{ width }} {{ height }}"
+       width="{{ width }}" height="{{ height }}" preserveAspectRatio="none"
+       role="img" aria-label="{{ series|length }} week trend, {{ values[0] }}% to {{ values[-1] }}%">
+    <title>{% for w, v in series %}{{ w }}: {{ v }}%{% if not loop.last %} · {% endif %}{% endfor %}</title>
+    <polyline class="dash-spark-line"
+      points="{% for w, v in series %}{{ (2 + loop.index0 * step) | round(2) }},{{ (height - 4 - ((v - lo) / span) * (height - 9)) | round(2) }} {% endfor %}" />
+    {%- set last = series[-1] -%}
+    <circle class="dash-spark-dot" r="2.6"
+      cx="{{ (2 + (series|length - 1) * step) | round(2) }}"
+      cy="{{ (height - 4 - ((last[1] - lo) / span) * (height - 9)) | round(2) }}" />
+  </svg>
+{%- else -%}
+  <span class="dash-spark-empty" title="A trend needs at least two weekly snapshots">Not enough history yet</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro delta(value) -%}
+{%- if value is none -%}
+  <span class="dash-delta dash-delta-none" title="Needs two weekly snapshots to compare">No comparison yet</span>
+{%- elif value > 0 -%}
+  <span class="dash-delta dash-delta-up">&#9650; {{ value }} pts</span>
+{%- elif value < 0 -%}
+  <span class="dash-delta dash-delta-down">&#9660; {{ value | abs }} pts</span>
+{%- else -%}
+  <span class="dash-delta dash-delta-flat">No change</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro tone(score, target) -%}
+{#- The single place a number becomes a colour, so every page draws the
+    same line between on-target, watch and needs-action. -#}
+{%- if score is none -%}none
+{%- elif score >= target -%}good
+{%- elif score >= 75 -%}watch
+{%- else -%}serious
+{%- endif -%}
+{%- endmacro %}
+
+{% macro figure(value, suffix='%', large=false) -%}
+<strong class="dash-figure{{ ' dash-figure-lg' if large }}">{{ value if value is not none else '—' }}{% if value is not none and suffix %}<i>{{ suffix }}</i>{% endif %}</strong>
+{%- endmacro %}
+
+{% macro meter(score, target, label='') -%}
+{%- if score is not none -%}
+<div class="dash-meter" role="img" aria-label="{{ label }}{{ ' ' if label }}{{ score }} percent against a {{ target }} percent target">
+  <span class="dash-meter-fill dash-meter-{{ tone(score, target) }}" style="width:{{ score if score <= 100 else 100 }}%"></span>
+  <span class="dash-meter-target" style="left:{{ target }}%" title="Target {{ target }}%"></span>
+</div>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro metric_card(label, score, target, sub, href=None, series=None) -%}
+{#- One of the seven L&D metrics, at whatever scope the page is showing.
+    Wrapped in a link when the page has somewhere more detailed to send
+    you, which is what makes a dashboard tile a way in rather than a
+    dead end. -#}
+<{{ 'a' if href else 'article' }} class="dash-metric-card{{ ' dash-metric-link' if href }}"{% if href %} href="{{ href }}"{% endif %}>
+  <div class="dash-metric-head">
+    <span class="dash-metric-name">{{ label }}</span>
+    <i class="dash-dot dash-dot-{{ tone(score, target) }}"></i>
+  </div>
+  <strong class="dash-metric-figure">{{ score if score is not none else '—' }}{% if score is not none %}<i>%</i>{% endif %}</strong>
+  {% if score is not none %}{{ meter(score, target, label) }}{% endif %}
+  {#- A trend is only shown for a metric that has a score now. Drawing
+     history beside "no records loaded" would imply the metric is
+     being measured when it isn't. -#}
+  {% if series and score is not none %}<span class="dash-metric-spark">{{ spark(series, 150, 26) }}</span>{% endif %}
+  <span class="dash-metric-sub">{{ sub }}</span>
+</{{ 'a' if href else 'article' }}>
+{%- endmacro %}
+
+{% macro status_pill(status) -%}
+<span class="dash-status-pill dash-status-{{ status or 'none' }}">
+  <i class="dash-dot dash-dot-{{ status or 'none' }}"></i>
+  {% if status == 'good' %}On target{% elif status == 'watch' %}Watch{% elif status == 'serious' %}Needs action{% else %}No data{% endif %}
+</span>
+{%- endmacro %}
+
+{% macro mini_metrics(metrics, ld_metrics, target) -%}
+{#- The seven metrics as compact meters inside an entity card (a site, a
+    manager). Values sit beside each bar, so the card is readable without
+    a tooltip. -#}
+<div class="dash-entity-metrics">
+  {% for key, label, _s in ld_metrics %}
+  {% set v = metrics.get(key) %}
+  <div class="dash-mini" title="{{ label }}: {{ v ~ '%' if v is not none else 'no data' }} (target {{ target }}%)">
+    <span class="dash-mini-label">{{ label }}</span>
+    <span class="dash-mini-track">
+      {% if v is not none %}<span class="dash-mini-fill dash-meter-{{ tone(v, target) }}" style="width:{{ v if v <= 100 else 100 }}%"></span>{% endif %}
+    </span>
+    <span class="dash-mini-value mono">{{ v ~ '%' if v is not none else '—' }}</span>
+  </div>
+  {% endfor %}
+</div>
+{%- endmacro %}
