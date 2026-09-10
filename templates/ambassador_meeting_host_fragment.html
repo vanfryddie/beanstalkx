@@ -1,0 +1,63 @@
+<div class="host-header">
+  <div>
+    <h1 style="margin:0; font-size:22px;">{{ g.label }}</h1>
+    <p style="margin:4px 0 0; color:var(--text-lo); font-size:13.5px;">{{ shift_label }} · {{ week_label }}</p>
+  </div>
+  <button type="button" class="btn btn-ghost btn-sm" onclick="Ldoc.closeMeetingHost()">Close <span aria-hidden="true">✕</span></button>
+</div>
+
+<div class="host-body">
+  <section class="host-agenda">
+    <h2 class="panel-title">Meeting agenda</h2>
+    {% if g.meeting and g.meeting.notes %}
+    <div class="host-agenda-text">{{ g.meeting.notes }}</div>
+    {% else %}
+    <div class="empty-state" style="padding:16px 4px;">No agenda written yet — add one from the meeting card, then reopen this view.</div>
+    {% endif %}
+
+    <h2 class="panel-title" style="margin-top:22px;">Roster — {{ g.ambassadors|length }} ambassador{{ 's' if g.ambassadors|length != 1 }}</h2>
+    {% if g.ambassadors %}
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Ambassador</th>
+          <th style="text-align:left; padding:6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Dept</th>
+          <th style="text-align:left; padding:6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Attendance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in g.ambassadors %}
+        <tr>
+          <td style="padding:6px; border-bottom:1px solid var(--line);">{{ a.full_name or a.login }}</td>
+          <td style="padding:6px; border-bottom:1px solid var(--line);" class="mono">{{ a.department }}</td>
+          <td style="padding:6px; border-bottom:1px solid var(--line);">
+            {% if a.attendance and a.attendance.attendance_status %}{{ a.attendance.attendance_status.replace('_', ' ')|title }}
+            {% else %}<span style="color:var(--text-lo);">not recorded</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state" style="padding:16px 4px;">No ambassadors listed for this group yet.</div>
+    {% endif %}
+  </section>
+
+  <section class="host-materials">
+    <h2 class="panel-title">Materials</h2>
+    {% if g.documents %}
+    <div class="host-doc-list">
+      {% for doc in g.documents %}
+      <button type="button" class="host-doc-item" onclick="Ldoc.showMeetingDoc({{ doc.id }}, '{{ doc.original_name|e }}', '{{ (doc.original_name.rsplit('.', 1)[-1]|lower) if '.' in doc.original_name else '' }}')">
+        {{ doc.original_name }}
+      </button>
+      {% endfor %}
+    </div>
+    <div class="host-doc-viewer" id="hostDocViewer">
+      <div class="empty-state" style="padding:24px;">Select a document above to open it here.</div>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:16px 4px;">No materials uploaded for this meeting yet.</div>
+    {% endif %}
+  </section>
+</div>

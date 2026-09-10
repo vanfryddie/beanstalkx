@@ -1,0 +1,303 @@
+{% from "_xt_cards_macro.html" import xt_cards %}
+<div class="kpi-row">
+  <div class="kpi-card"><div class="kpi-value">{{ card.pct_ok if card.pct_ok is not none else '—' }}{% if card.pct_ok is not none %}<span style="font-size:16px;">%</span>{% endif %}</div><div class="kpi-label">Score</div></div>
+  <div class="kpi-card k-ok"><div class="kpi-value">{{ card.ok }}</div><div class="kpi-label">Compliant</div></div>
+  <div class="kpi-card k-risk"><div class="kpi-value">{{ card.risk }}</div><div class="kpi-label">At risk</div></div>
+  <div class="kpi-card k-gap"><div class="kpi-value">{{ card.gap }}</div><div class="kpi-label">Not compliant</div></div>
+</div>
+
+{% if xt_am_standards is not none %}
+<div class="panel">
+  <h2 class="panel-title" style="margin-bottom:2px;">Cross-Training paths for {{ xt_am_department }}</h2>
+  <p style="font-size:12px; color:var(--text-lo); margin:4px 0 12px;">The defined Cross-Training Standards paths that apply to this department — same Actual/Target/Gap and Lapsing projection as the main Cross-Training tab.</p>
+  {% if xt_am_standards %}
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">
+    <label for="catXtDropDaysInput" style="font-size:12.5px; font-weight:600;">Project becoming Lapsed within</label>
+    <input type="number" id="catXtDropDaysInput" min="0" value="30" style="width:80px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px;">
+    <span style="font-size:12.5px; color:var(--text-lo);">days — updates every card live as you type.</span>
+  </div>
+  {{ xt_cards(xt_am_standards, show_fn='Ldoc.showXtEmployees') }}
+  {% else %}
+  <div class="empty-state">No defined Cross-Training paths list {{ xt_am_department }} as a source department.</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if am_breakdown %}
+<div class="panel" style="border-color:var(--red); background:#fef4f2;">
+  <h2 class="panel-title" style="margin-bottom:2px;">Which manager is driving this down</h2>
+  <p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">Your team's records broken down by manager (direct + everyone reporting up through your org), worst first.</p>
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Manager</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Records</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Not compliant</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">% Compliant</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in am_breakdown %}
+      <tr>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">{{ row.am_login }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ row.total }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono"><strong style="color:{{ 'var(--red)' if row.gap_count > 0 else 'inherit' }};">{{ row.gap_count }}</strong></td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ row.pct_ok if row.pct_ok is not none else '—' }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+{% if category_key == 'safety_compliance' and shift_slots is not none %}
+<div class="panel-title" style="margin-bottom:2px;">This week's training plan (week of {{ plan_week }}) — <a href="{{ url_for('ld_shift', shift='early') }}">open full Weekly training plan →</a></div>
+<p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">Select records below, then click a highlighted session to enrol them.</p>
+<div class="ld-board ld-board-compact" id="catPlanBoard" style="margin-bottom:20px;">
+  {% for shift_key, slots in shift_slots.items() %}
+    {% for i in range(7) %}
+      {% set day_slots = slots|selectattr('day_index', 'equalto', i)|list %}
+      {% if day_slots %}
+      <div class="ld-day-col">
+        <div class="ld-day-head">{{ shifts[shift_key] }} · {{ day_names[i] }}<span class="mono">{{ week_dates[i][5:] }}</span></div>
+        {% for s in day_slots %}
+        <div class="slot-card" data-slot-id="{{ s.id }}" data-training-name="{{ s.training_name or 'this training' }}"
+             data-day-index="{{ i }}" data-start-time="{{ s.start_time or '' }}">
+          <div class="slot-title">{{ s.training_name or 'Untitled training' }}</div>
+          <div class="slot-meta"><span class="slot-count">{{ s.attendees|length }}</span>{% if s.start_time %} · {{ s.start_time }}{% endif %}{% if s.capacity %} / {{ s.capacity }}{% endif %} enrolled</div>
+          <div class="slot-attendees">
+            {% for a in s.attendees %}<span class="chip {{ 'chip-flagged' if a.flagged }}" data-attendee-id="{{ a.id }}" {% if a.flagged %}title="{{ a.flag_reason }}"{% endif %}>{% if a.flagged %}<span class="chip-flag">⚠️</span>{% endif %}{{ a.full_name or a.employee_login }}</span>{% else %}<span class="drop-hint">Nobody enrolled yet</span>{% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endfor %}
+  {% endfor %}
+  {% if shift_slots.values()|map('length')|sum == 0 %}
+  <div class="empty-state" style="grid-column:1/-1;">No slots created yet this week.</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if category_key == 'cross_training' %}
+<div class="panel">
+  <h2 class="panel-title" style="margin-bottom:2px;">How this score works</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0;">Every cross-training record (one per associate + process) earns points toward 100 based on its proficiency state: <strong>Proficient</strong> = 100 (the goal — fully qualified), <strong>Practice</strong> = 60 (at least 20 hours within the last 90 days, actively current), <strong>Refresh</strong> = 30 (at least 20 hours somewhere in the last 180 days, but coming due for renewal), <strong>Lapsed</strong> = 0 (fewer than 20 hours anywhere in the last 180 days). The score is the average points per record.</p>
+</div>
+
+<div class="kpi-row">
+  <div class="kpi-card k-ok"><div class="kpi-value">{{ card.proficient }}</div><div class="kpi-label">Proficient</div></div>
+  <div class="kpi-card k-risk"><div class="kpi-value">{{ card.refresh }}</div><div class="kpi-label">Refresh (due soon)</div></div>
+  <div class="kpi-card k-risk"><div class="kpi-value">{{ card.practice }}</div><div class="kpi-label">Practice</div></div>
+  <div class="kpi-card k-gap"><div class="kpi-value">{{ card.lapsed }}</div><div class="kpi-label">Lapsed</div></div>
+</div>
+
+<div class="panel" style="{{ 'border-color:var(--red); background:#fef4f2;' if xt_refresh_at_risk }}">
+  <h2 class="panel-title" style="margin-bottom:2px;">Refresh → dropping to Lapsed within 2 months</h2>
+  <p style="font-size:12px; color:var(--text-lo); margin:4px 0 10px;">Projected from last date on process, using the {{ xt_proficiency_expiry_days }}-day expiry window set on Cross-Training Definitions — <a href="{{ url_for('cross_training', tab='definitions') }}">verify that number is correct</a> before acting on this.</p>
+  <p style="font-size:28px; font-weight:700; margin:0 0 10px;">{{ xt_refresh_at_risk|length }}</p>
+  {% if xt_refresh_at_risk %}
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:5px 6px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Associate</th>
+        <th style="text-align:left; padding:5px 6px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Process</th>
+        <th style="text-align:left; padding:5px 6px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Last on process</th>
+        <th style="text-align:right; padding:5px 6px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Drops in</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in xt_refresh_at_risk|sort(attribute='days_until_expiry') %}
+      <tr>
+        <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.full_name or r.employee_login }}</td>
+        <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.merged_function }}</td>
+        <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.last_date_on_process or '—' }}</td>
+        <td style="padding:5px 6px; border-bottom:1px solid var(--line); text-align:right;">
+          <span class="pill {{ 'pill-gap' if r.days_until_expiry <= 0 else ('pill-risk' if r.days_until_expiry <= 14 else 'pill-ok') }}">
+            {% if r.days_until_expiry <= 0 %}Overdue{% else %}{{ r.days_until_expiry }} day{{ 's' if r.days_until_expiry != 1 }}{% endif %}
+          </span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0;">Nobody currently in Refresh is projected to drop within the next 2 months.</p>
+  {% endif %}
+</div>
+
+<div class="panel" style="padding:0;">
+  {% if xt_records %}
+  {% set fcs = xt_records|map(attribute='fc')|reject('none')|unique|sort|list %}
+  {% set depts = xt_records|map(attribute='fclm_mapped')|reject('none')|unique|sort|list %}
+  {% set processes = xt_records|map(attribute='merged_function')|reject('none')|unique|sort|list %}
+  {% set profs = xt_records|map(attribute='proficiency_status')|reject('none')|unique|sort|list %}
+  <div style="padding:14px 18px; border-bottom:1px solid var(--line); display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+    <div class="field" style="margin:0; min-width:180px; flex:1 1 200px;">
+      <label style="font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Search associate / login</label>
+      <input type="text" id="xtFilterSearch" placeholder="Name or login…" style="width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px;">
+    </div>
+    <div class="field" style="margin:0; min-width:120px;">
+      <label style="font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">FC</label>
+      <select id="xtFilterFc" multiple size="1" style="width:100%; padding:5px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+        {% for v in fcs %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin:0; min-width:150px;">
+      <label style="font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Home dept</label>
+      <select id="xtFilterDept" multiple size="1" style="width:100%; padding:5px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+        {% for v in depts %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin:0; min-width:150px;">
+      <label style="font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Process</label>
+      <select id="xtFilterProcess" multiple size="1" style="width:100%; padding:5px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+        {% for v in processes %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin:0; min-width:110px;">
+      <label style="font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Shift</label>
+      <select id="xtFilterShift" multiple size="1" style="width:100%; padding:5px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+        <option value="early">Early</option><option value="late">Late</option><option value="night">Night</option>
+      </select>
+    </div>
+    <div class="field" style="margin:0; min-width:130px;">
+      <label style="font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Proficiency</label>
+      <select id="xtFilterProficiency" multiple size="1" style="width:100%; padding:5px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+        {% for v in profs %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+      </select>
+    </div>
+    <button type="button" id="xtFilterClear" class="btn btn-ghost btn-sm">Clear filters</button>
+    <span id="xtFilterStatus" style="font-size:12px; color:var(--text-lo); margin-left:auto; align-self:center;"></span>
+  </div>
+  <div style="padding:0 18px 14px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+    <span style="font-size:11px; text-transform:uppercase; color:var(--text-lo); margin-right:4px;">Drops within:</span>
+    <button type="button" class="btn btn-ghost btn-sm xt-drop-preset" data-days="7">This week</button>
+    <button type="button" class="btn btn-ghost btn-sm xt-drop-preset" data-days="14">Next week</button>
+    <button type="button" class="btn btn-ghost btn-sm xt-drop-preset" data-days="30">Next month</button>
+    <button type="button" class="btn btn-ghost btn-sm xt-drop-preset" data-days="90">Next 3 months</button>
+    <input type="number" id="xtDropWeeks" min="1" placeholder="X weeks" style="width:80px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+    <button type="button" class="btn btn-ghost btn-sm" id="xtDropWeeksApply">Apply</button>
+    <button type="button" class="btn btn-ghost btn-sm" id="xtDropClear" style="display:none;">Any time</button>
+  </div>
+  <p style="font-size:11px; color:var(--text-lo); margin:6px 18px 0;">Hold Ctrl/Cmd (or Shift for a range) to select multiple values in a dropdown.</p>
+  <div style="overflow-x:auto;">
+  <table class="record-list-table" id="xtRecordTable">
+    <thead><tr><th>Associate</th><th>Login</th><th>FC</th><th>Home dept</th><th>Process</th><th>Shift</th><th>Proficiency</th><th>Last on process</th><th>Projected expiry</th></tr></thead>
+    <tbody>
+      {% for r in xt_records %}
+      <tr class="xt-record-row"
+          data-search="{{ ((r.full_name or '') ~ ' ' ~ (r.employee_login or ''))|lower|e }}"
+          data-fc="{{ r.fc or '' }}" data-dept="{{ r.fclm_mapped or '' }}"
+          data-process="{{ r.merged_function or '' }}" data-shift="{{ r.shift or '' }}"
+          data-proficiency="{{ r.proficiency_status or '' }}"
+          data-days-until="{{ r.days_until_expiry if r.days_until_expiry is not none else '' }}">
+        <td>{{ r.full_name or '—' }}</td>
+        <td class="mono">{{ r.employee_login or '—' }}</td>
+        <td class="mono">{{ r.fc or '—' }}</td>
+        <td>{{ r.fclm_mapped or '—' }}</td>
+        <td>{{ r.merged_function or '—' }}</td>
+        <td>{{ {'early':'Early','late':'Late','night':'Night'}.get(r.shift, r.shift or '—') }}</td>
+        <td><span class="pill {{ 'pill-ok' if r.proficiency_status=='Proficient' else ('pill-gap' if r.proficiency_status=='Lapsed' else 'pill-risk') }}">{{ r.proficiency_status }}</span></td>
+        <td class="mono">{{ r.last_date_on_process or '—' }}</td>
+        <td class="mono">
+          {% if r.expiry_date %}
+          {{ r.expiry_date }}
+          {% if r.days_until_expiry <= 0 %}<span class="pill pill-gap" style="margin-left:4px;">Overdue</span>
+          {% elif r.days_until_expiry <= 14 %}<span class="pill pill-risk" style="margin-left:4px;">{{ r.days_until_expiry }}d</span>{% endif %}
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="empty-state" id="xtFilterEmpty" style="display:none; padding:24px;">No records match the current filters.</div>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No cross-training proficiency records in scope.</div>
+  {% endif %}
+</div>
+
+{% else %}
+
+<div class="panel" style="padding:0;">
+  {% if items %}
+  {% if category_key == 'safety_compliance' %}
+  <div style="padding:14px 18px 6px; display:flex; justify-content:space-between; align-items:baseline;">
+    <p style="font-size:12px; color:var(--text-lo); margin:0;">Click a row to select it (multiple OK).</p>
+    <span id="catSelCount" style="font-size:12px; font-weight:600; color:var(--aws-blue); display:none;"></span>
+  </div>
+  <div style="overflow-x:auto;">
+  <table class="record-list-table" id="catRecordTable">
+    <thead>
+      <tr><th style="width:28px;"></th><th>Employee</th><th>Login</th><th>FC</th><th>Topic</th>{% if am_breakdown %}<th>Report</th><th>Manager</th>{% endif %}<th>Status</th></tr>
+    </thead>
+    <tbody>
+      {% for r in items %}
+      <tr class="record-row {{ 'record-planned needs-planned' if r.planned_day_index is not none }}"
+          data-login="{{ r.employee_login }}" data-name="{{ r.full_name or r.employee_login }}" data-fc="{{ r.fc or '' }}"
+          {% if r.planned_day_index is not none %}data-attendee-id="{{ r.planned_attendee_id }}"{% endif %}>
+        <td><input type="checkbox" class="record-checkbox" tabindex="-1"></td>
+        <td>{{ r.full_name or '—' }}</td>
+        <td class="mono">{{ r.employee_login or '—' }}</td>
+        <td class="mono">{{ r.fc or '—' }}</td>
+        <td>{{ r.subcategory or '—' }}</td>
+        {% if am_breakdown %}
+        <td><span class="pill {{ 'pill-ok' if r.report_type=='Direct' else 'pill-risk' }}">{{ r.report_type }}</span></td>
+        <td class="mono">{{ r.am_login or '—' }}</td>
+        {% endif %}
+        <td class="gap-due">
+          {% if r.planned_day_index is not none %}
+          <span class="pill pill-planned">Planned for {{ day_names[r.planned_day_index] }}{% if r.planned_start_time %} at {{ r.planned_start_time }}{% endif %}</span>
+          {% if r.planned_flagged %}<span title="{{ r.planned_flag_reason }}">⚠️</span>{% endif %}
+          <button type="button" class="chip-x record-unenrol" data-attendee-id="{{ r.planned_attendee_id }}" title="Remove from session">×</button>
+          {% else %}
+          {% set bucket = 'ok' if r.status in ['Compliant','Graduated','Complete','Fully Covered','On Track'] else ('gap' if r.status in ['Overdue','Not Started','Not Covered','Gap'] else 'risk') %}
+          <span class="pill pill-{{ bucket }}">{{ r.status }}</span>
+          {% if r.due_date %}<span class="mono" style="margin-left:6px; font-size:11px; color:var(--text-lo);">{{ r.due_date }}</span>{% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Employee</th><th>Login</th><th>FC</th><th>Subcategory</th>{% if am_breakdown %}<th>Report</th><th>Manager</th>{% endif %}<th>Status</th><th>Due / target</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      {% for r in items %}
+      <tr>
+        <td>{{ r.full_name or '—' }}</td>
+        <td class="mono">{{ r.employee_login or '—' }}</td>
+        <td class="mono">{{ r.fc or '—' }}</td>
+        <td>{{ r.subcategory or '—' }}</td>
+        {% if am_breakdown %}
+        <td><span class="pill {{ 'pill-ok' if r.report_type=='Direct' else 'pill-risk' }}">{{ r.report_type }}</span></td>
+        <td class="mono">{{ r.am_login or '—' }}</td>
+        {% endif %}
+        <td>
+          {% set bucket = 'ok' if r.status in ['Compliant','Graduated','Complete','Fully Covered','On Track'] else ('gap' if r.status in ['Overdue','Not Started','Not Covered','Gap'] else 'risk') %}
+          <span class="pill pill-{{ bucket }}">{{ r.status }}</span>
+        </td>
+        <td class="mono">{{ r.due_date or '—' }}</td>
+        <td>{{ r.notes or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% else %}
+  <div class="empty-state">
+    <h3>No records in this category yet</h3>
+  </div>
+  {% endif %}
+</div>
+{% endif %}

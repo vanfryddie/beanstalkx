@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Trainer metrics — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Trainer success metrics</h1>
+<p class="page-sub">Metrics used to measure trainer performance and impact — a basis for feedback and development, not a leaderboard.</p>
+
+<div class="panel">
+  <h2 class="panel-title">Record a metric</h2>
+  <form method="POST" class="form-grid">
+    <div class="field"><label>Trainer login</label><input type="text" name="trainer_login" required></div>
+    <div class="field"><label>Full name</label><input type="text" name="full_name"></div>
+    <div class="field"><label>FC</label><input type="text" name="fc"></div>
+    <div class="field"><label>Metric</label><input type="text" name="metric_name" placeholder="e.g. Sessions delivered" required></div>
+    <div class="field"><label>Value</label><input type="number" step="0.1" name="metric_value" required></div>
+    <div class="field"><label>Period</label><input type="text" name="period" placeholder="e.g. 2026-WK32" required></div>
+    <div style="grid-column:1/-1;"><button class="btn btn-gold" type="submit">Record</button></div>
+  </form>
+</div>
+
+<div class="panel" style="padding:0;">
+  {% if rows %}
+  <table>
+    <thead><tr><th>Trainer</th><th>FC</th><th>Metric</th><th>Value</th><th>Period</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>{{ r.full_name or r.trainer_login }}</td>
+        <td class="mono">{{ r.fc or '—' }}</td>
+        <td>{{ r.metric_name }}</td>
+        <td class="mono">{{ r.metric_value }}</td>
+        <td class="mono">{{ r.period }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No metrics recorded yet.</div>
+  {% endif %}
+</div>
+{% endblock %}

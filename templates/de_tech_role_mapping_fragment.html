@@ -1,0 +1,22 @@
+<div class="panel">
+  <h2 class="panel-title" style="margin-bottom:2px;">{{ role_name }}</h2>
+  <p style="font-size:12px; color:var(--text-lo); margin:4px 0 14px;">Pick which DE Technical Briefing topics correspond to this role.</p>
+  <form method="POST" action="{{ url_for('indirect_roles_de_tech_topics_update', row_id=role_id) }}" class="js-de-tech-mapping-form" data-role-id="{{ role_id }}">
+    {% if topics %}
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      {% for t in topics %}
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400; font-size:13.5px;">
+        <input type="checkbox" name="de_tech_topic" value="{{ t }}" {{ 'checked' if t in mapped_topics }}>
+        {{ t }}
+      </label>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">No DE Tech Briefing topics found in uploaded data yet.</div>
+    {% endif %}
+    <div style="margin-top:18px; display:flex; align-items:center; gap:10px;">
+      <button class="btn btn-gold btn-sm" type="submit">Save</button>
+      <span class="js-de-tech-mapping-status" style="font-size:12.5px; color:var(--text-lo);"></span>
+    </div>
+  </form>
+</div>

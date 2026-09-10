@@ -1,0 +1,11 @@
+Flask==3.0.3
+gunicorn==22.0.0
+PyJWT==2.9.0
+cryptography==43.0.1
+openpyxl==3.1.5
+psycopg2-binary==2.9.12
+boto3==1.34.162
+awscrt
+# TicketyPythonSdk is NOT on public PyPI — it's an Amazon-internal Brazil
+# package. Add it via your Brazil Config/internal build step, not here;
+# this file only covers the public-PyPI half of the dependency (awscrt).

@@ -1,0 +1,711 @@
+{% extends "base.html" %}
+{% block title %}L&D Settings — L&D Operations Console{% endblock %}
+
+{% macro roster_row(r, all_roles, shifts, clickable=False, som_departments=None, xt_home_departments=None) %}
+<tr data-search="{{ (r.login ~ ' ' ~ all_roles.get(r.role, r.role) ~ ' ' ~ (shifts.get(r.shift, '') or '') ~ ' ' ~ (r.assigned_by or '') ~ ' ' ~ (r.assigned_at[:10] if r.assigned_at else '') ~ ' ' ~ (r.reports_to or '') ~ ' ' ~ (r.title or ''))|lower }}">
+  <td class="mono">
+    {% if clickable and r.role == 'trainer' %}
+    <a href="{{ url_for('ld_settings', tab='users', trainer=r.login) }}">{{ r.login }} →</a>
+    {% else %}{{ r.login }}{% endif %}
+  </td>
+  <td>
+    <form method="POST" action="{{ url_for('ld_role_assign') }}" class="ldoc-autosave-form" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+      <input type="hidden" name="login" value="{{ r.login }}">
+      <select name="role" onchange="this.form.requestSubmit()">
+        {% for key, label in all_roles.items() %}<option value="{{ key }}" {% if key==r.role %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      <select name="shift" style="min-width:90px;" onchange="this.form.requestSubmit()">
+        <option value="">No shift</option>
+        {% for key, label in shifts.items() %}<option value="{{ key }}" {% if key==r.shift %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </form>
+  </td>
+  <td class="mono">{{ r.assigned_by or '—' }}</td>
+  <td class="mono">{{ r.assigned_at[:10] if r.assigned_at else '—' }}</td>
+  <td>
+    <form method="POST" action="{{ url_for('ld_reports_to') }}" class="ldoc-autosave-form" style="display:flex; align-items:center; gap:6px;">
+      <input type="hidden" name="login" value="{{ r.login }}">
+      <input type="text" name="manager_login" value="{{ r.reports_to or '' }}" placeholder="manager login" style="width:100px; padding:5px 7px; font-size:12.5px; border:1px solid var(--line); border-radius:6px;" onchange="this.form.requestSubmit()">
+    </form>
+  </td>
+  <td class="mono" style="font-size:12px; color:var(--text-lo);">{{ r.title or '—' }}</td>
+  {% if som_departments is not none %}
+  <td>
+    {% if r.role == 'som' %}
+    <div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center; max-width:220px;">
+      {% for d in som_departments %}
+      <form method="POST" action="{{ url_for('ld_remove_department') }}" style="display:inline;">
+        <input type="hidden" name="login" value="{{ r.login }}">
+        <input type="hidden" name="department" value="{{ d }}">
+        <span class="pill pill-ok" style="display:inline-flex; align-items:center; gap:4px; padding:2px 4px 2px 8px;">{{ d }}<button type="submit" style="border:0; background:transparent; cursor:pointer; color:inherit; font-size:12px; line-height:1; padding:0 2px;" title="Remove">×</button></span>
+      </form>
+      {% endfor %}
+      <form method="POST" action="{{ url_for('ld_assign_department') }}" style="display:inline-block;">
+        <input type="hidden" name="login" value="{{ r.login }}">
+        <select name="department" onchange="this.form.requestSubmit()" style="font-size:11px; padding:2px 4px; border:1px solid var(--line); border-radius:5px; color:var(--aws-blue); max-width:110px;">
+          <option value="">{{ '+ assign' if not som_departments else '+ add' }}</option>
+          {% for d in (xt_home_departments or []) if d not in som_departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+        </select>
+      </form>
+    </div>
+    {% else %}
+    <span style="color:var(--text-lo); font-size:12px;">— N/A</span>
+    {% endif %}
+  </td>
+  {% endif %}
+  <td>
+    <form method="POST" action="{{ url_for('ld_role_revoke') }}" onsubmit="return confirm('Revoke this role? They will go back to pending.');">
+      <input type="hidden" name="login" value="{{ r.login }}">
+      <button class="btn btn-ghost btn-sm" type="submit">Revoke</button>
+    </form>
+  </td>
+</tr>
+{% endmacro %}
+
+{% block content %}
+<h1 class="page-title">L&D Settings</h1>
+<p class="page-sub">Who has access, what trainings can be scheduled, and where the data comes from.</p>
+
+{% if storage_diagnostics.db_backend == 'sqlite' or storage_diagnostics.storage_backend == 'local' %}
+<div class="panel" style="border-color:var(--red); background:#fef4f2; padding:14px 18px;">
+  <strong style="color:var(--red);">⚠ Storage isn't fully shared across instances yet</strong>
+  <p style="font-size:12.5px; margin:6px 0 0;">
+    {% if storage_diagnostics.db_backend == 'sqlite' %}Database is running on <strong>local SQLite</strong> — if this environment ever runs more than one instance, each has its own separate copy, and data written on one instance won't show up on requests served by another (the "disappears, comes back on refresh" symptom). Set <span class="mono">DATABASE_URL</span> or attach an RDS instance and set the <span class="mono">RDS_*</span> environment variables to fix this.<br>{% endif %}
+    {% if storage_diagnostics.storage_backend == 'local' %}Ambassador meeting documents are on <strong>local disk</strong> — same issue applies to uploaded files. Set <span class="mono">S3_BUCKET</span> to fix this.{% endif %}
+  </p>
+</div>
+{% else %}
+<div class="panel" style="border-color:var(--green); background:#f0fbf6; padding:14px 18px;">
+  <strong style="color:var(--green);">✓ Storage is shared across instances</strong>
+  <p style="font-size:12.5px; margin:6px 0 0; color:var(--text-lo);">Database: PostgreSQL{% if storage_diagnostics.db_detail %} (<span class="mono">{{ storage_diagnostics.db_detail }}</span>){% endif %} · Files: S3{% if storage_diagnostics.storage_detail %} (<span class="mono">{{ storage_diagnostics.storage_detail }}</span>){% endif %}</p>
+</div>
+{% endif %}
+
+<div class="tabbar">
+  <a href="{{ url_for('ld_settings', tab='users') }}" class="{{ 'active' if tab=='users' }}">User Management</a>
+  <a href="{{ url_for('ld_settings', tab='trainings') }}" class="{{ 'active' if tab=='trainings' }}">Training Configuration</a>
+  <a href="{{ url_for('ld_settings', tab='data') }}" class="{{ 'active' if tab=='data' }}">Data Upload</a>
+  <a href="{{ url_for('ld_settings', tab='indirect_roles') }}" class="{{ 'active' if tab=='indirect_roles' }}">Indirect Roles</a>
+</div>
+
+{% if tab == 'indirect_roles' %}
+{# ============================================================ INDIRECT ROLES === #}
+<p class="page-sub" style="margin-top:-8px;">Ported from the Indirect Role Report workbook — four data sources feed the same coverage engine (targets, trained/practice status, and the Water Spider / TSO / Jambuster special-case logic). Accepts CSV or the raw .xlsx export — no need to convert first. Upload the raw exports as-is — the manually-added Shift/Area/Home Process columns aren't needed; the tool derives them the same way those columns' formulas did.</p>
+
+<div class="panel-row" style="flex-wrap:wrap;">
+  {% for src, label, hint in [
+    ('ir_roster', 'employeeList-SCN2', 'Roster export — provides each login\'s Management Area, used to derive Area/Home Process for the other three sources and to exclude Management Area 20 from Jambuster counting.'),
+    ('ir_dashboard', 'IR Dashboard', 'Main Indirect Role assignments and status.'),
+    ('ir_umbrella', 'Umbrella', 'Certificate-based role tracking.'),
+    ('ir_learn', 'Learn', 'Training-completion-based role tracking.'),
+  ] %}
+  <div class="panel" style="min-width:240px; flex:1 1 260px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">{{ label }}</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:4px 0 10px;">{{ hint }}</p>
+    <p style="font-size:12.5px; margin:0 0 10px;"><strong>{{ ir_upload_counts.get(src, 0) if ir_upload_counts else 0 }}</strong> rows currently loaded</p>
+    <form method="POST" action="{{ url_for('ir_data_upload') }}" enctype="multipart/form-data" style="display:flex; gap:6px; flex-wrap:wrap;">
+      <input type="hidden" name="source" value="{{ src }}">
+      <input type="file" name="file" accept=".csv,.xlsx,.xlsm" required style="flex:1; min-width:140px; font-size:12px;">
+      <button class="btn btn-gold btn-sm" type="submit">Upload</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+
+<p style="font-size:12.5px; color:var(--text-lo);">The coverage report itself now lives under <a href="{{ url_for('indirect_roles_overview') }}">Operations Management → Indirect Roles</a> — this page is just for the data uploads.</p>
+
+{% else %}
+{# ============================================================ USERS === #}
+{% if tab == 'users' %}
+
+  {% set profile_trainer = trainers|selectattr('login', 'equalto', selected_trainer)|first if selected_trainer else None %}
+
+  {% if profile_trainer %}
+  {# ---------------------------------------------- single trainer profile #}
+  <a href="{{ url_for('ld_settings', tab='users') }}" class="btn btn-ghost btn-sm" style="margin-bottom:16px;">← Back to User Management</a>
+  <div class="panel">
+    <div style="display:flex; align-items:baseline; justify-content:space-between;">
+      <h2 class="panel-title" style="margin-bottom:2px;">Trainer profile: <span class="mono">{{ profile_trainer.login }}</span></h2>
+      <span style="font-size:12.5px; color:var(--text-lo);">{{ profile_trainer.ams|length }} AM{{ 's' if profile_trainer.ams|length != 1 }} assigned</span>
+    </div>
+
+    {% set unassigned = all_ams|reject('in', profile_trainer.ams)|list %}
+    <details style="margin:14px 0;">
+      <summary class="btn btn-gold btn-sm" style="display:inline-block; cursor:pointer;">+ Assign Area Managers</summary>
+      {% if unassigned %}
+      <form method="POST" action="{{ url_for('ld_trainer_assign') }}" style="margin-top:12px;">
+        <input type="hidden" name="trainer_login" value="{{ profile_trainer.login }}">
+        <input type="text" placeholder="Search Area Managers…" class="am-filter" oninput="ldocFilterAmList(this)" style="margin-bottom:8px; padding:9px 11px; font-size:14px; width:100%; max-width:340px; border:1px solid var(--line); border-radius:8px;">
+        <div class="am-checklist" style="max-height:280px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px; max-width:340px; display:flex; flex-direction:column; gap:6px;">
+          {% for am in unassigned %}
+          <label style="display:flex; align-items:center; gap:6px; font-size:13.5px; font-weight:400;" class="am-option">
+            <input type="checkbox" name="am_logins" value="{{ am }}" style="margin:0;"> <span class="mono">{{ am }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <button class="btn btn-gold btn-sm" type="submit" style="margin-top:10px;">Assign selected</button>
+      </form>
+      {% else %}
+      {% if all_ams %}
+      <p style="font-size:13px; color:var(--text-lo); margin-top:10px;">Every Area Manager is already assigned to {{ profile_trainer.login }}.</p>
+      {% else %}
+      <p style="font-size:13px; color:var(--text-lo); margin-top:10px;">No Area Managers exist yet — they show up here once someone's given the AM or Team Lead role, or once compliance data naming them as a supervisor is uploaded.</p>
+      {% endif %}
+      {% endif %}
+    </details>
+
+    <h3 style="font-size:13.5px; color:var(--navy); margin:18px 0 8px;">Currently assigned</h3>
+    {% if profile_trainer.ams %}
+    <input type="text" placeholder="Search assigned Area Managers…" class="am-assigned-filter" oninput="ldocFilterAssignedAmTable(this)" style="margin-bottom:10px; padding:9px 11px; font-size:14px; width:100%; max-width:340px; border:1px solid var(--line); border-radius:8px;">
+    <form id="assignedAmForm">
+    <div style="overflow-x:auto; border:1px solid var(--line); border-radius:8px; max-height:420px; overflow-y:auto;">
+    <table class="assigned-am-table">
+      <thead>
+        <tr>
+          <th style="width:24px;"><input type="checkbox" onchange="ldocToggleAllAssignedAm(this)"></th>
+          <th>AM login</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for am in profile_trainer.ams %}
+        <tr class="assigned-am-row">
+          <td><input type="checkbox" class="assigned-am-check" value="{{ am }}"></td>
+          <td class="mono">{{ am }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+      <span id="assignedAmSelectedCount" style="font-size:12px; color:var(--text-lo);">0 selected</span>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="ldocSubmitAssignedAm('{{ url_for('ld_trainer_bulk_unassign') }}', {trainer_login: '{{ profile_trainer.login }}'})">Unassign selected</button>
+      {% if trainers|length > 1 %}
+      <select id="assignedAmReassignTo" style="padding:7px 9px; border:1px solid var(--line); border-radius:6px; font-size:13px;">
+        <option value="">Move selected to…</option>
+        {% for other in trainers %}{% if other.login != profile_trainer.login %}<option value="{{ other.login }}">{{ other.login }}</option>{% endif %}{% endfor %}
+      </select>
+      <button type="button" class="btn btn-gold btn-sm" onclick="ldocSubmitAssignedAmReassign('{{ url_for('ld_trainer_bulk_reassign') }}', '{{ profile_trainer.login }}')">Move</button>
+      {% endif %}
+    </div>
+    </form>
+    {% else %}
+    <div class="empty-state">No Area Managers assigned yet.</div>
+    {% endif %}
+  </div>
+
+  <script>
+  function ldocFilterAmList(input) {
+    var query = input.value.trim().toLowerCase();
+    var list = input.parentElement.querySelector('.am-checklist');
+    list.querySelectorAll('.am-option').forEach(function (opt) {
+      opt.style.display = opt.textContent.trim().toLowerCase().indexOf(query) === -1 ? 'none' : '';
+    });
+  }
+
+  function ldocFilterAssignedAmTable(input) {
+    var query = input.value.trim().toLowerCase();
+    document.querySelectorAll('.assigned-am-row').forEach(function (row) {
+      row.style.display = row.textContent.trim().toLowerCase().indexOf(query) === -1 ? 'none' : '';
+    });
+  }
+
+  function ldocToggleAllAssignedAm(master) {
+    document.querySelectorAll('.assigned-am-row').forEach(function (row) {
+      if (row.style.display === 'none') return; // don't select filtered-out rows
+      var box = row.querySelector('.assigned-am-check');
+      if (box) box.checked = master.checked;
+    });
+    ldocUpdateAssignedAmCount();
+  }
+
+  document.addEventListener('change', function (e) {
+    if (e.target.classList && e.target.classList.contains('assigned-am-check')) ldocUpdateAssignedAmCount();
+  });
+
+  function ldocUpdateAssignedAmCount() {
+    var n = document.querySelectorAll('.assigned-am-check:checked').length;
+    var el = document.getElementById('assignedAmSelectedCount');
+    if (el) el.textContent = n + ' selected';
+  }
+
+  function ldocGetSelectedAssignedAm() {
+    return Array.prototype.map.call(document.querySelectorAll('.assigned-am-check:checked'), function (c) { return c.value; });
+  }
+
+  function ldocSubmitAssignedAm(actionUrl, extraFields) {
+    var selected = ldocGetSelectedAssignedAm();
+    if (!selected.length) { alert('Select at least one Area Manager first.'); return; }
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = actionUrl;
+    Object.keys(extraFields).forEach(function (k) {
+      var inp = document.createElement('input');
+      inp.type = 'hidden'; inp.name = k; inp.value = extraFields[k];
+      form.appendChild(inp);
+    });
+    selected.forEach(function (am) {
+      var inp = document.createElement('input');
+      inp.type = 'hidden'; inp.name = 'am_logins'; inp.value = am;
+      form.appendChild(inp);
+    });
+    document.body.appendChild(form);
+    form.submit();
+  }
+
+  function ldocSubmitAssignedAmReassign(actionUrl, fromTrainer) {
+    var toTrainer = document.getElementById('assignedAmReassignTo').value;
+    if (!toTrainer) { alert('Choose a trainer to move them to first.'); return; }
+    ldocSubmitAssignedAm(actionUrl, {from_trainer: fromTrainer, to_trainer: toTrainer});
+  }
+  </script>
+
+  {% else %}
+  {# ---------------------------------------------------------- overview #}
+  <div class="panel">
+    <h2 class="panel-title">Role requests</h2>
+    <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">Submitted when someone without a role clicks "Request" on the pending banner.</p>
+    {% if pending_requests %}
+    <table>
+      <thead><tr><th>Login</th><th>Requested</th><th>When</th><th></th></tr></thead>
+      <tbody>
+        {% for r in pending_requests %}
+        <tr>
+          <td class="mono">{{ r.login }}</td>
+          <td>{{ all_roles.get(r.requested_role, r.requested_role) }}</td>
+          <td class="mono">{{ r.requested_at[:10] }}</td>
+          <td style="display:flex; gap:6px;">
+            <form method="POST" action="{{ url_for('ld_role_request_decide', request_id=r.id) }}">
+              <input type="hidden" name="decision" value="approve">
+              <input type="hidden" name="role" value="{{ r.requested_role }}">
+              <button class="btn btn-gold btn-sm" type="submit">Approve</button>
+            </form>
+            <form method="POST" action="{{ url_for('ld_role_request_decide', request_id=r.id) }}">
+              <input type="hidden" name="decision" value="deny">
+              <button class="btn btn-ghost btn-sm" type="submit">Deny</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No pending requests.</div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2 class="panel-title" style="margin-bottom:2px;">Auto-detect roles from job titles</h2>
+    <p style="font-size:12.5px; color:var(--text-lo); margin:4px 0 12px;">Scans job titles from the compliance data (most usefully Safety Training Compliance, which is the only import that carries a title) — Area Manager, Operations Manager (non-senior), Senior Operations Manager, Trainer, Team Lead, and Learning Manager titles are all matched directly, with any variant wording (Interim, L5, Sr, Snr, etc.) recognized. Area Manager → Operations Manager and Operations Manager → Senior Operations Manager reporting lines are then wired up automatically using each person's supervisor login. Safe to run again after new data comes in — it never overwrites a role someone already has, only fills in title and reporting line.</p>
+    <form method="POST" action="{{ url_for('ld_role_auto_detect') }}">
+      <button class="btn btn-gold btn-sm" type="submit">Auto-detect &amp; assign roles</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2 class="panel-title">Assign a role</h2>
+    <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">{% for login in bootstrap_logins %}<span class="mono">{{ login }}</span>{{ ', ' if not loop.last }}{% endfor %} always have full Admin access regardless of what's set here.</p>
+    <form method="POST" action="{{ url_for('ld_role_assign') }}" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+      <div class="field" style="margin:0; flex:1; min-width:160px;"><label>Login</label><input type="text" name="login" id="assignLoginField" required placeholder="e.g. jdoe" oninput="ldocLookupAmProfile()"></div>
+      <div class="field" style="margin:0; flex:1; min-width:160px;"><label>Role</label>
+        <select name="role" id="assignRoleSelect" required onchange="ldocToggleShiftField()">
+          <option value="">Choose a role…</option>
+          {% for key, label in all_roles.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field" id="assignShiftField" style="margin:0; flex:1; min-width:140px; display:none;"><label>Shift</label>
+        <select name="shift" id="assignShiftSelect">
+          <option value="">Choose a shift…</option>
+          {% for key, label in shifts.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field" id="assignAmExtraFields" style="margin:0; flex:1; min-width:160px;"><label>Full name <span style="font-weight:400; color:var(--text-lo);">(auto-filled if found)</span></label><input type="text" name="full_name" id="assignFullNameField" placeholder="Full name"></div>
+      <div class="field" id="assignAmDeptField" style="margin:0; flex:1; min-width:160px;"><label>Department <span style="font-weight:400; color:var(--text-lo);">(auto-filled if found)</span></label><input type="text" name="department" id="assignDeptField" placeholder="Department"></div>
+      <button class="btn btn-gold" type="submit">Assign</button>
+    </form>
+
+    <details style="margin-top:14px;">
+      <summary style="cursor:pointer; font-size:12.5px; font-weight:600; color:var(--aws-blue); list-style:none;">Bulk assign via Excel instead →</summary>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
+        <a href="{{ url_for('ld_role_bulk_template') }}" class="btn btn-ghost btn-sm" data-no-ajax>⬇ Download template</a>
+        <form method="POST" action="{{ url_for('ld_role_bulk_upload') }}" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center;">
+          <input type="file" name="file" accept=".xlsx" required>
+          <button class="btn btn-gold btn-sm" type="submit">Upload &amp; assign</button>
+        </form>
+      </div>
+    </details>
+  </div>
+
+  <script>
+  var ldocShiftBoundRoles = ["team_lead", "trainer", "am", "om"];
+  function ldocToggleShiftField() {
+    var role = document.getElementById('assignRoleSelect').value;
+    document.getElementById('assignShiftField').style.display =
+      ldocShiftBoundRoles.indexOf(role) !== -1 ? 'block' : 'none';
+  }
+  var ldocAmLookupTimer = null;
+  function ldocLookupAmProfile() {
+    var login = document.getElementById('assignLoginField').value.trim();
+    clearTimeout(ldocAmLookupTimer);
+    if (login.length < 2) return;
+    ldocAmLookupTimer = setTimeout(function () {
+      fetch('/api/am-profile-lookup?login=' + encodeURIComponent(login))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var nameField = document.getElementById('assignFullNameField');
+          var deptField = document.getElementById('assignDeptField');
+          var shiftSelect = document.getElementById('assignShiftSelect');
+          if (data.full_name && !nameField.value) nameField.value = data.full_name;
+          if (data.department && !deptField.value) deptField.value = data.department;
+          if (data.shift && !shiftSelect.value) shiftSelect.value = data.shift;
+        });
+    }, 300);
+  }
+
+  function ldocFilterRosterTable(panel) {
+    var searchInput = panel.querySelector('.roster-search');
+    var roleFilter = panel.querySelector('.roster-role-filter');
+    var query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+    var roleVal = roleFilter ? roleFilter.value : '';
+    panel.querySelectorAll('table tbody tr').forEach(function (row) {
+      if (row.querySelector('.empty-state')) return; // keep the "None yet" placeholder visible
+      // data-search is a precomputed string of every field's CURRENT
+      // value (login, selected role, selected shift, activated,
+      // trainer, assigned by, date, reports to, title) — built server
+      // side so this never accidentally matches a <select>'s unselected
+      // option text (searching "trainer" would otherwise match every
+      // row, since every role dropdown contains a "Trainer" option
+      // regardless of what's actually picked).
+      var searchText = row.dataset.search || (row.querySelector('td.mono') || row.querySelector('td') || {}).textContent || '';
+      var matchesSearch = !query || searchText.toLowerCase().indexOf(query) !== -1;
+      var matchesRole = true;
+      if (roleVal) {
+        var roleSelect = row.querySelector('select[name="role"]');
+        var rowRole = roleSelect ? roleSelect.value : 'admin'; // bootstrap rows have no select — they ARE admin
+        matchesRole = rowRole === roleVal;
+      }
+      row.style.display = (matchesSearch && matchesRole) ? '' : 'none';
+    });
+  }
+  </script>
+
+  <div class="panel" style="padding-bottom:6px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">Admins &amp; Trainers</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:0 0 12px;">Click a trainer to manage their Area Managers.</p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+      <input type="text" class="roster-search" placeholder="Search login…" oninput="ldocFilterRosterTable(this.closest('.panel'))" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;">
+      <select class="roster-role-filter" onchange="ldocFilterRosterTable(this.closest('.panel'))" style="padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;">
+        <option value="">All roles</option>
+        <option value="admin">Admin</option>
+        <option value="trainer">Trainer</option>
+        <option value="learning_manager">Learning Manager</option>
+      </select>
+    </div>
+    <div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>Login</th><th>Role</th><th>Assigned by</th><th>When</th><th>Reports to</th><th>Title</th><th></th></tr></thead>
+      <tbody>
+        {% for login in bootstrap_logins %}
+        <tr data-search="{{ (login ~ ' admin bootstrap')|lower }}">
+          <td class="mono">{{ login }}</td>
+          <td>Admin</td>
+          <td colspan="2" style="color:var(--text-lo); font-size:12.5px;">Bootstrap admin — always full access</td>
+          <td></td>
+        </tr>
+        {% endfor %}
+        {% for r in admins_and_trainers %}
+          {{ roster_row(r, all_roles, shifts, clickable=True) }}
+        {% else %}
+          {% if not bootstrap_logins %}<tr><td colspan="5"><div class="empty-state">None yet.</div></td></tr>{% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="panel" style="padding-bottom:6px;">
+    <h2 class="panel-title" style="margin-bottom:10px;">Senior &amp; Operations Managers</h2>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+      <input type="text" class="roster-search" placeholder="Search login…" oninput="ldocFilterRosterTable(this.closest('.panel'))" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;">
+      <select class="roster-role-filter" onchange="ldocFilterRosterTable(this.closest('.panel'))" style="padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;">
+        <option value="">All roles</option>
+        <option value="som">Senior Operations Manager</option>
+        <option value="om">Operations Manager</option>
+      </select>
+    </div>
+    <div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>Login</th><th>Role</th><th>Assigned by</th><th>When</th><th>Reports to</th><th>Title</th><th>Departments</th><th></th></tr></thead>
+      <tbody>
+        {% for r in som_om_roster %}
+          {{ roster_row(r, all_roles, shifts, som_departments=som_department_map.get(r.login, []), xt_home_departments=xt_home_departments) }}
+        {% else %}
+          <tr><td colspan="8"><div class="empty-state">None yet.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <datalist id="ambassadorDeptSuggestions">
+    {% for d in ambassador_departments %}<option value="{{ d }}">{% endfor %}
+  </datalist>
+
+  <div class="panel" style="padding-bottom:6px;">
+    <h2 class="panel-title" style="margin-bottom:10px;">Area Managers &amp; Team Leads</h2>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+      <input type="text" class="roster-search" placeholder="Search login…" oninput="ldocFilterRosterTable(this.closest('.panel'))" style="flex:1; min-width:160px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;">
+      <select class="roster-role-filter" onchange="ldocFilterRosterTable(this.closest('.panel'))" style="padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;">
+        <option value="">All roles</option>
+        <option value="am">Area Manager</option>
+        <option value="team_lead">Team Lead</option>
+      </select>
+    </div>
+    <div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>Login</th><th>Role</th><th>Department</th><th>Activated</th><th>Trainer</th><th>Assigned by</th><th>When</th><th>Reports to</th><th>Title</th><th></th></tr></thead>
+      <tbody>
+        {% for r in am_teamlead_roster %}
+        {% set my_trainers = am_trainer_map.get(r.login) %}
+        {% set activated_text = 'Yes' if r.activated_at else 'Not yet' %}
+        <tr data-search="{{ (r.login ~ ' ' ~ all_roles.get(r.role, r.role) ~ ' ' ~ (r.department or '') ~ ' ' ~ activated_text ~ ' ' ~ (my_trainers|join(' ') if my_trainers else 'unassigned') ~ ' ' ~ (r.assigned_by or '') ~ ' ' ~ (r.assigned_at[:10] if r.assigned_at else '') ~ ' ' ~ (r.reports_to or '') ~ ' ' ~ (r.title or ''))|lower }}">
+          <td class="mono">{{ r.login }}</td>
+          <td>
+            <form method="POST" action="{{ url_for('ld_role_assign') }}" class="ldoc-autosave-form" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+              <input type="hidden" name="login" value="{{ r.login }}">
+              <select name="role" onchange="this.form.requestSubmit()">
+                {% for key, label in all_roles.items() %}<option value="{{ key }}" {% if key==r.role %}selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+              <select name="shift" style="min-width:90px;" onchange="this.form.requestSubmit()">
+                <option value="">No shift</option>
+                {% for key, label in shifts.items() %}<option value="{{ key }}" {% if key==r.shift %}selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </form>
+          </td>
+          <td>
+            <form method="POST" action="{{ url_for('ld_role_assign') }}" class="ldoc-autosave-form" style="display:flex; align-items:center; gap:6px;">
+              <input type="hidden" name="login" value="{{ r.login }}">
+              <input type="hidden" name="role" value="{{ r.role }}">
+              <input type="text" name="department" value="{{ r.department or '' }}" placeholder="department" list="ambassadorDeptSuggestions" style="width:110px; padding:5px 7px; font-size:12.5px; border:1px solid var(--line); border-radius:6px;" onchange="this.form.requestSubmit()">
+            </form>
+          </td>
+          <td>{% if r.activated_at %}<span class="pill pill-ok">Yes</span>{% else %}<span class="pill pill-gap">Not yet</span>{% endif %}</td>
+          <td class="mono">
+            {% if r.role == 'am' %}
+              {% if my_trainers %}
+              {% for tl in my_trainers %}<a href="{{ url_for('ld_settings', tab='users', trainer=tl) }}">{{ tl }}</a>{{ ', ' if not loop.last }}{% endfor %}
+              {% else %}<span style="color:var(--text-lo);">— unassigned</span>{% endif %}
+              {% set assignable = trainers|rejectattr('login', 'in', my_trainers or [])|list %}
+              {% if assignable %}
+              <form method="POST" action="{{ url_for('ld_trainer_assign') }}" class="ldoc-autosave-form" style="display:inline-block; margin-left:4px;">
+                <input type="hidden" name="am_login" value="{{ r.login }}">
+                <select name="trainer_login" onchange="this.form.requestSubmit()" style="font-size:11px; padding:2px 4px; border:1px solid var(--line); border-radius:5px; color:var(--aws-blue);">
+                  <option value="">{{ '+ assign trainer' if not my_trainers else '+ add another' }}</option>
+                  {% for t in assignable %}<option value="{{ t.login }}">{{ t.login }}</option>{% endfor %}
+                </select>
+              </form>
+              {% endif %}
+            {% else %}
+            <span style="color:var(--text-lo); font-size:12px;">— N/A for Team Leads</span>
+            {% endif %}
+          </td>
+          <td class="mono">{{ r.assigned_by or '—' }}</td>
+          <td class="mono">{{ r.assigned_at[:10] if r.assigned_at else '—' }}</td>
+          <td>
+            <form method="POST" action="{{ url_for('ld_reports_to') }}" class="ldoc-autosave-form" style="display:flex; align-items:center; gap:6px;">
+              <input type="hidden" name="login" value="{{ r.login }}">
+              <input type="text" name="manager_login" value="{{ r.reports_to or '' }}" placeholder="manager login" style="width:100px; padding:5px 7px; font-size:12.5px; border:1px solid var(--line); border-radius:6px;" onchange="this.form.requestSubmit()">
+            </form>
+          </td>
+          <td class="mono" style="font-size:12px; color:var(--text-lo);">{{ r.title or '—' }}</td>
+          <td>
+            <form method="POST" action="{{ url_for('ld_role_revoke') }}" onsubmit="return confirm('Revoke this role? They will go back to pending.');">
+              <input type="hidden" name="login" value="{{ r.login }}">
+              <button class="btn btn-ghost btn-sm" type="submit">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+          <tr><td colspan="10"><div class="empty-state">None yet.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+
+{# ========================================================= TRAININGS === #}
+{% elif tab == 'trainings' %}
+
+  <div class="panel">
+    <h2 class="panel-title">Add a training</h2>
+    <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">Selectable when creating slots on the Weekly training plan's Early / Late / Night boards.</p>
+    <form method="POST" class="form-grid">
+      <div class="field"><label>Name</label><input type="text" name="name" required placeholder="e.g. Fire Marshall Refresher"></div>
+      <div class="field"><label>Category</label><input type="text" name="category" placeholder="e.g. Safety / Compliance"></div>
+      <div class="field" style="grid-column:1/-1;"><label>Validity note</label><input type="text" name="validity_note" placeholder="e.g. valid 12 months from completion"></div>
+      <div class="field" style="grid-column:1/-1;">
+        <label>Serves these compliance topics</label>
+        <p style="font-size:11.5px; color:var(--text-lo); margin:0 0 6px;">Links this training to real compliance data — drives "needs this training" on the plan, and flags mismatched sign-ups.</p>
+        <div class="topic-checklist">
+          {% for t in available_topics %}
+          <label class="am-option" style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:400;">
+            <input type="checkbox" name="topics" value="{{ t.section }}|{{ t.topic }}" style="margin:0;"> {{ t.topic }}
+            <span style="color:var(--text-lo); font-size:11px;">({{ 'Safety' if t.section=='compliance_safety' else 'DE Tech' }})</span>
+          </label>
+          {% else %}
+          <span style="color:var(--text-lo); font-size:12.5px;">No topics available yet — upload Safety Training Compliance data first.</span>
+          {% endfor %}
+        </div>
+      </div>
+      <div style="grid-column:1/-1;"><button class="btn btn-gold" type="submit">Add training</button></div>
+    </form>
+  </div>
+
+  <div class="panel" style="padding:0;">
+    {% if trainings %}
+    <table>
+      <thead><tr><th>Name</th><th>Category</th><th>Serves</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {% for t in trainings %}
+        {% set linked = training_topics_map.get(t.id, []) %}
+        <tr>
+          <td>{{ t.name }}</td>
+          <td>{{ t.category or '—' }}</td>
+          <td>
+            {% if linked %}
+            {% for section, topic in linked %}<span class="pill pill-ok" style="margin:1px;">{{ topic }}</span>{% endfor %}
+            {% else %}<span style="color:var(--text-lo); font-size:12.5px;">Not linked</span>{% endif %}
+          </td>
+          <td><span class="pill {{ 'pill-ok' if t.active else 'pill-gap' }}">{{ 'Active' if t.active else 'Inactive' }}</span></td>
+          <td style="min-width:120px;">
+            {% if t.active %}
+            <form method="POST" action="{{ url_for('ld_training_deactivate', training_id=t.id) }}" style="display:inline;"><button class="btn btn-ghost btn-sm" type="submit">Deactivate</button></form>
+            {% else %}
+            <form method="POST" action="{{ url_for('ld_training_activate', training_id=t.id) }}" style="display:inline;"><button class="btn btn-ghost btn-sm" type="submit">Activate</button></form>
+            {% endif %}
+            <details style="margin-top:6px;">
+              <summary style="cursor:pointer; font-size:12px; color:var(--aws-blue); list-style:none;">Edit</summary>
+              <form method="POST" action="{{ url_for('ld_training_edit', training_id=t.id) }}" style="margin-top:8px; display:flex; flex-direction:column; gap:6px; min-width:240px;">
+                <input type="text" name="name" value="{{ t.name }}" required placeholder="Name">
+                <input type="text" name="category" value="{{ t.category or '' }}" placeholder="Category">
+                <input type="text" name="validity_note" value="{{ t.validity_note or '' }}" placeholder="Validity note">
+                <div style="font-size:11px; color:var(--text-lo); font-weight:600; text-transform:uppercase; margin-top:4px;">Serves</div>
+                <div class="topic-checklist" style="max-height:150px;">
+                  {% for at in available_topics %}
+                  {% set is_linked = (at.section, at.topic) in linked %}
+                  <label class="am-option" style="display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:400;">
+                    <input type="checkbox" name="topics" value="{{ at.section }}|{{ at.topic }}" {% if is_linked %}checked{% endif %} style="margin:0;"> {{ at.topic }}
+                  </label>
+                  {% endfor %}
+                </div>
+                <button class="btn btn-gold btn-sm" type="submit">Save</button>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No trainings defined yet — add one above.</div>
+    {% endif %}
+  </div>
+
+  <div class="panel" style="margin-top:22px;">
+    <h2 class="panel-title">Org structure</h2>
+    <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">Who operates, maintains and develops this console.</p>
+    <form method="POST" action="{{ url_for('ops_structure') }}" class="form-grid">
+      <div class="field"><label>Role title</label><input type="text" name="role_title" required></div>
+      <div class="field"><label>Person</label><input type="text" name="person_name"></div>
+      <div class="field"><label>Reports to</label><input type="text" name="reports_to"></div>
+      <div class="field"><label>Sort order</label><input type="number" name="sort_order" value="0"></div>
+      <div class="field" style="grid-column:1/-1;"><label>Scope</label><textarea name="scope_note" rows="2"></textarea></div>
+      <div style="grid-column:1/-1;"><button class="btn btn-gold" type="submit">Add role</button></div>
+    </form>
+  </div>
+
+  <div class="panel">
+    {% if ops_roles %}
+    <ul class="org-tree">
+      {% for r in ops_roles %}
+      <li>
+        <div>
+          <div class="org-role">{{ r.role_title }}{% if r.person_name %} — {{ r.person_name }}{% endif %}</div>
+          <div class="org-reports">{% if r.reports_to %}Reports to {{ r.reports_to }}{% endif %}{% if r.scope_note %} · {{ r.scope_note }}{% endif %}</div>
+        </div>
+        <form method="POST" action="{{ url_for('ops_structure_delete', role_id=r.id) }}">
+          <button class="btn btn-ghost btn-sm" type="submit">Remove</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty-state">No roles defined yet.</div>
+    {% endif %}
+  </div>
+
+{# ============================================================== DATA === #}
+{% else %}
+
+  <p class="page-sub" style="margin-top:-8px;">Every number on the AM Overview and Reporting pages comes from what's loaded here — CSV import for bulk updates, or single-row entry for one-off changes.</p>
+
+  <div class="panel-row">
+    <div class="panel">
+      <h2 class="panel-title">Import a CSV</h2>
+      <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">Columns: employee_login, full_name, fc, am_login, subcategory, status, due_date, value, notes (extras ignored). For "Safety Training Compliance", "DE Technical Briefing", "BTS Compliance", and "Cross-Training — Hours on Function", upload the exports as-is — their own columns (Emp Login / Employee Login / employee login / Login, Detailed Topic / Technical Briefing / Merged Functions / Course Name, Expiry Date In Use / Refresher needed / Trained Status / Training Recommendation Date, Supervisor Login / Supervisor / supervisor login / Manager Login, Shift Pattern / shift / Shift Code, etc.) are read directly.</p>
+      <form method="POST" action="{{ url_for('data_upload') }}" enctype="multipart/form-data">
+        <input type="hidden" name="mode" value="csv">
+        <div class="field">
+          <label>Section</label>
+          <select name="section" required>
+            {% for key, label in csv_import_sections.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field"><label>File</label><input type="file" name="file" accept=".csv" required></div>
+        <button class="btn btn-gold" type="submit">Import CSV</button>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2 class="panel-title" style="margin-bottom:2px;">Upload status</h2>
+      <p style="font-size:12.5px; color:var(--text-lo); margin:4px 0 10px;">OLR needs a fresh upload every week to track WoW accurately — anything not refreshed in over {{ data_stale_after_days }} days is flagged below.</p>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        {% for s in upload_status %}
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; border:1px solid {{ 'var(--red)' if s.stale else 'var(--line)' }}; {{ 'background:#fef4f2;' if s.stale }}">
+          <div>
+            <div style="font-size:13px; font-weight:600;">{{ s.label }}</div>
+            {% if s.last_uploaded_at %}
+            <div style="font-size:11.5px; color:var(--text-lo);">{{ s.last_row_count }} rows · {{ s.last_uploaded_at[:16].replace('T',' ') }} UTC · {{ s.days_ago }} day{{ 's' if s.days_ago != 1 }} ago</div>
+            {% else %}
+            <div style="font-size:11.5px; color:var(--text-lo);">Never uploaded</div>
+            {% endif %}
+          </div>
+          {% if s.stale %}
+          <span class="pill pill-gap">Needs new data</span>
+          {% else %}
+          <span class="pill pill-ok">Up to date</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2 class="panel-title">Current data set</h2>
+    <p style="color:var(--text-lo); font-size:13.5px;">{{ freshness.n or 0 }} rows imported via CSV so far{% if freshness.ts %}, last import {{ freshness.ts[:16].replace('T',' ') }} UTC{% endif %}. Cross-Training data: {{ xt_freshness.n or 0 }} rows{% if xt_freshness.ts %}, last import {{ xt_freshness.ts[:16].replace('T',' ') }} UTC{% endif %} — each upload fully replaces it (a census, not a delta). Manually-added single records aren't counted in the totals above but do feed the scorecards.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;">
+      {% for key, label in upload_sections.items() %}
+      <form method="POST" action="{{ url_for('data_reset', section=key) }}" onsubmit="return confirm('Clear all records in {{ label }}?');">
+        <button class="btn btn-danger btn-sm" type="submit">Clear {{ label }}</button>
+      </form>
+      {% endfor %}
+      <form method="POST" action="{{ url_for('data_reset', section='xt_hours') }}" onsubmit="return confirm('Clear all Cross-Training hours-on-function data?');">
+        <button class="btn btn-danger btn-sm" type="submit">Clear Cross-Training — Hours on Function</button>
+      </form>
+    </div>
+  </div>
+
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block title %}{{ shifts[shift] }} — Weekly training plan{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ shifts[shift] }} training plan</h1>
+<p class="page-sub">
+{% if can_edit_plan %}Click a training slot to see who needs it and enrol them.
+{% else %}Read-only view of the Sunday–Saturday training plan for {{ shifts[shift]|lower }}.{% endif %}
+</p>
+
+<div class="tabbar">
+  {% for key, label in shifts.items() %}
+  <a href="{{ url_for('ld_shift', shift=key, week=week_start, fc=fc_scope) }}" class="{{ 'active' if key==shift }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+<div class="controls-bar">
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('ld_shift', shift=shift, week=prev_week, fc=fc_scope) }}">← Prev week</a>
+  <strong style="align-self:center;">{{ iso_week }} <span style="font-weight:500; color:var(--text-lo); font-size:12.5px;">({{ week_start }})</span></strong>
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('ld_shift', shift=shift, week=next_week, fc=fc_scope) }}">Next week →</a>
+  {% if week_start != this_week %}
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('ld_shift', shift=shift, week=this_week, fc=fc_scope) }}">This week</a>
+  {% endif %}
+  <form method="GET" style="margin-left:auto;">
+    <input type="hidden" name="week" value="{{ week_start }}">
+    <div class="field" style="margin:0; min-width:160px;">
+      <select name="fc" onchange="this.form.submit()">
+        <option value="">All FCs</option>
+        {% for f in fcs %}<option value="{{ f }}" {% if f==fc_scope %}selected{% endif %}>{{ f }}</option>{% endfor %}
+      </select>
+    </div>
+  </form>
+</div>
+
+{% if can_create_slots and not trainings %}
+<div class="panel" style="border-color:var(--gold-deep);">
+  No trainings defined yet — add them in <a href="{{ url_for('ld_settings') }}">L&D Settings</a> before creating slots.
+</div>
+{% endif %}
+
+{% if can_create_slots %}
+<div class="panel" style="margin-bottom:18px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
+    <div>
+      <h2 style="margin:0 0 4px; font-size:16px;">Trainer-led plan for {{ shifts[shift]|lower }}</h2>
+      <p style="margin:0; font-size:12.5px; color:var(--text-lo);">Covers everything Trainers plan directly: all Safety Compliance topics, plus DE Tech's two centrally-scheduled topics (FSRI, Robotic Arm Palletizer). Everything else in DE Tech, and all of Indirect Roles, is planned separately by Area Managers/Team Leads and executed by an Indirect Roles Ambassador.</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+      <form method="POST" action="{{ url_for('de_tech_set_min_capacity') }}" style="display:flex; align-items:center; gap:6px;">
+        <input type="hidden" name="shift" value="{{ shift }}">
+        <input type="hidden" name="week_start" value="{{ week_start }}">
+        <label style="font-size:11.5px; color:var(--text-lo); white-space:nowrap;">Min. group size</label>
+        <input type="number" name="min_capacity" min="1" value="{{ min_capacity }}" style="width:56px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;">
+        <button type="submit" class="btn btn-ghost btn-sm">Save</button>
+      </form>
+      <form method="POST" action="{{ url_for('de_tech_generate_draft') }}">
+        <input type="hidden" name="shift" value="{{ shift }}">
+        <input type="hidden" name="week_start" value="{{ week_start }}">
+        <button type="submit" class="btn btn-gold btn-sm">Generate draft plan</button>
+      </form>
+    </div>
+  </div>
+
+  {% set all_drafts = (safety_draft_slots or []) + (de_tech_draft_slots or []) %}
+  {% if all_drafts %}
+  <div id="trainerDraftList" style="margin-top:16px; display:flex; flex-direction:column; gap:12px;">
+    {% for d in all_drafts %}
+    <div class="trainer-draft-card" data-slot-id="{{ d.id }}" style="border:1px solid var(--hairline); border-radius:12px; padding:14px 16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+        <div>
+          <span style="font-size:10.5px; text-transform:uppercase; color:var(--text-lo); font-weight:650;">{{ 'Safety Compliance' if d.metric_key == 'safety_compliance' else 'DE Tech' }}</span>
+          <strong style="display:block;">{{ d.target_topic }}</strong> · {{ day_names[d.day_index] }}
+          <span class="draft-status-note" style="display:block; font-size:12px; color:var(--text-lo); margin-top:2px;">{{ d.attendees|length }} associate{{ 's' if d.attendees|length != 1 }} · not yet approved</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input type="time" class="js-draft-time" required style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;">
+          <button type="button" class="btn btn-gold btn-sm js-draft-approve">Approve</button>
+          <button type="button" class="btn btn-ghost btn-sm js-draft-discard">Discard</button>
+        </div>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;">
+        {% for a in d.attendees %}
+        <span class="chip js-draft-attendee-chip" data-login="{{ a.employee_login }}" style="display:inline-flex; align-items:center; gap:6px;">
+          {{ a.full_name or a.employee_login }}
+          <button type="button" class="js-draft-remove-attendee" data-login="{{ a.employee_login }}" aria-label="Remove" style="background:none; border:none; cursor:pointer; color:var(--text-lo); font-size:13px; padding:0; line-height:1;">×</button>
+        </span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p style="margin:14px 0 0; font-size:12.5px; color:var(--text-lo);">No draft in progress for this shift — generate one above, or nobody is currently overdue (or overdue counts are still below the minimum group size).</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="ld-board">
+  {% for i in range(7) %}
+  <div class="ld-day-col">
+    <div class="ld-day-head">{{ day_names[i] }}<span class="mono">{{ week_dates[i][5:] }}</span></div>
+
+    {% for s in slots_by_day.get(i, []) %}
+    <div class="slot-card dropzone" data-slot-id="{{ s.id }}">
+      <div class="slot-title">{{ s.training_name or 'Untitled training' }}</div>
+      <div class="slot-meta">
+        {% if s.start_time %}{{ s.start_time }} · {% endif %}
+        <span class="slot-count">{{ s.attendees|length }}</span>{% if s.capacity %} / {{ s.capacity }}{% endif %} enrolled
+      </div>
+      {% if s.instructor %}<div class="slot-meta">Ambassador: {{ s.instructor }}</div>{% endif %}
+      {% if s.room %}<div class="slot-meta">Room: {{ s.room }}</div>{% endif %}
+      <div class="slot-attendees">
+        {% for a in s.attendees %}
+        <span class="chip {{ 'chip-flagged' if a.flagged }}" data-attendee-id="{{ a.id }}" {% if a.flagged %}title="{{ a.flag_reason }}"{% endif %}>
+          {% if a.flagged %}<span class="chip-flag">⚠️</span>{% endif %}{{ a.full_name or a.employee_login }}
+        </span>
+        {% else %}
+        <span class="drop-hint">Click to open</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+
+    {% if can_create_slots %}
+    <details class="add-slot" onclick="event.stopPropagation();">
+      <summary>+ Add slot</summary>
+      <form method="POST" class="add-slot-form">
+        <input type="hidden" name="day_index" value="{{ i }}">
+        <div class="field"><label>Training</label>
+          <select name="training_id" required>
+            {% for t in trainings %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field"><label>Time</label><input type="time" name="start_time"></div>
+        <div class="field"><label>Capacity</label><input type="number" name="capacity" min="1"></div>
+        <div class="field"><label>Ambassador</label><input type="text" name="instructor"></div>
+        <div class="field"><label>Room</label><input type="text" name="room"></div>
+        <button class="btn btn-gold btn-sm" type="submit" {{ 'disabled' if not trainings }}>Add</button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if can_edit_plan %}
+<div class="slot-modal-overlay" id="slotModalOverlay">
+  <div class="slot-modal-box" id="slotModalBox"></div>
+</div>
+{% endif %}
+
+<div id="ldocToast"></div>
+
+{% if can_create_slots %}
+<script>
+(function () {
+  function post(url, data) {
+    var body = new URLSearchParams(data || {});
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok && j.ok, data: j }; }); })
+      .catch(function () { return { ok: false, data: { error: 'Network error' } }; });
+  }
+  function toast(msg, cls) {
+    if (window.Ldoc && Ldoc.toast) Ldoc.toast(msg, cls || '');
+  }
+  function updateCount(card) {
+    var chips = card.querySelectorAll('.js-draft-attendee-chip').length;
+    var note = card.querySelector('.draft-status-note');
+    if (note) note.textContent = chips + ' associate' + (chips !== 1 ? 's' : '') + ' · not yet approved';
+    if (chips === 0) card.remove();
+  }
+
+  document.addEventListener('click', function (e) {
+    var approveBtn = e.target.closest('.js-draft-approve');
+    if (approveBtn) {
+      var card = approveBtn.closest('.trainer-draft-card');
+      var slotId = card.dataset.slotId;
+      var time = card.querySelector('.js-draft-time').value;
+      if (!time) { toast('Set a time first.', 'toast-error'); return; }
+      approveBtn.disabled = true;
+      post('/ld-management/de-tech/draft/' + slotId + '/approve', { start_time: time }).then(function (res) {
+        approveBtn.disabled = false;
+        if (res.ok) { card.remove(); toast(res.data.message || 'Approved.'); }
+        else { toast(res.data.error || 'Could not approve.', 'toast-error'); }
+      });
+      return;
+    }
+
+    var discardBtn = e.target.closest('.js-draft-discard');
+    if (discardBtn) {
+      var card2 = discardBtn.closest('.trainer-draft-card');
+      var slotId2 = card2.dataset.slotId;
+      discardBtn.disabled = true;
+      post('/ld-management/de-tech/draft/' + slotId2 + '/discard').then(function (res) {
+        if (res.ok) { card2.remove(); toast('Draft discarded.'); }
+        else { discardBtn.disabled = false; toast(res.data.error || 'Could not discard.', 'toast-error'); }
+      });
+      return;
+    }
+
+    var removeBtn = e.target.closest('.js-draft-remove-attendee');
+    if (removeBtn) {
+      var card3 = removeBtn.closest('.trainer-draft-card');
+      var slotId3 = card3.dataset.slotId;
+      var login = removeBtn.dataset.login;
+      removeBtn.disabled = true;
+      post('/ld-management/de-tech/draft/' + slotId3 + '/remove-attendee', { employee_login: login }).then(function (res) {
+        if (res.ok) {
+          var chip = card3.querySelector('.js-draft-attendee-chip[data-login="' + login + '"]');
+          if (chip) chip.remove();
+          updateCount(card3);
+        } else {
+          removeBtn.disabled = false;
+          toast(res.data.error || 'Could not remove.', 'toast-error');
+        }
+      });
+    }
+  });
+})();
+</script>
+{% endif %}
+
+{% if can_edit_plan %}
+<script>window.LDOC_CAN_CREATE_SLOTS = {{ 'true' if can_create_slots else 'false' }};</script>
+<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+<script src="{{ url_for('static', filename='weekly_plan.js') }}"></script>
+{% endif %}
+{% endblock %}

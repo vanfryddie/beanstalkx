@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Escalations — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Escalations</h1>
+<p class="page-sub">Open escalations only — resolved ones drop off this list. {% if can_log_escalation %}To log a new one, go to <a href="{{ url_for('trainer_overview', tab='log_escalation') }}">Trainer Overview → Log Escalation</a>.{% endif %}</p>
+
+<div class="panel escalation-panel" style="padding:0;">
+  <h2 class="panel-title" style="padding:16px 18px 0;">Escalation tickets</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); padding:0 18px; margin:4px 0 12px;">Logged from Trainer Overview — click a ticket to see its full details and any attached records.</p>
+  {% if escalation_tickets %}
+  <div style="overflow-x:auto;">
+  <table class="enterprise-table escalation-table">
+    <thead><tr><th>Ticket</th><th>Categories</th><th>Concerning</th><th>Currently assigned</th><th>Stage</th><th>Phase</th><th>Created by</th><th>When</th><th></th></tr></thead>
+    <tbody>
+      {% for t in escalation_tickets %}
+      <tr>
+        <td class="mono"><a href="#" onclick="Ldoc.openEscalationTicket({{ t.id }}); return false;">{{ t.ticket_number }}</a></td>
+        <td>{{ t.categories.replace('_', ' ').replace(',', ', ')|title }}</td>
+        <td class="mono">{{ t.concerning_manager or '—' }}</td>
+        <td class="mono">{{ t.target_login or '—' }}</td>
+        <td><span class="enterprise-status enterprise-stage"><span aria-hidden="true"></span>{{ t.stage or '—' }}</span></td>
+        <td><span class="enterprise-status enterprise-phase enterprise-phase-{{ t.phase }}"><span aria-hidden="true"></span>Phase {{ t.phase }}</span></td>
+        <td class="mono">{{ t.created_by or '—' }}</td>
+        <td class="mono">{{ t.created_at[:10] if t.created_at else '—' }}</td>
+        <td><a href="#" class="table-action" onclick="Ldoc.openEscalationTicket({{ t.id }}); return false;">View details <span aria-hidden="true">→</span></a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No open escalation tickets right now.</div>
+  {% endif %}
+</div>
+
+<div class="panel escalation-panel" style="padding:0;">
+  <h2 class="panel-title" style="padding:16px 18px 0;">Escalated Safety Training Compliance records</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); padding:0 18px; margin:4px 0 12px;">Records escalated from Trainer Overview's Safety Training Compliance list — Phase 1 goes to the record's AM, Phase 2 to their manager, Phase 3 to the senior ops chain.</p>
+  {% if record_escalations %}
+  <div style="overflow-x:auto;">
+  <table class="enterprise-table escalation-table">
+    <thead><tr><th>Employee</th><th>Login</th><th>FC</th><th>Topic</th><th>Phase</th><th>Target</th><th>Escalated by</th><th>When</th><th></th></tr></thead>
+    <tbody>
+      {% for e in record_escalations %}
+      <tr>
+        <td>{{ e.full_name or '—' }}</td>
+        <td class="mono">{{ e.employee_login or '—' }}</td>
+        <td class="mono">{{ e.fc or '—' }}</td>
+        <td>{{ e.subcategory or '—' }}</td>
+        <td><span class="enterprise-status enterprise-phase enterprise-phase-{{ e.phase }}"><span aria-hidden="true"></span>Phase {{ e.phase }}</span></td>
+        <td class="mono">{{ e.target_login or (e.target_role|upper ~ ' (broadcast)' if e.target_role else '—') }}</td>
+        <td class="mono">{{ e.escalated_by or '—' }}</td>
+        <td class="mono">{{ e.escalated_at[:10] if e.escalated_at else '—' }}</td>
+        <td>
+          <form method="POST" action="{{ url_for('record_escalation_resolve', escalation_id=e.id) }}">
+            <button class="table-action table-action-button" type="submit">Resolve <span aria-hidden="true">→</span></button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No escalated records right now.</div>
+  {% endif %}
+</div>
+
+<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+{% endblock %}

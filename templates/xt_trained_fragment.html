@@ -1,0 +1,39 @@
+{% if employees %}
+<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+  <button type="button" class="btn btn-ghost btn-sm" id="xtEmpCopyLogins"><span>Copy logins</span></button>
+</div>
+<table style="width:100%; border-collapse:collapse; font-size:13px;" id="xtEmployeeTable">
+  <thead>
+    <tr>
+      <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Name</th>
+      <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Login</th>
+      <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Manager</th>
+      <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Home dept</th>
+      <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Shift</th>
+      <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Hrs 60d</th>
+      <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Hrs 90d</th>
+      <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Hrs 180d</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in employees %}
+    <tr class="xt-emp-row"
+        data-name="{{ (e.full_name or e.employee_login)|lower }}"
+        data-login="{{ e.employee_login|lower }}"
+        data-dept="{{ e.fclm_mapped or '' }}"
+        data-shift="{{ e.shift }}">
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ e.full_name or e.employee_login }}</td>
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">{{ e.employee_login }}</td>
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">{{ e.supervisor_login or '—' }}</td>
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line); color:var(--text-lo);">{{ e.fclm_mapped or '—' }}</td>
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ {'early':'Early','late':'Late','night':'Night'}[e.shift] }}</td>
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ '%.1f'|format(e.hours_60) if e.hours_60 is not none else '—' }}</td>
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ '%.1f'|format(e.hours_90) if e.hours_90 is not none else '—' }}</td>
+      <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ '%.1f'|format(e.hours_180) if e.hours_180 is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state" style="padding:24px 10px;">Nobody currently counted here.</div>
+{% endif %}

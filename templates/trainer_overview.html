@@ -1,0 +1,380 @@
+{% extends "base.html" %}
+{% block title %}Trainer overview — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Trainer overview</h1>
+<p class="page-sub">The same L&D Scorecard AMs see, rolled up across every Area Manager assigned to a trainer — set assignments in <a href="{{ url_for('ld_settings') }}">L&D Settings</a>.</p>
+
+<div class="tabbar">
+  <a href="{{ url_for('trainer_overview', tab='updates') }}" class="{{ 'active' if tab=='updates' }}">Updates{% if updates and updates|selectattr('reviewed', 'equalto', 0)|list|length %} <span class="pill pill-risk" style="margin-left:4px;">{{ updates|selectattr('reviewed', 'equalto', 0)|list|length }}</span>{% endif %}</a>
+  <a href="{{ url_for('trainer_overview', tab='scorecard', trainer=trainer_login, fc=fc_scope) }}" class="{{ 'active' if tab=='scorecard' }}">Scorecard</a>
+  <a href="{{ url_for('trainer_overview', tab='recommendations', fc=fc_scope) }}" class="{{ 'active' if tab=='recommendations' }}">Weekly Training Recommendations</a>
+  <a href="{{ url_for('trainer_overview', tab='safety_compliance', fc=fc_scope) }}" class="{{ 'active' if tab=='safety_compliance' }}">Safety Training Compliance</a>
+  <a href="{{ url_for('trainer_overview', tab='log_escalation') }}" class="{{ 'active' if tab=='log_escalation' }}">Log Escalation</a>
+</div>
+
+{% if tab == 'updates' %}
+<p class="page-sub" style="margin-top:-8px;">Comments, verification requests, and LDOC due-date reminders posted on escalation tickets — most recent first.</p>
+
+  <div class="panel escalation-panel" style="padding:0;">
+  {% if updates %}
+  <div style="overflow-x:auto;">
+  <table class="enterprise-table escalation-table">
+    <thead><tr><th>Ticket</th><th>Type</th><th>Comment</th><th>Posted by</th><th>When</th><th></th></tr></thead>
+    <tbody>
+      {% for u in updates %}
+      <tr style="{% if u.comment_type == 'system' %}background:#fef4f2;{% elif not u.reviewed %}background:rgba(255,159,10,0.08);{% endif %}">
+        <td class="mono"><a href="{{ url_for('escalations') }}">{{ u.ticket_number }}</a></td>
+        <td>
+          {% if u.comment_type == 'system' %}<span class="enterprise-status enterprise-update enterprise-update-system"><span aria-hidden="true"></span>LDOC</span>
+          {% elif u.comment_type == 'verification_request' %}<span class="enterprise-status enterprise-update enterprise-update-verify"><span aria-hidden="true"></span>Verify fix</span>
+          {% else %}<span class="enterprise-status enterprise-update"><span aria-hidden="true"></span>Comment</span>{% endif %}
+        </td>
+        <td style="max-width:340px; {% if u.comment_type == 'system' %}font-weight:600;{% endif %}">{{ u.comment }}</td>
+        <td class="mono">{{ u.posted_by or '—' }}</td>
+        <td class="mono">{{ u.posted_at[:16] if u.posted_at else '—' }}</td>
+        <td>
+          {% if not u.reviewed %}
+          <form method="POST" action="{{ url_for('trainer_overview_mark_update_reviewed', comment_id=u.id) }}">
+            <button class="btn btn-ghost btn-sm" type="submit">Mark reviewed</button>
+          </form>
+          {% else %}<span style="font-size:11px; color:var(--text-lo);">Reviewed</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No updates posted yet.</div>
+  {% endif %}
+</div>
+
+{% elif tab == 'safety_compliance' %}
+
+<p class="page-sub" style="margin-top:-8px;">Every Safety Training Compliance record, all shifts. Select records to escalate — the first escalation goes to that record's Area Manager, a second escalation on the same record bumps it to their manager, and a third bumps it to the senior ops chain.</p>
+
+<form method="POST" action="{{ url_for('trainer_overview_escalate') }}" id="safetyEscalateForm">
+<input type="hidden" name="fc" value="{{ fc_scope or '' }}">
+<input type="hidden" name="trainer" value="{{ trainer_login or '' }}">
+
+<div class="controls-bar" style="margin-bottom:10px;">
+  <span id="safetySelCount" style="font-size:12.5px; color:var(--text-lo);">0 selected</span>
+  <button type="submit" class="btn btn-gold btn-sm" style="margin-left:auto;">Escalate selected</button>
+</div>
+
+<div class="panel" style="padding:0;">
+  {% if safety_records %}
+  <div style="overflow-x:auto;">
+  <table class="record-list-table">
+    <thead>
+      <tr>
+        <th style="width:28px;"><input type="checkbox" id="safetySelectAll"></th>
+        <th>Employee</th><th>Login</th><th>FC</th><th>AM</th><th>Topic</th><th>Status</th><th>Due</th><th>Escalation</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in safety_records %}
+      <tr>
+        <td><input type="checkbox" class="safety-row-check" name="tracked_item_id" value="{{ r.id }}"></td>
+        <td>{{ r.full_name or '—' }}</td>
+        <td class="mono">{{ r.employee_login or '—' }}</td>
+        <td class="mono">{{ r.fc or '—' }}</td>
+        <td class="mono">{{ r.am_login or '—' }}</td>
+        <td>{{ r.subcategory or '—' }}</td>
+        <td>
+          {% set bucket = 'ok' if r.status in ['Compliant','Graduated','Complete'] else ('gap' if r.status in ['Overdue','Not Started'] else 'risk') %}
+          <span class="pill pill-{{ bucket }}">{{ r.status }}</span>
+        </td>
+        <td class="mono">{{ r.due_date or '—' }}</td>
+        <td>
+          {% if r.escalation %}
+          <span class="pill pill-risk">Phase {{ r.escalation.phase }} → {{ r.escalation.target_login or (r.escalation.target_role|upper ~ ' (broadcast)') }}</span>
+          {% else %}<span style="color:var(--text-lo); font-size:12px;">—</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No Safety Training Compliance records yet.</div>
+  {% endif %}
+</div>
+</form>
+
+<script>
+(function () {
+  var selectAll = document.getElementById('safetySelectAll');
+  var counter = document.getElementById('safetySelCount');
+  function updateCount() {
+    var n = document.querySelectorAll('.safety-row-check:checked').length;
+    counter.textContent = n + ' selected';
+  }
+  if (selectAll) {
+    selectAll.addEventListener('change', function () {
+      document.querySelectorAll('.safety-row-check').forEach(function (cb) { cb.checked = selectAll.checked; });
+      updateCount();
+    });
+  }
+  document.querySelectorAll('.safety-row-check').forEach(function (cb) { cb.addEventListener('change', updateCount); });
+})();
+</script>
+
+{% elif tab == 'recommendations' %}
+
+<p class="page-sub" style="margin-top:-8px;">Which trainings are worth offering this week, per shift — ranked by how many people currently have an open requirement, only for what L&D actually schedules centrally (Safety Compliance, plus FSRI and Robotic Arm Palletizer from DE Technical Briefing). Already-scheduled trainings for the week are excluded.</p>
+
+<div class="controls-bar recommendation-toolbar">
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('trainer_overview', tab='recommendations', week=prev_week, fc=fc_scope) }}">← Prev week</a>
+  <strong class="recommendation-week">Week of {{ week_start }}</strong>
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('trainer_overview', tab='recommendations', week=next_week, fc=fc_scope) }}">Next week →</a>
+  {% if week_start != this_week %}
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('trainer_overview', tab='recommendations', week=this_week, fc=fc_scope) }}">This week</a>
+  {% endif %}
+  <form method="GET" style="margin-left:auto;">
+    <input type="hidden" name="tab" value="recommendations">
+    <input type="hidden" name="week" value="{{ week_start }}">
+    <div class="field" style="margin:0; min-width:160px;">
+      <select name="fc" onchange="this.form.submit()">
+        <option value="">All FCs</option>
+        {% for f in fcs %}<option value="{{ f }}" {% if f==fc_scope %}selected{% endif %}>{{ f }}</option>{% endfor %}
+      </select>
+    </div>
+  </form>
+</div>
+
+<div class="ld-board recommendation-board">
+  {% for shift_key, shift_label in shifts.items() %}
+  <section class="ld-day-col recommendation-column">
+    <div class="ld-day-head"><span>{{ shift_label }}</span><span class="recommendation-count">{{ recommendations.get(shift_key, [])|length }}</span></div>
+    {% set recs = recommendations.get(shift_key, []) %}
+    {% if recs %}
+    {% for r in recs %}
+    <article class="slot-card recommendation-card">
+      <div class="slot-title">{{ r.training }}</div>
+      <div class="slot-meta">{{ r.open_count }} associate{{ 's' if r.open_count != 1 }} need it</div>
+      <div class="slot-meta recommendation-risk-line">
+        {% if r.expired_count %}<span style="color:var(--red); font-weight:600;">{{ r.expired_count }} expired / not compliant</span>{% endif %}
+        {% if r.expired_count and r.due_60_count %} · {% endif %}
+        {% if r.due_60_count %}<span style="color:var(--gold-deep); font-weight:600;">{{ r.due_60_count }} due within 60 days</span>{% endif %}
+        {% if not r.expired_count and not r.due_60_count %}<span style="color:var(--text-lo);">no due date on file for these</span>{% endif %}
+      </div>
+      <a class="btn btn-gold btn-sm recommendation-action" href="{{ url_for('ld_shift', shift=shift_key, week=week_start) }}">Add to weekly plan <span aria-hidden="true">→</span></a>
+    </article>
+    {% endfor %}
+    {% else %}
+    <div class="empty-state" style="padding:20px 6px;">Nothing to recommend — every open item is either already scheduled or belongs to a shift with no gaps.</div>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+
+{% elif tab == 'log_escalation' %}
+<p class="page-sub" style="margin-top:-8px;">Pick the categories this issue touches, optionally attach the specific records it's about, and assign it to a manager. A ticket number is generated automatically and the escalation appears on the Escalations tab.</p>
+
+<form method="GET" class="panel">
+  <h2 class="panel-title" style="margin-bottom:2px;">1. Categories</h2>
+  <p style="font-size:12px; color:var(--text-lo); margin:0 0 12px;">Select one or more, then continue to attach records and assign a manager.</p>
+  <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px;">
+    {% for key, label, section in escalation_categories %}
+    <label style="display:flex; align-items:center; gap:6px; font-size:13.5px;">
+      <input type="checkbox" name="categories" value="{{ key }}" {% if key in selected_categories %}checked{% endif %}> {{ label }}
+    </label>
+    {% endfor %}
+  </div>
+  <input type="hidden" name="tab" value="log_escalation">
+  <button class="btn btn-ghost btn-sm" type="submit">Continue →</button>
+</form>
+
+{% if selected_categories %}
+<form method="POST" action="{{ url_for('trainer_overview_log_escalation') }}">
+  {% for key in selected_categories %}<input type="hidden" name="categories" value="{{ key }}">{% endfor %}
+
+  {% for key, label, section in escalation_categories %}
+  {% if key in selected_categories %}
+  <div class="panel">
+    <h2 class="panel-title" style="margin-bottom:2px;">{{ label }}</h2>
+    {% if section %}
+    <p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">Optional — check any specific records this escalation is about.</p>
+    {% set records = category_records.get(key, []) %}
+    {% if records %}
+    <div style="max-height:260px; overflow-y:auto; border:1px solid var(--line); border-radius:8px;">
+      <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+        <thead>
+          <tr>
+            <th style="width:24px; padding:5px 6px; border-bottom:1px solid var(--line);"></th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Employee</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">FC</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Manager login</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Topic</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Status</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Due date</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Days expired</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in records %}
+          <tr>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);"><input type="checkbox" name="records_{{ key }}" value="{{ r.id }}"></td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.full_name or r.employee_login or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.fc or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.am_login or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.subcategory or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.status }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.due_date or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">
+              {% if r.days_overdue is not none and r.days_overdue > 0 %}<span style="color:var(--red); font-weight:600;">{{ r.days_overdue }}d</span>
+              {% else %}<span style="color:var(--text-lo);">—</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:12px 4px;">No records in this category yet.</div>
+    {% endif %}
+    {% else %}
+    <p style="font-size:12px; color:var(--text-lo); margin:0;">No structured records for this category — describe it in the notes below.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endfor %}
+
+  <div class="panel">
+    <h2 class="panel-title" style="margin-bottom:2px;">2. Concerning manager &amp; assignee</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:0 0 12px;">Who this escalation is about, and who it's assigned to right now — they can be two different people. Every new ticket starts at Phase 1.</p>
+    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+      <div class="field" style="flex:1; min-width:220px; margin:0;">
+        <label>Concerning manager</label>
+        <select name="concerning_manager" required>
+          <option value="">Choose a manager…</option>
+          {% for m in assignable_managers %}
+          <option value="{{ m.login }}">{{ m.full_name or m.login }} ({{ m.login }}) — {{ m.stage }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field" style="flex:1; min-width:220px; margin:0;">
+        <label>Assign ticket to</label>
+        <select name="assignee" required>
+          <option value="">Choose a manager…</option>
+          {% for m in assignable_managers %}
+          <option value="{{ m.login }}">{{ m.full_name or m.login }} ({{ m.login }}) — {{ m.stage }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Description / notes (optional)</label>
+      <textarea name="description" rows="3" placeholder="Add any context…"></textarea>
+    </div>
+  </div>
+
+  <button class="btn btn-gold" type="submit">Create escalation</button>
+</form>
+{% endif %}
+
+{% else %}
+{# ------------------------------------------------------------ scorecard #}
+<form class="controls-bar" method="GET">
+  <input type="hidden" name="tab" value="scorecard">
+  <div class="field">
+    <label>Trainer</label>
+    <select name="trainer" onchange="this.form.submit()">
+      <option value="">Select a trainer…</option>
+      {% for t in trainers %}<option value="{{ t.login }}" {% if t.login==trainer_login %}selected{% endif %}>{{ t.full_name or t.login }} ({{ t.login }})</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label>FC</label>
+    <select name="fc" onchange="this.form.submit()">
+      <option value="">All FCs</option>
+      {% for f in fcs %}<option value="{{ f }}" {% if f==fc_scope %}selected{% endif %}>{{ f }}</option>{% endfor %}
+    </select>
+  </div>
+</form>
+
+{% if not trainer_login %}
+<div class="empty-state">Pick a trainer above to see their rolled-up scorecard.</div>
+{% else %}
+<p style="font-size:12.5px; color:var(--text-lo); margin-top:-10px; margin-bottom:20px;">
+  {% if assigned_ams %}Covering {{ assigned_ams|length }} Area Manager{{ 's' if assigned_ams|length != 1 }}: <span class="mono">{{ assigned_ams|join(', ') }}</span>
+  {% else %}No Area Managers assigned to this trainer yet — assign some in <a href="{{ url_for('ld_settings') }}">L&D Settings</a>.{% endif %}
+</p>
+
+<div class="ldoc-swap-wrap" id="ldoc-swap-wrap-trainer">
+  <div class="ldoc-view" id="ldoc-grid-view-trainer">
+    <div class="ldoc-score-hero">
+      <div class="ldoc-score-ring" style="--pct: {{ overall_score if overall_score is not none else 0 }};">
+        <div class="ldoc-score-ring-inner">
+          <div class="ldoc-score-ring-value">{{ overall_score if overall_score is not none else '—' }}</div>
+          <div class="ldoc-score-ring-label">avg score</div>
+        </div>
+      </div>
+      <div class="ldoc-score-caption">
+        <h2>Combined L&D Scorecard</h2>
+        <p>Average compliance across all six categories, for every associate under this trainer's assigned AMs.</p>
+      </div>
+    </div>
+
+    <div class="ldoc-cat-grid">
+      {% for c in scorecard_categories %}
+      <button type="button" class="ldoc-cat-card" onclick="ldocOpenCategoryTrainer('{{ c.key }}', '{{ c.label|e }}')">
+        {% set pct = c.card.pct_ok %}
+        <div class="ldoc-cat-value {{ 'v-ok' if pct is not none and pct >= 90 else ('v-risk' if pct is not none and pct >= 70 else 'v-gap') }}">
+          {{ pct if pct is not none else '—' }}{% if pct is not none %}<span style="font-size:18px;">%</span>{% endif %}
+        </div>
+        <div class="ldoc-cat-label">{{ c.label }}</div>
+        <div class="ldoc-cat-sub">{{ c.card.total }} record{{ 's' if c.card.total != 1 }}</div>
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="ldoc-view ldoc-entering-start" id="ldoc-detail-view-trainer" style="display:none;">
+    <a class="ldoc-detail-back btn btn-ghost btn-sm" href="#" onclick="ldocCloseCategoryTrainer(); return false;">← Back to combined scorecard</a>
+    <h2 class="panel-title" id="ldoc-detail-title-trainer" style="margin-bottom:16px;"></h2>
+    <div id="ldoc-detail-body-trainer"></div>
+  </div>
+</div>
+
+<script>
+function ldocOpenCategoryTrainer(key, label) {
+  var grid = document.getElementById('ldoc-grid-view-trainer');
+  var detail = document.getElementById('ldoc-detail-view-trainer');
+  var body = document.getElementById('ldoc-detail-body-trainer');
+  var title = document.getElementById('ldoc-detail-title-trainer');
+  title.textContent = label;
+  body.innerHTML = '<div class="empty-state">Loading…</div>';
+
+  grid.classList.add('ldoc-leaving');
+  setTimeout(function () {
+    grid.style.display = 'none';
+    detail.style.display = 'block';
+    requestAnimationFrame(function () {
+      detail.classList.remove('ldoc-entering-start');
+      detail.classList.add('ldoc-entering-end');
+    });
+  }, 220);
+
+  var qs = new URLSearchParams({ trainer: '{{ trainer_login or "" }}', fc: '{{ fc_scope or "" }}' });
+  fetch('/api/category-detail/' + encodeURIComponent(key) + '?' + qs.toString())
+    .then(function (r) { return r.text(); })
+    .then(function (html) { body.innerHTML = html; })
+    .catch(function () { body.innerHTML = '<div class="empty-state">Couldn\'t load this category. Try again.</div>'; });
+}
+function ldocCloseCategoryTrainer() {
+  var grid = document.getElementById('ldoc-grid-view-trainer');
+  var detail = document.getElementById('ldoc-detail-view-trainer');
+  detail.classList.remove('ldoc-entering-end');
+  detail.classList.add('ldoc-entering-start');
+  setTimeout(function () {
+    detail.style.display = 'none';
+    grid.style.display = 'block';
+    requestAnimationFrame(function () { grid.classList.remove('ldoc-leaving'); });
+  }, 220);
+}
+</script>
+{% endif %}
+{% endif %}
+{% endblock %}

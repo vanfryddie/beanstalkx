@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Operational Leadership Review — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Operational Leadership Review</h1>
+<p class="page-sub">Yearly performance review for every Area Manager and Operations Manager, built from weekly L&D metric snapshots and how many escalations have concerned their team over the last 12 months.</p>
+
+<div class="panel" style="margin-bottom:16px;">
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0;">Weekly metrics are captured automatically — every time compliance, DE Tech, Cross-Training, or Indirect Roles data is uploaded on L&D Settings, each Area Manager and Operations Manager's current scorecard values are snapshotted into that calendar week's record. There's nothing to upload here directly.</p>
+</div>
+
+<div class="panel" style="padding:0;">
+  {% if rows %}
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Name</th>
+        <th style="text-align:left; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Role</th>
+        <th style="text-align:right; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">WoW avg</th>
+        <th style="text-align:right; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Latest quarter</th>
+        <th style="text-align:center; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Trend</th>
+        <th style="text-align:center; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Phase 1</th>
+        <th style="text-align:center; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Phase 2</th>
+        <th style="text-align:center; padding:8px 10px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Phase 3</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line);">{{ r.full_name or r.login }}<div class="mono" style="font-size:11px; color:var(--text-lo);">{{ r.login }}</div></td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line);">{{ role_labels.get(r.role, r.role) }}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+          {% if r.averages.wow_composite_avg is not none %}{{ r.averages.wow_composite_avg }}%{% else %}—{% endif %}
+        </td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+          {% if r.averages.latest_quarter_avg is not none %}{{ r.averages.latest_quarter_avg }}% <span style="color:var(--text-lo); font-size:11px;">({{ r.averages.latest_quarter }})</span>{% else %}—{% endif %}
+        </td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); text-align:center;">
+          {% if r.averages.development %}
+            {% if r.averages.development.direction == 'up' %}<span class="pill pill-ok">▲ +{{ r.averages.development.diff }}</span>
+            {% elif r.averages.development.direction == 'down' %}<span class="pill pill-gap">▼ {{ r.averages.development.diff }}</span>
+            {% else %}<span class="pill pill-risk">→ flat</span>{% endif %}
+          {% else %}<span style="color:var(--text-lo); font-size:12px;">Not enough data</span>{% endif %}
+        </td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); text-align:center;">{% if r.escalations[1] %}<span class="pill pill-risk">{{ r.escalations[1] }}</span>{% else %}0{% endif %}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); text-align:center;">{% if r.escalations[2] %}<span class="pill pill-risk">{{ r.escalations[2] }}</span>{% else %}0{% endif %}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line); text-align:center;">{% if r.escalations[3] %}<span class="pill pill-gap">{{ r.escalations[3] }}</span>{% else %}0{% endif %}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid var(--line);"><a href="{{ url_for('olr_detail', login=r.login) }}" class="btn btn-ghost btn-sm">Review →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No Area Managers or Operations Managers found yet — assign roles in L&D Settings first.</div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}L&D Operations Console{% endblock %}</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='ldis_favicon_v2.svg', v='20260820g') }}">
+<link rel="alternate icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico', v='20260820g') }}">
+<meta id="ldisThemeColor" name="theme-color" content="#f5f5f7">
+<script>
+(function () {
+  var saved = localStorage.getItem('ldis-theme');
+  document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
+})();
+</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260904stc95merge') }}">
+</head>
+<body>
+<div id="ldocNavProgress"></div>
+
+{% if session.get('login') %}
+<div class="shell">
+  <nav class="sidenav" id="appSidenav" aria-label="Primary navigation">
+    <div class="brand">
+      <a class="brand-identity" href="{{ url_for('overview') }}" aria-label="LDIS — Learning and Development Intelligence Systems">
+        <span class="brand-lockup" aria-hidden="true">
+          <img class="brand-lockup-light" src="{{ url_for('static', filename='ldis_brand.svg', v='20260820g') }}" alt="">
+          <img class="brand-lockup-dark" src="{{ url_for('static', filename='ldis_brand_dark.svg', v='20260820g') }}" alt="">
+        </span>
+      </a>
+    </div>
+    <div class="role-chip">
+      <span class="user-avatar" aria-hidden="true">{{ (login or '')[:2]|upper }}</span>
+      <span class="user-copy">
+        <strong>{{ login }}</strong>
+        <span>{{ role_label }}{% if location %} · {{ location }}{% endif %}</span>
+        {% if view_as %}<span class="preview-role">Previewing {{ effective_role_label }}</span>{% endif %}
+      </span>
+    </div>
+    <div class="nav-links">
+      {% if can_access_core %}
+      {% if is_global_admin %}
+      <div class="group-label">Regional</div>
+      <a href="{{ url_for('regional_overview') }}" class="{{ 'active' if request.endpoint=='regional_overview' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/><circle cx="12" cy="12" r="9"/></svg></span><span>Regional Overview</span></a>
+      {% endif %}
+      <div class="group-label">Operations Management</div>
+      <a href="{{ url_for('overview') }}" class="{{ 'active' if request.endpoint=='overview' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.75l8.5 6.75v9.25a.75.75 0 0 1-.75.75h-5.5v-6.25h-4.5v6.25h-5.5a.75.75 0 0 1-.75-.75Z"/></svg></span><span>AM Overview</span></a>
+      <a href="{{ url_for('scorecards') }}" class="{{ 'active' if request.endpoint=='scorecards' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V10m5.3 9.5V4.5m5.4 15v-7m5.3 7V7.5"/></svg></span><span>Reporting</span></a>
+      <a href="{{ url_for('ld_shift', shift='early') }}" class="{{ 'active' if request.endpoint=='ld_shift' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7.5 3.5v4m9-4v4m-13 3h17M8 14h3m2 0h3m-8 3h3"/></svg></span><span>Weekly training plan</span></a>
+      <a href="{{ url_for('escalations') }}" class="{{ 'active' if request.endpoint=='escalations' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 4.35 3.2 17.15A1.9 1.9 0 0 0 4.85 20h14.3a1.9 1.9 0 0 0 1.65-2.85L13.4 4.35a1.62 1.62 0 0 0-2.8 0Z"/><path d="M12 9v4.5m0 3v.1"/></svg></span><span>Escalations</span></a>
+      <a href="{{ url_for('cross_training') }}" class="{{ 'active' if request.endpoint=='cross_training' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13.5m-3-3 3 3-3 3M20 16H6.5m3 3-3-3 3-3"/></svg></span><span>Cross Training</span></a>
+      {% if effective_role in ('admin', 'trainer') %}
+      <a href="{{ url_for('cross_training', tab='exclusions') }}" class="{{ 'active' if request.endpoint=='cross_training' and request.args.get('tab')=='exclusions' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 8 8 8M16 8l-8 8"/></svg></span><span>Exclusions</span></a>
+      {% endif %}
+      <a href="{{ url_for('indirect_roles_overview') }}" class="{{ 'active' if request.endpoint=='indirect_roles_overview' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/><rect x="13.5" y="13.5" width="7" height="7" rx="1"/></svg></span><span>Indirect Roles</span></a>
+      <a href="{{ url_for('olr_overview') }}" class="{{ 'active' if request.endpoint in ('olr_overview', 'olr_detail') else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5m5 14V9m5 10V4m5 15v-7"/></svg></span><span>OLR</span></a>
+      {% else %}
+      <a href="{{ url_for('scorecards') }}" class="{{ 'active' if request.endpoint=='scorecards' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V10m5.3 9.5V4.5m5.4 15v-7m5.3 7V7.5"/></svg></span><span>Reporting</span></a>
+      <a href="{{ url_for('ld_shift', shift='early') }}" class="{{ 'active' if request.endpoint=='ld_shift' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7.5 3.5v4m9-4v4m-13 3h17M8 14h3m2 0h3m-8 3h3"/></svg></span><span>Weekly training plan</span></a>
+      {% endif %}
+      {% if can_admin %}
+      <div class="group-label">L&D Management</div>
+      <a href="{{ url_for('ambassador_management', shift='early') }}" class="{{ 'active' if request.endpoint=='ambassador_management' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.25"/><path d="M5 20v-1a7 7 0 0 1 14 0v1"/></svg></span><span>Ambassador Management</span></a>
+      <a href="{{ url_for('ambassador_meetings') }}" class="{{ 'active' if request.endpoint=='ambassador_meetings' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7.5 3.5v4m9-4v4m-13 3h17M8 15l2.5 2.5L16 12"/></svg></span><span>Ambassador Meetings</span></a>
+      <a href="{{ url_for('trainer_overview') }}" class="{{ 'active' if request.endpoint=='trainer_overview' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.25"/><path d="M3.5 19.5v-1.25A4.75 4.75 0 0 1 8.25 13.5h1.5a4.75 4.75 0 0 1 4.75 4.75v1.25m1-10.7a3.05 3.05 0 0 1 0 5.9m2.3.15a4.4 4.4 0 0 1 2.7 4.05v.6"/></svg></span><span>Trainer overview</span></a>
+      <a href="{{ url_for('trainer_metrics') }}" class="{{ 'active' if request.endpoint=='trainer_metrics' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.5 9 12l3.5 3.5L20 7.5"/><path d="M15.5 7.5H20V12"/></svg></span><span>L&D Metrics</span></a>
+      <a href="{{ url_for('ld_settings') }}" class="{{ 'active' if request.endpoint=='ld_settings' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.25"/><path d="M19 13.25v-2.5l-2.15-.75a7 7 0 0 0-.65-1.55l1-2.05-1.75-1.75-2.05 1A7 7 0 0 0 11.8 5L11 3H8.5l-.75 2.15a7 7 0 0 0-1.55.65l-2.05-1L2.4 6.55l1 2.05a7 7 0 0 0-.65 1.55L.75 11v2.5l2.15.75a7 7 0 0 0 .65 1.55l-1 2.05 1.75 1.75 2.05-1a7 7 0 0 0 1.55.65l.75 2.05h2.5l.75-2.15a7 7 0 0 0 1.55-.65l2.05 1 1.75-1.75-1-2.05a7 7 0 0 0 .65-1.55Z" transform="translate(2) scale(.83 1)"/></svg></span><span>L&D Settings</span></a>
+      {% endif %}
+    </div>
+    <div class="nav-footer">
+      {% if auth_source == 'manual' %}
+      <a href="{{ url_for('logout') }}" class="switch-link">Switch user →</a>
+      {% else %}
+      <span class="switch-link" style="opacity:0.6;">Signed in via Midway/Federate</span>
+      {% endif %}
+    </div>
+  </nav>
+
+  <div class="workspace">
+  <header class="app-topbar">
+    <button class="nav-toggle" type="button" aria-label="Toggle navigation" aria-controls="appSidenav" aria-expanded="false">☰</button>
+    <div class="topbar-title"><strong>L&D Operations Console</strong><span>by LDIS</span></div>
+    <div class="site-switcher">
+      <button type="button" class="site-switcher-btn" id="siteSwitcherBtn" aria-haspopup="true" aria-expanded="false">
+        <span>{{ current_site }}</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="site-switcher-menu" id="siteSwitcherMenu" hidden>
+        {% for s in all_sites %}
+        <form method="POST" action="{{ url_for('site_switch') }}">
+          <input type="hidden" name="site_code" value="{{ s.site_code }}">
+          <button type="submit" class="site-switcher-option {{ 'active' if s.site_code == current_site }}">
+            <strong>{{ s.site_code }}</strong><span>{{ s.site_name }}</span>
+          </button>
+        </form>
+        {% endfor %}
+        {% if is_global_admin %}
+        <a href="{{ url_for('site_create') }}" class="site-switcher-option site-switcher-add">+ Add a site</a>
+        {% endif %}
+      </div>
+    </div>
+    <button class="theme-toggle" type="button" aria-label="Switch to day mode" aria-pressed="true">
+      <span class="theme-icon theme-icon-sun" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2.2M12 19.8V22M4.93 4.93l1.56 1.56m11.02 11.02 1.56 1.56M2 12h2.2M19.8 12H22M4.93 19.07l1.56-1.56M17.51 6.49l1.56-1.56"/></svg></span>
+      <span class="theme-switch-knob"></span>
+      <span class="theme-icon theme-icon-moon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19.4 15.2A8 8 0 0 1 8.8 4.6 8.2 8.2 0 1 0 19.4 15.2Z"/></svg></span>
+    </button>
+    <div class="topbar-status"><span class="status-dot"></span><span>Operational</span>{% if location %}<span class="topbar-divider"></span><span>{{ location }}</span>{% endif %}</div>
+  </header>
+  <script>
+  (function () {
+    var btn = document.getElementById('siteSwitcherBtn');
+    var menu = document.getElementById('siteSwitcherMenu');
+    if (!btn || !menu) return;
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var open = !menu.hidden;
+      menu.hidden = open;
+      btn.setAttribute('aria-expanded', String(!open));
+    });
+    document.addEventListener('click', function () {
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+    });
+    menu.addEventListener('click', function (e) { e.stopPropagation(); });
+  })();
+  </script>
+
+  <main class="content">
+    {% if is_admin_tier %}
+    <div class="view-as-bar">
+      <form method="POST" action="{{ url_for('view_as') }}">
+        <label>View as</label>
+        <select name="role" onchange="this.form.submit()">
+          <option value="">My role ({{ role_label }})</option>
+          {% for key, label in all_roles.items() %}
+          <option value="{{ key }}" {% if view_as==key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if is_pending %}
+    <div class="pending-banner">
+      <div>You don't have a role assigned yet — you can use Reporting and the Weekly training plan. Request a role and an admin will assign it.</div>
+      <form method="POST" action="{{ url_for('request_role_route') }}">
+        <select name="desired_role" required>
+          <option value="">Choose a role to request…</option>
+          {% for key, label in all_roles.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-gold btn-sm" type="submit">Request</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-stack">
+        {% for category, message in messages %}
+          <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  </div>
+</div>
+{% else %}
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-stack flash-stack-standalone">
+      {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content_standalone %}{% endblock %}
+{% endif %}
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var themeToggles = document.querySelectorAll('.theme-toggle');
+  function syncThemeControls() {
+    var dark = root.dataset.theme !== 'light';
+    var themeColor = document.getElementById('ldisThemeColor');
+    if (themeColor) themeColor.setAttribute('content', dark ? '#191a1f' : '#f5f5f7');
+    themeToggles.forEach(function (control) {
+      control.setAttribute('aria-pressed', dark ? 'true' : 'false');
+      control.setAttribute('aria-label', dark ? 'Switch to day mode' : 'Switch to night mode');
+    });
+  }
+  themeToggles.forEach(function (control) {
+    control.addEventListener('click', function () {
+      root.dataset.theme = root.dataset.theme === 'light' ? 'dark' : 'light';
+      localStorage.setItem('ldis-theme', root.dataset.theme);
+      syncThemeControls();
+    });
+  });
+  syncThemeControls();
+
+  var toggle = document.querySelector('.nav-toggle');
+  var sidenav = document.getElementById('appSidenav');
+  if (!toggle || !sidenav) return;
+  toggle.addEventListener('click', function () {
+    var open = document.body.classList.toggle('nav-open');
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  // Delegated (not per-link) so this keeps working after ldocNav swaps
+  // #appSidenav's innerHTML for a new page — the links themselves get
+  // replaced, but this listener lives on the container, which doesn't.
+  sidenav.addEventListener('click', function (e) {
+    if (e.target.closest('a')) document.body.classList.remove('nav-open');
+  });
+})();
+</script>
+
+<script>
+(function () {
+  // Same-page-feel navigation: intercepts clicks on ordinary internal
+  // links (nav sidebar, tab bars, "view more" links, pagination, etc.)
+  // and swaps in the new page's <main> content + sidebar via fetch
+  // instead of a full browser navigation, so switching tabs/pages
+  // doesn't white-flash reload. Deliberately scoped to GET link clicks
+  // only — forms (POST actions like saving, uploading, creating a
+  // ticket) still do a normal full-page submit, which is the safer,
+  // well-tested path for anything that writes data or uploads a file.
+  // Falls back to a real navigation for anything that doesn't look like
+  // an internal HTML page (external links, downloads, target=_blank,
+  // non-HTML responses, or session-expiry redirects to the login page).
+  var DOWNLOAD_EXT_RE = /\.(pdf|docx?|pptx?|xlsx?|zip|csv|png|jpe?g|svg|ico|gif|webp)$/i;
+
+  function isNavigableLink(a) {
+    if (!a || a.tagName !== 'A') return false;
+    if (a.target && a.target !== '' && a.target !== '_self') return false;
+    if (a.hasAttribute('download') || a.hasAttribute('data-no-ajax')) return false;
+    var href = a.getAttribute('href');
+    if (!href || href.charAt(0) === '#' || href.indexOf('mailto:') === 0 || href.indexOf('tel:') === 0) return false;
+    var url;
+    try { url = new URL(href, window.location.href); } catch (e) { return false; }
+    if (url.origin !== window.location.origin) return false;
+    if (DOWNLOAD_EXT_RE.test(url.pathname)) return false;
+    if (url.pathname.indexOf('/static/') === 0) return false;
+    return true;
+  }
+
+  var progressTimer = null;
+  function showProgress() {
+    var bar = document.getElementById('ldocNavProgress');
+    if (!bar) return;
+    bar.classList.remove('ldoc-nav-active');
+    void bar.offsetWidth; // restart the CSS transition
+    bar.classList.add('ldoc-nav-active');
+  }
+  function hideProgress() {
+    var bar = document.getElementById('ldocNavProgress');
+    if (!bar) return;
+    clearTimeout(progressTimer);
+    bar.style.transform = 'scaleX(1)';
+    progressTimer = setTimeout(function () {
+      bar.classList.remove('ldoc-nav-active');
+      bar.style.transform = '';
+    }, 150);
+  }
+
+  function runScripts(container) {
+    // innerHTML assignment doesn't execute embedded <script> tags —
+    // recreate each one so page-specific inline scripts (filters,
+    // widgets, etc.) actually run for the newly swapped-in content.
+    container.querySelectorAll('script').forEach(function (old) {
+      var s = document.createElement('script');
+      for (var i = 0; i < old.attributes.length; i++) {
+        s.setAttribute(old.attributes[i].name, old.attributes[i].value);
+      }
+      s.textContent = old.textContent;
+      old.parentNode.replaceChild(s, old);
+    });
+  }
+
+  function swapIn(html, url, pushHistory) {
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var newMain = doc.querySelector('main.content');
+    var curMain = document.querySelector('main.content');
+    if (!newMain || !curMain) {
+      // Not a normal logged-in page (e.g. session expired -> login
+      // screen) — a real navigation is the correct, safe fallback.
+      window.location.href = url;
+      return;
+    }
+    var newTitle = doc.querySelector('title');
+    if (newTitle) document.title = newTitle.textContent;
+    var newNav = doc.getElementById('appSidenav');
+    var curNav = document.getElementById('appSidenav');
+    if (newNav && curNav) curNav.innerHTML = newNav.innerHTML;
+    curMain.innerHTML = newMain.innerHTML;
+    runScripts(curMain);
+    if (pushHistory) history.pushState({ ldocNav: true }, '', url);
+    window.scrollTo(0, 0);
+  }
+
+  function navigate(url, pushHistory) {
+    showProgress();
+    fetch(url, { headers: { 'X-Ldoc-Nav': 'fetch' } })
+      .then(function (r) {
+        var ct = r.headers.get('content-type') || '';
+        if (!r.ok || ct.indexOf('text/html') === -1) throw new Error('not a navigable HTML page');
+        return r.text();
+      })
+      .then(function (html) { swapIn(html, url, pushHistory); })
+      .catch(function () { window.location.href = url; })
+      .finally(hideProgress);
+  }
+
+  document.addEventListener('click', function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var a = e.target.closest('a');
+    if (!isNavigableLink(a)) return;
+    e.preventDefault();
+    navigate(a.getAttribute('href'), true);
+  });
+
+  window.addEventListener('popstate', function () {
+    navigate(window.location.href, false);
+  });
+})();
+</script>
+
+<script>
+(function () {
+  // "Change and move on" fields: any form tagged .ldoc-autosave-form
+  // (currently: role/shift and reports-to on L&D Settings > Users) saves
+  // itself in the background the moment its value changes — no page
+  // reload, no separate Save button, just a brief inline confirmation
+  // next to the field. Falls back to a normal full-page submit if
+  // fetch() fails outright (e.g. offline), so the change still isn't
+  // silently lost.
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!form.classList || !form.classList.contains('ldoc-autosave-form')) return;
+    e.preventDefault();
+
+    var indicator = form.querySelector('.ldoc-autosave-indicator');
+    if (!indicator) {
+      indicator = document.createElement('span');
+      indicator.className = 'ldoc-autosave-indicator';
+      form.appendChild(indicator);
+    }
+    clearTimeout(indicator._ldocHideTimer);
+    indicator.className = 'ldoc-autosave-indicator ldoc-autosave-pending';
+    indicator.textContent = 'Saving…';
+
+    fetch(form.action, { method: 'POST', body: new FormData(form) })
+      .then(function (r) {
+        indicator.className = 'ldoc-autosave-indicator ' + (r.ok ? 'ldoc-autosave-ok' : 'ldoc-autosave-error');
+        indicator.textContent = r.ok ? '✓ Saved' : '✕ Failed';
+        indicator._ldocHideTimer = setTimeout(function () {
+          indicator.className = 'ldoc-autosave-indicator';
+          indicator.textContent = '';
+        }, 1600);
+      })
+      .catch(function () {
+        // Network-level failure (not even a response) — don't leave the
+        // change silently unsaved, fall back to a real submit.
+        form.submit();
+      });
+  });
+})();
+</script>
+
+</body>
+</html>

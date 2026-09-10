@@ -1,0 +1,44 @@
+{% macro xt_cards(rows, show_fn='ldocShowXtEmployees', container_id=none) %}
+<div class="xt-path-list" data-xt-cards {% if container_id %}id="{{ container_id }}"{% endif %}>
+  {% for row in rows %}
+  <article class="xt-path-row" data-xt-path-row data-path-label="{{ row.label|e }}">
+    <button type="button" class="xt-path-summary" onclick="{{ show_fn }}('{{ row.key }}', null, '{{ row.pct_label }} {{ row.label|e }}')">
+      <span class="xt-path-rate">{{ row.pct_label }}</span>
+      <strong class="xt-path-name">{{ row.label }}</strong>
+      <span class="xt-path-action">View associates <span aria-hidden="true">→</span></span>
+    </button>
+    <div class="xt-shift-grid">
+      {% for shift in ['early','late','night'] %}
+      {% set s = row.shifts[shift] %}
+      <section class="xt-shift-card {{ 'xt-shift-card-positive' if s.gap >= 0 else 'xt-shift-card-negative' }}" data-xt-shift-card data-shift-label="{{ shift|capitalize }}" data-actual="{{ s.actual }}" data-target="{{ s.target }}" data-gap="{{ s.gap }}">
+        <header class="xt-shift-card-header">
+          <span>{{ shift|capitalize }} shift</span>
+          <span class="xt-drop-heading">Lapsing in <span class="xt-drop-window-label">{{ xt_drop_days }}</span> Days</span>
+        </header>
+        <div class="xt-drop-projection" data-expiring-records='{{ s.expiring_records|tojson }}' data-target="{{ s.target }}" data-path-label="{{ row.label|e }}" data-shift-label="{{ shift|capitalize }}">
+          <div class="xt-shift-value-row">
+            <div class="xt-ratio-block">
+              <div class="xt-ratio-value">
+                <button type="button" class="xt-actual-link" onclick="{{ show_fn }}('{{ row.key }}', '{{ shift }}', '{{ row.label|e }}')" aria-label="View {{ shift }} shift trained associates for {{ row.label|e }}">{{ s.actual }}</button>
+                <span class="xt-ratio-divider">/</span>
+                <strong class="xt-target-value">{{ s.target }}</strong>
+              </div>
+              <div class="xt-ratio-label"><span>Actual</span><span>Target</span></div>
+            </div>
+            <button type="button" class="xt-drop-count-btn" style="background:none; border:none; padding:0; cursor:pointer; font:inherit;"><strong class="xt-drop-count">0</strong></button>
+          </div>
+          <div class="xt-shift-forecast-row">
+            <div class="xt-delta {{ 'xt-delta-positive' if s.gap >= 0 else 'xt-delta-negative' }}">
+              {{ '+' if s.gap > 0 }}{{ s.gap }} vs target
+            </div>
+            <div class="xt-drop-predicted">Predicted <strong>{{ s.actual }}</strong>/{{ s.target }} in <span class="xt-drop-window-label">{{ xt_drop_days }}</span> Days</div>
+          </div>
+        </div>
+        <span class="visually-hidden">Source headcount {{ s.headcount }}</span>
+      </section>
+      {% endfor %}
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% endmacro %}

@@ -1,0 +1,134 @@
+<div style="display:flex; flex-direction:column; gap:14px;">
+  <div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <strong class="mono" style="font-size:15px;">{{ ticket.ticket_number }}</strong>
+      <span class="enterprise-status {{ 'enterprise-status-resolved' if ticket.status=='resolved' else 'enterprise-status-open' }}"><span aria-hidden="true"></span>{{ 'Resolved' if ticket.status=='resolved' else 'Open' }}</span>
+    </div>
+    <p style="font-size:12.5px; color:var(--text-lo); margin:0;">Created by <span class="mono">{{ ticket.created_by or '—' }}</span> on <span class="mono">{{ ticket.created_at[:10] if ticket.created_at else '—' }}</span></p>
+  </div>
+
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Concerning manager</label>
+    <p style="margin:4px 0 0; font-size:14px;"><span class="mono">{{ ticket.concerning_manager or '—' }}</span></p>
+  </div>
+
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Currently assigned to</label>
+    <p class="escalation-assignment-line"><span class="mono">{{ ticket.target_login or '—' }}</span><span class="enterprise-status enterprise-stage"><span aria-hidden="true"></span>{{ ticket.stage or '—' }}</span><span class="enterprise-status enterprise-phase enterprise-phase-{{ ticket.phase }}"><span aria-hidden="true"></span>Phase {{ ticket.phase }}</span></p>
+  </div>
+
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Due date</label>
+    <p style="margin:4px 0 6px; font-size:14px;">
+      {% if ticket.due_date %}<span class="mono">{{ ticket.due_date }}</span>{% else %}<span style="color:var(--text-lo);">Not set</span>{% endif %}
+    </p>
+    {% if can_manage and ticket.status != 'resolved' %}
+    <form method="POST" action="{{ url_for('escalation_ticket_set_due_date', ticket_id=ticket.id) }}" style="display:flex; gap:6px; align-items:center;">
+      <input type="date" name="due_date" value="{{ ticket.due_date or '' }}" style="padding:5px 7px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+      <button class="btn btn-ghost btn-sm" type="submit">Set due date</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Categories</label>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+      {% for key in ticket.category_list %}
+      <span class="enterprise-tag">{{ category_map.get(key, (key, None))[0] }}</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if ticket.description %}
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Description</label>
+    <p style="margin:6px 0 0; font-size:13.5px; white-space:pre-wrap; line-height:1.5;">{{ ticket.description }}</p>
+  </div>
+  {% endif %}
+
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Attached records — {{ ticket.records|length }}</label>
+    {% if ticket.records %}
+    <div style="overflow-x:auto; margin-top:6px;">
+    <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Category</th>
+          <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Employee</th>
+          <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">FC</th>
+          <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Topic</th>
+          <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in ticket.records %}
+        <tr>
+          <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ category_map.get(r.ticket_category, (r.ticket_category, None))[0] }}</td>
+          <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.full_name or r.employee_login or '—' }}</td>
+          <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.fc or '—' }}</td>
+          <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.subcategory or '—' }}</td>
+          <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.status }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:12px 4px;">No specific records attached.</div>
+    {% endif %}
+  </div>
+
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Updates</label>
+    {% if ticket.comments %}
+    <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+      {% for c in ticket.comments %}
+      <div style="border:1px solid var(--line); border-radius:8px; padding:8px 10px; {% if c.comment_type == 'system' %}background:#f6f7fb;{% endif %}">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
+          <span style="font-size:12px; {% if c.comment_type == 'system' %}font-weight:700; color:var(--aws-blue);{% else %}font-family:monospace;{% endif %}">
+            {% if c.comment_type == 'system' %}🤖 {{ c.posted_by }}{% else %}{{ c.posted_by or '—' }}{% endif %}
+          </span>
+          {% if c.comment_type == 'verification_request' %}<span class="enterprise-status enterprise-update enterprise-update-verify"><span aria-hidden="true"></span>Verify fix</span>{% endif %}
+        </div>
+        <p style="margin:0; font-size:13px; white-space:pre-wrap;">{{ c.comment }}</p>
+        <p style="margin:4px 0 0; font-size:10.5px; color:var(--text-lo);">{{ c.posted_at[:16] if c.posted_at else '' }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:12px 4px;">No updates yet.</div>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('escalation_ticket_comment', ticket_id=ticket.id) }}" style="margin-top:10px;">
+      <textarea name="comment" rows="3" placeholder="Add a comment…" required style="width:100%; padding:8px; border:1px solid var(--line); border-radius:8px; font-size:13px;"></textarea>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px;">
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="verification_request" value="1"> This is a request to verify the fix
+        </label>
+        <button class="btn btn-ghost btn-sm" type="submit">Post</button>
+      </div>
+    </form>
+  </div>
+
+  {% if can_manage and ticket.status != 'resolved' %}
+  <div style="border-top:1px solid var(--line); padding-top:14px; display:flex; flex-direction:column; gap:10px;">
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Trainer actions</label>
+    <form method="POST" action="{{ url_for('escalation_ticket_resolve', ticket_id=ticket.id) }}">
+      <button class="btn btn-gold btn-sm" type="submit">Mark resolved</button>
+    </form>
+    {% if ticket.phase < max_phase %}
+    <form method="POST" action="{{ url_for('escalation_ticket_escalate', ticket_id=ticket.id) }}" style="display:flex; gap:6px; align-items:center;">
+      <select name="new_target_login" required style="flex:1;">
+        <option value="">Escalate to next phase, reassign to…</option>
+        {% for m in assignable_managers %}
+        <option value="{{ m.login }}">{{ m.full_name or m.login }} ({{ m.login }}) — {{ m.stage }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-ghost btn-sm" type="submit">Escalate</button>
+    </form>
+    {% else %}
+    <p style="font-size:12px; color:var(--text-lo); margin:0;">Already at Phase {{ max_phase }} (max) — can't escalate further.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>

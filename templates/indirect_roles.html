@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block title %}Indirect Roles — L&D Operations Console{% endblock %}
+{% block content %}
+<div class="ir-page-head">
+  <h1 class="page-title">{{ 'Indirect Roles Overview' if tab == 'overview' else ('Indirect Roles Ambassadors' if tab == 'ambassadors' else 'Indirect Role Definitions') }}</h1>
+  <p class="page-sub">
+    {% if tab == 'overview' %}Coverage by role and shift. Select any metric to view the Associates behind it.
+    {% elif tab == 'ambassadors' %}Ambassadors approved to train Indirect Roles and the roles each one supports.
+    {% else %}Configure role definitions, shift targets and source mappings.{% endif %}
+  </p>
+</div>
+
+<div class="tabbar">
+  <a href="{{ url_for('indirect_roles_overview', tab='overview') }}" class="{{ 'active' if tab=='overview' }}">Overview</a>
+  <a href="{{ url_for('indirect_roles_overview', tab='ambassadors') }}" class="{{ 'active' if tab=='ambassadors' }}">Indirect Roles Ambassadors</a>
+  {% if can_manage_ir %}
+  <a href="{{ url_for('indirect_roles_overview', tab='definitions') }}" class="{{ 'active' if tab=='definitions' }}">Definitions</a>
+  {% endif %}
+</div>
+
+<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+
+{% if tab == 'ambassadors' %}
+<p class="page-sub" style="margin-top:-8px;">Ambassadors set up to train Indirect Roles, and which specific roles each one covers. Assign these from Ambassador Management.</p>
+<div class="panel" style="padding:0;">
+  {% if ir_ambassadors %}
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Ambassador</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Login</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Shift</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Trains</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in ir_ambassadors %}
+      <tr>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">{{ a.full_name or '—' }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);" class="mono">{{ a.login }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">{{ a.department }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">{{ shifts.get(a.shift, a.shift) }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">
+          {% if a.ir_roles %}
+          <div style="display:flex; flex-wrap:wrap; gap:4px;">
+            {% for r in a.ir_roles %}<span class="pill pill-ok" style="font-size:11px;">{{ r.role }}</span>{% endfor %}
+          </div>
+          {% else %}
+          <span style="color:var(--text-lo); font-size:12px;">No roles assigned yet</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No Indirect Roles ambassadors yet — mark someone as an Indirect Roles ambassador on Ambassador Management, then assign which roles they train.</div>
+  {% endif %}
+</div>
+
+{% elif tab == 'definitions' %}
+<p class="page-sub" style="margin-top:-8px;">Only Senior Operations Managers and Trainers can edit these. Changing a target takes effect immediately on the Overview tab.</p>
+<div class="panel" style="padding:0;">
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Section</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Role</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Area</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Home Process</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Match values</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">ES</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">LS</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">NS</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Special</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in ir_role_config %}
+      <tr>
+        <form method="POST" action="{{ url_for('indirect_roles_update_definition', row_id=row.id) }}" style="display:contents;">
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ row.section }}</td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ row.role }} <span class="mono" style="font-size:10px; color:var(--text-lo);">({{ row.src_type }})</span></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="area" value="{{ row.area or '' }}" style="width:90px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="home_process" value="{{ row.home_process or '' }}" style="width:100px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="match_vals" value="{{ row.match_vals or '' }}" style="width:220px; padding:3px 5px; font-size:11.5px; border:1px solid var(--line); border-radius:5px;"></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" name="es" value="{{ row.es }}" style="width:52px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" name="ls" value="{{ row.ls }}" style="width:52px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" name="ns" value="{{ row.ns }}" style="width:52px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="special" value="{{ row.special or '' }}" style="width:100px; padding:3px 5px; font-size:11.5px; border:1px solid var(--line); border-radius:5px;"></td>
+        <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><button class="btn btn-ghost btn-sm" type="submit">Save</button></td>
+        </form>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2 class="panel-title" style="margin-bottom:2px;">DE Tech Briefing ↔ Indirect Role mapping</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:4px 0 14px;">Which DE Technical Briefing topics correspond to which Indirect Role. FSRI and the Robotic Arm Palletizer aren't shown — those are centrally scheduled, not tied to a specific role.</p>
+  {% if de_tech_topics %}
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Role</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Mapped DE Tech topics</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in ir_role_config if 'fsri' not in row.role|lower and 'palletiz' not in row.role|lower %}
+      <tr>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ row.role }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);" id="deTechMappedCell-{{ row.id }}">
+          {% set mapped = de_tech_mappings.get(row.id, []) %}
+          {% if mapped %}
+          <div style="display:flex; flex-wrap:wrap; gap:4px;">{% for t in mapped %}<span class="pill pill-ok" style="font-size:11px;">{{ t }}</span>{% endfor %}</div>
+          {% else %}
+          <span style="color:var(--text-lo); font-size:12px;">No topics mapped</span>
+          {% endif %}
+        </td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap;">
+          <button type="button" class="btn btn-ghost btn-sm" onclick='Ldoc.manageDeTechTopicMapping({{ row.id }}, {{ row.role|tojson }})'>Edit</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state">No DE Tech Briefing data uploaded yet — upload it from L&D Settings to map topics here.</div>
+  {% endif %}
+</div>
+
+{% else %}
+
+<div class="ir-summary-grid" aria-label="Indirect role coverage summary">
+  <div class="ir-summary-card">
+    <span class="ir-summary-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 20v-1.5a4.5 4.5 0 0 0-4.5-4.5h-4A4.5 4.5 0 0 0 3 18.5V20"/><circle cx="9.5" cy="7" r="3.5"/><path d="M17 11a3 3 0 1 0-2.2-5M18 14.5c1.8.6 3 2.2 3 4V20"/></svg></span>
+    <div class="ir-summary-copy"><span>Roles tracked</span><strong>{{ ir_summary.roles_tracked }}</strong></div>
+  </div>
+  <div class="ir-summary-card ir-summary-positive">
+    <span class="ir-summary-icon ir-summary-icon-positive" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><path d="m10.2 12 1.2 1.2 2.7-3"/></svg></span>
+    <div class="ir-summary-copy"><span>On target</span><strong>{{ ir_summary.roles_on_target }}/{{ ir_summary.roles_tracked }}</strong></div>
+  </div>
+  <div class="ir-summary-card {{ 'ir-summary-positive' if ir_summary.overall_pct is not none and ir_summary.overall_pct >= 95 else 'ir-summary-attention' }}">
+    <div class="ir-summary-copy"><span>Coverage health</span><strong>{{ ir_summary.overall_pct if ir_summary.overall_pct is not none else '—' }}{% if ir_summary.overall_pct is not none %}%{% endif %}</strong></div>
+    <span class="ir-health-ring" style="--ir-health: {{ ir_summary.overall_pct if ir_summary.overall_pct is not none else 0 }}%;" role="img" aria-label="{{ ir_summary.overall_pct if ir_summary.overall_pct is not none else 0 }} percent coverage health"><i></i></span>
+  </div>
+  <div class="ir-summary-card {{ 'ir-summary-critical' if ir_summary.people_needing_action else 'ir-summary-positive' }}">
+    <span class="ir-summary-icon ir-summary-icon-critical" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="7.5" r="3.5"/><path d="M5 20v-1.5A5.5 5.5 0 0 1 10.5 13h3a5.5 5.5 0 0 1 5.5 5.5V20"/></svg></span>
+    <div class="ir-summary-copy"><span>Associates needed</span><strong>{{ ir_summary.people_needing_action }}</strong></div>
+  </div>
+</div>
+
+{% if ir_summary.priority %}
+<aside class="ir-priority-insight" id="irPriorityInsight" data-section="{{ ir_summary.priority.section|e }}" data-shift="{{ ir_summary.priority.shift|e }}">
+  <span class="ir-priority-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 2.8 19a1.4 1.4 0 0 0 1.2 2h16a1.4 1.4 0 0 0 1.2-2L12 3Z"/><path d="M12 8v5M12 17h.01"/></svg></span>
+  <div class="ir-priority-copy">
+    <strong>Priority insight</strong>
+    <span>{{ ir_summary.priority.section }} {{ ir_summary.priority.shift|capitalize }} shift has the highest coverage risk — {{ ir_summary.priority.people_needing_action }} Associates need action across {{ ir_summary.priority.affected_roles }} role{{ '' if ir_summary.priority.affected_roles == 1 else 's' }}.</span>
+  </div>
+  <button type="button" id="irReviewPriority">Review gaps <span aria-hidden="true">→</span></button>
+</aside>
+{% endif %}
+
+<div class="ir-explorer panel" id="irCoverageExplorer" data-shift-focus="all">
+  <div class="ir-command-bar">
+    <label class="ir-search" for="irRoleSearch">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 4 4"/></svg>
+      <input id="irRoleSearch" type="search" placeholder="Search roles or departments" autocomplete="off">
+    </label>
+    <label class="ir-department-filter" for="irDepartmentFilter">
+      <span class="visually-hidden">Department</span>
+      <select id="irDepartmentFilter">
+        <option value="all">All departments</option>
+        {% for sec in ir_overview %}<option value="{{ sec.section|e }}">{{ sec.section }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="ir-shift-filter" role="group" aria-label="Show shift">
+      <button type="button" class="active" data-ir-shift="all" aria-pressed="true">All shifts</button>
+      <button type="button" data-ir-shift="early" aria-pressed="false">Early</button>
+      <button type="button" data-ir-shift="late" aria-pressed="false">Late</button>
+      <button type="button" data-ir-shift="night" aria-pressed="false">Night</button>
+    </div>
+    <label class="ir-gap-toggle">
+      <input type="checkbox" id="irGapsOnly">
+      <span class="ir-toggle-track" aria-hidden="true"><i></i></span>
+      <span>Gaps only</span>
+    </label>
+  </div>
+
+  <p id="irResultsStatus" class="visually-hidden" aria-live="polite">Showing {{ ir_summary.roles_tracked }} roles</p>
+
+  <div class="ir-sections">
+    {% for sec in ir_overview %}
+    {% set sec_summary = ir_summary.section_stats.get(sec.section, {}) %}
+    <section class="ir-section" data-ir-section data-section-name="{{ sec.section|e }}">
+      <header class="ir-section-header">
+        <div><h2>{{ sec.section }}</h2><span>{{ sec.roles|length }} role{{ '' if sec.roles|length == 1 else 's' }} · {{ sec_summary.get('roles_on_target', 0) }} on target</span></div>
+        <button type="button" class="btn btn-ghost btn-sm" data-copy-target="#irCoverageTable-{{ loop.index }}" data-copy-mode="ir-table" data-copy-title="{{ sec.section }} — Indirect Roles Coverage" data-copy-filename="indirect-roles-{{ sec.section|lower|replace(' ', '-') }}"><span>Copy as image</span></button>
+      </header>
+      <div class="ir-table-scroll">
+        <table class="ir-coverage-table" id="irCoverageTable-{{ loop.index }}">
+          <thead>
+            <tr>
+              <th scope="col">Role</th>
+              <th scope="col" class="ir-shift-col" data-shift="early"><span>Early shift</span></th>
+              <th scope="col" class="ir-shift-col" data-shift="late"><span>Late shift</span></th>
+              <th scope="col" class="ir-shift-col" data-shift="night"><span>Night shift</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for role in sec.roles %}
+            {% set row = namespace(has_gap=false) %}
+            {% for s in role.shifts %}{% if s.pct is not none and s.pct < 95 %}{% set row.has_gap = true %}{% endif %}{% endfor %}
+            <tr data-ir-role data-search-text="{{ (sec.section ~ ' ' ~ role.role ~ ' ' ~ (role.special or ''))|lower|e }}" data-has-gap="{{ '1' if row.has_gap else '0' }}" data-ir-role-row data-role-name="{{ role.role|e }}" data-role-special="{{ role.special|replace('_', ' ')|title if role.special else '' }}">
+              <th scope="row" class="ir-role-cell">
+                <strong>{{ role.role }}</strong>
+                {% if role.special %}<small>{{ role.special|replace('_', ' ')|title }}</small>{% endif %}
+              </th>
+              {% for s in role.shifts %}
+              {% set state = 'muted' if s.target <= 0 else ('ok' if s.pct >= 95 else ('risk' if s.pct >= 80 else 'gap')) %}
+              <td class="ir-shift-col" data-shift="{{ s.shift }}">
+                <div class="ir-coverage-cell ir-state-{{ state }}" data-ir-shift-cell data-shift-label="{{ s.shift|capitalize }}" data-state="{{ state }}" data-actual="{{ s.total_trained }}" data-target="{{ s.target }}" data-pct="{{ s.pct if s.pct is not none else '' }}" data-ready="{{ s.trained }}" data-no-practice="{{ s.no_practice }}" data-not-trained="{{ s.not_trained }}">
+                  {% if s.target > 0 %}
+                  <div class="ir-coverage-top">
+                    <button type="button" class="ir-ratio js-ir-members" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="trained" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" aria-label="View {{ s.total_trained }} trained associates for {{ role.role }} on {{ s.shift }} shift">
+                      <strong>{{ s.total_trained }}</strong><span>/ {{ s.target }}</span>
+                    </button>
+                    <div class="ir-coverage-state">
+                      <span class="ir-percent">{{ s.pct }}%</span>
+                    </div>
+                  </div>
+                  <div class="ir-meter" aria-hidden="true"><i style="width:{{ [s.pct, 100]|min }}%"></i></div>
+                  {% else %}
+                  <div class="ir-coverage-top">
+                    <button type="button" class="ir-ratio js-ir-members" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="trained" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" aria-label="View {{ s.total_trained }} trained associates for {{ role.role }} on {{ s.shift }} shift">
+                      <strong>{{ s.total_trained }}</strong><span>trained</span>
+                    </button>
+                    <span class="ir-no-target-note">Target not set</span>
+                  </div>
+                  {% endif %}
+                  <div class="ir-readiness-grid" aria-label="Associate readiness status">
+                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-ready" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="trained" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View associates trained with practice">
+                      <span><i aria-hidden="true"></i>Ready</span><strong>{{ s.trained }}</strong>
+                    </button>
+                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-practice" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="no_practice" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View trained associates with no practice logged">
+                      <span><i aria-hidden="true"></i>No practice</span><strong>{{ s.no_practice }}</strong>
+                    </button>
+                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-untrained" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="not_trained" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View associates with practice but no training record">
+                      <span><i aria-hidden="true"></i>Not trained</span><strong>{{ s.not_trained }}</strong>
+                    </button>
+                  </div>
+                </div>
+              </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endfor %}
+    <div class="ir-empty-filter" id="irEmptyFilter" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 4 4"/></svg>
+      <strong>No matching roles</strong>
+      <span>Try a different search or turn off “Gaps only”.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+function ldocOpenIrMembers(roleId, shift, bucket, roleName, shiftLabel) {
+  Ldoc.openIrRoleMembers(roleId, shift, bucket, roleName, shiftLabel, { wide: true });
+}
+
+(function () {
+  var root = document.getElementById('irCoverageExplorer');
+  if (!root) return;
+  var search = document.getElementById('irRoleSearch');
+  var department = document.getElementById('irDepartmentFilter');
+  var gapsOnly = document.getElementById('irGapsOnly');
+  var status = document.getElementById('irResultsStatus');
+  var empty = document.getElementById('irEmptyFilter');
+  var priority = document.getElementById('irPriorityInsight');
+  var reviewPriority = document.getElementById('irReviewPriority');
+  var rows = Array.prototype.slice.call(root.querySelectorAll('[data-ir-role]'));
+  var sections = Array.prototype.slice.call(root.querySelectorAll('[data-ir-section]'));
+
+  // Table rows are set visible/hidden via style.display directly, not
+  // the "hidden" attribute/property — the hidden attribute is
+  // documented to be unreliable on <tr> in some browsers, since the
+  // browser's own "display: table-row" default for table rows can win
+  // out over "[hidden] { display: none }" depending on the user agent
+  // stylesheet's internal specificity/order. An inline style always
+  // wins, so it sidesteps that entirely.
+  function updateRows() {
+    var query = (search.value || '').trim().toLowerCase();
+    var departmentName = department.value;
+    var gaps = gapsOnly.checked;
+    var visible = 0;
+    rows.forEach(function (row) {
+      var matchesSearch = !query || (row.dataset.searchText || '').indexOf(query) !== -1;
+      var section = row.closest('[data-ir-section]');
+      var matchesDepartment = departmentName === 'all' || section.dataset.sectionName === departmentName;
+      var matchesGap = !gaps || row.dataset.hasGap === '1';
+      var show = matchesSearch && matchesDepartment && matchesGap;
+      row.style.display = show ? '' : 'none';
+      if (show) visible += 1;
+    });
+    sections.forEach(function (section) {
+      var hasVisibleRow = Array.prototype.some.call(section.querySelectorAll('[data-ir-role]'), function (row) {
+        return row.style.display !== 'none';
+      });
+      section.style.display = hasVisibleRow ? '' : 'none';
+    });
+    empty.hidden = visible !== 0;
+    status.textContent = 'Showing ' + visible + ' of ' + rows.length + ' roles';
+  }
+
+  search.addEventListener('input', updateRows);
+  department.addEventListener('change', updateRows);
+  gapsOnly.addEventListener('change', updateRows);
+
+  function setShiftFocus(shift) {
+    root.querySelectorAll('[data-ir-shift]').forEach(function (item) {
+      var active = item.dataset.irShift === shift;
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    root.dataset.shiftFocus = shift;
+  }
+
+  root.querySelectorAll('[data-ir-shift]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      setShiftFocus(button.dataset.irShift);
+    });
+  });
+
+  if (priority && reviewPriority) {
+    reviewPriority.addEventListener('click', function () {
+      department.value = priority.dataset.section;
+      gapsOnly.checked = true;
+      search.value = '';
+      setShiftFocus(priority.dataset.shift);
+      updateRows();
+      root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  root.addEventListener('click', function (event) {
+    var button = event.target.closest('.js-ir-members');
+    if (!button) return;
+    ldocOpenIrMembers(button.dataset.roleId, button.dataset.shift, button.dataset.bucket, button.dataset.roleName, button.dataset.shiftLabel);
+  });
+
+  if (window.Ldoc) Ldoc.wireCopyAsImageButtons(root);
+})();
+</script>
+{% endif %}
+{% endblock %}

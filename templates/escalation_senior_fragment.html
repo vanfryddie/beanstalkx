@@ -1,0 +1,67 @@
+{% if not groups %}
+<div class="empty-state" style="padding:24px 10px;">No open escalations here.</div>
+{% else %}
+<div style="display:flex; flex-direction:column; gap:10px;">
+  {% for g in groups %}
+  <div class="panel" style="margin-bottom:0; padding:12px 14px;">
+    <button type="button" style="all:unset; cursor:pointer; display:flex; justify-content:space-between; align-items:center; width:100%;"
+            onclick="var el=document.getElementById('escGroup{{ loop.index }}'); el.style.display = el.style.display==='none' ? 'block' : 'none';">
+      <span>
+        <span class="enterprise-status enterprise-phase enterprise-phase-{{ g.phase }}"><span aria-hidden="true"></span>Phase {{ g.phase }}</span>
+        <strong style="margin-left:8px;" class="mono">{{ g.target }}</strong>
+      </span>
+      <span style="font-size:12.5px; color:var(--text-lo);">{{ (g.records|length + g.tickets|length) }} item{{ 's' if (g.records|length + g.tickets|length) != 1 }} <span aria-hidden="true">▾</span></span>
+    </button>
+    <div id="escGroup{{ loop.index }}" style="display:none; margin-top:10px;">
+      {% if g.kind == 'record' %}
+      <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+        <thead>
+          <tr>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Employee</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Login</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">FC</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">AM</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Topic</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in g.records %}
+          <tr>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.full_name or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.employee_login or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.fc or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ r.am_login or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.subcategory or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ r.item_status or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+        <thead>
+          <tr>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Ticket</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Categories</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Concerning</th>
+            <th style="text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Created by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in g.tickets %}
+          <tr>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);"><a href="#" onclick="Ldoc.openEscalationTicket({{ t.id }}); return false;" class="mono">{{ t.ticket_number }}</a></td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);">{{ t.categories.replace(',', ', ') }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ t.concerning_manager or '—' }}</td>
+            <td style="padding:5px 6px; border-bottom:1px solid var(--line);" class="mono">{{ t.created_by or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

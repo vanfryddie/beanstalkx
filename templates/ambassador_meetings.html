@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Ambassador Meetings — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Ambassador Meetings</h1>
+<p class="page-sub">Weekly ambassador meeting attendance — Receive, RSP, Pack Multis/Pack Singles/AFE together, and Ship Dock.</p>
+
+<div class="tabbar">
+  {% for key, label in shifts.items() %}
+  <a href="{{ url_for('ambassador_meetings', shift=key, week=week_start) }}" class="{{ 'active' if shift==key }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+<div class="controls-bar recommendation-toolbar">
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('ambassador_meetings', shift=shift, week=prev_week) }}">← Prev week</a>
+  <strong class="recommendation-week">{{ week_label }}</strong>
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('ambassador_meetings', shift=shift, week=next_week) }}">Next week →</a>
+  <form method="GET" style="display:flex; align-items:center; gap:6px; margin-left:12px;">
+    <input type="hidden" name="shift" value="{{ shift }}">
+    <label style="font-size:12px; color:var(--text-lo);">Jump to any week:</label>
+    <input type="date" name="week" value="{{ week_start }}" onchange="this.form.submit()" style="padding:5px 7px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+  </form>
+</div>
+
+<div class="panel-row" style="flex-wrap:wrap;">
+  {% for g in groups %}
+  <div class="panel" style="min-width:340px; flex:1 1 380px; {% if g.status == 'cancelled' %}border-color:var(--red); background:#fef4f2;{% elif g.status == 'biweekly_skip' %}border-color:var(--gold-deep); background:#fff8ec;{% endif %}">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+      <div>
+        <h2 class="panel-title" style="margin-bottom:2px; cursor:pointer;" onclick="Ldoc.openMeetingHost('{{ url_for('ambassador_meeting_host', group_key=g.key, shift=shift, week=week_start) }}')" title="Open host view">{{ g.label }} <span aria-hidden="true" style="font-size:12px; color:var(--text-lo);">⤢</span></h2>
+        <p style="font-size:12px; color:var(--text-lo); margin:0;">{{ g.ambassadors|length }} ambassador{{ 's' if g.ambassadors|length != 1 }}</p>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        {% if g.status == 'cancelled' %}<span class="pill pill-risk">Cancelled</span>
+        {% elif g.status == 'biweekly_skip' %}<span class="pill pill-gap">Biweekly skip</span>
+        {% else %}<span class="pill pill-ok">Held</span>{% endif %}
+        <button type="button" class="btn btn-gold btn-sm" onclick="Ldoc.openMeetingHost('{{ url_for('ambassador_meeting_host', group_key=g.key, shift=shift, week=week_start) }}')">Host meeting →</button>
+      </div>
+    </div>
+
+    {% if g.status == 'cancelled' and g.meeting and g.meeting.cancel_reason %}
+    <p style="font-size:12.5px; color:var(--red); margin:8px 0 0;"><strong>Reason:</strong> {{ g.meeting.cancel_reason }}</p>
+    {% endif %}
+
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin:10px 0;">
+      {% if g.status != 'held' %}
+      <form method="POST"><input type="hidden" name="action" value="reopen"><input type="hidden" name="shift" value="{{ shift }}"><input type="hidden" name="week" value="{{ week_start }}"><input type="hidden" name="group_key" value="{{ g.key }}">
+        <button class="btn btn-ghost btn-sm" type="submit">Reopen as held</button>
+      </form>
+      {% else %}
+      <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('cancelForm-{{ g.key }}').style.display='flex'">Cancel meeting</button>
+      <form method="POST" style="display:inline;"><input type="hidden" name="action" value="biweekly"><input type="hidden" name="shift" value="{{ shift }}"><input type="hidden" name="week" value="{{ week_start }}"><input type="hidden" name="group_key" value="{{ g.key }}">
+        <button class="btn btn-ghost btn-sm" type="submit">Mark biweekly skip</button>
+      </form>
+      {% endif %}
+    </div>
+
+    <form method="POST" id="cancelForm-{{ g.key }}" style="display:none; gap:6px; margin-bottom:10px;">
+      <input type="hidden" name="action" value="cancel">
+      <input type="hidden" name="shift" value="{{ shift }}">
+      <input type="hidden" name="week" value="{{ week_start }}">
+      <input type="hidden" name="group_key" value="{{ g.key }}">
+      <input type="text" name="cancel_reason" placeholder="Reason for cancelling (required)" required style="flex:1; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;">
+      <button class="btn btn-gold btn-sm" type="submit">Confirm cancel</button>
+    </form>
+
+    {% if g.ambassadors %}
+    <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Ambassador</th>
+          <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Dept</th>
+          <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Attendance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in g.ambassadors %}
+        <tr>
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line);">{{ a.full_name or a.login }}</td>
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line);" class="mono">{{ a.department }}</td>
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line);">
+            <form method="POST" onchange="this.requestSubmit()">
+              <input type="hidden" name="action" value="attendance">
+              <input type="hidden" name="shift" value="{{ shift }}">
+              <input type="hidden" name="week" value="{{ week_start }}">
+              <input type="hidden" name="group_key" value="{{ g.key }}">
+              <input type="hidden" name="ambassador_id" value="{{ a.id }}">
+              <select name="attendance_status" style="font-size:12.5px; padding:4px 6px;">
+                <option value="">— not recorded —</option>
+                {% for key, label in attendance_statuses %}
+                <option value="{{ key }}" {% if a.attendance and a.attendance.attendance_status==key %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state" style="padding:16px 4px;">No ambassadors listed for {{ g.departments|join(', ') }} on this shift yet — add them in <a href="{{ url_for('ambassador_management', shift=shift) }}">Ambassador Management</a>.</div>
+    {% endif %}
+
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+      <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Meeting agenda</label>
+      <form method="POST" style="display:flex; gap:6px; margin-top:4px;">
+        <input type="hidden" name="action" value="notes">
+        <input type="hidden" name="shift" value="{{ shift }}">
+        <input type="hidden" name="week" value="{{ week_start }}">
+        <input type="hidden" name="group_key" value="{{ g.key }}">
+        <textarea name="notes" rows="3" placeholder="Agenda for this week's meeting…" style="flex:1; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font-size:12.5px; resize:vertical;">{{ g.meeting.notes if g.meeting else '' }}</textarea>
+        <button class="btn btn-ghost btn-sm" type="submit" style="align-self:flex-end;">Save</button>
+      </form>
+    </div>
+
+    <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+      <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Materials</label>
+      {% if g.documents %}
+      <ul style="list-style:none; padding:0; margin:6px 0;">
+        {% for doc in g.documents %}
+        <li style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12.5px;">
+          <a href="{{ url_for('ambassador_meeting_document', doc_id=doc.id) }}" target="_blank">{{ doc.original_name }}</a>
+          <form method="POST" action="{{ url_for('ambassador_meeting_document_delete', doc_id=doc.id) }}" onsubmit="return confirm('Remove this document?');">
+            <button class="btn btn-ghost btn-sm" type="submit" style="padding:2px 8px;">Remove</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <form method="POST" enctype="multipart/form-data" style="display:flex; gap:6px; margin-top:4px;">
+        <input type="hidden" name="action" value="upload">
+        <input type="hidden" name="shift" value="{{ shift }}">
+        <input type="hidden" name="week" value="{{ week_start }}">
+        <input type="hidden" name="group_key" value="{{ g.key }}">
+        <input type="file" name="documents" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.webp" style="flex:1; font-size:12px;">
+        <button class="btn btn-ghost btn-sm" type="submit">Upload</button>
+      </form>
+      <p style="font-size:10.5px; color:var(--text-lo); margin:4px 0 0;">PDFs and images open right in the meeting host view. Word/PowerPoint files download instead — browsers can't render those formats natively.</p>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+{% endblock %}

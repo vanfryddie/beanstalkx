@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Ambassador Definitions — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Ambassador Definitions</h1>
+<p class="page-sub">Target number of ambassadors per department, per shift. Only L&D can change these.</p>
+
+<a href="{{ url_for('ambassador_management', shift='early') }}" class="btn btn-ghost btn-sm" style="margin-bottom:16px;">← Back to Ambassador Management</a>
+
+<div class="panel">
+  <form method="POST" action="{{ url_for('ambassador_definitions') }}">
+    <div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+          {% for skey, slabel in shifts.items() %}
+          <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">{{ slabel }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for dept in departments %}
+        <tr>
+          <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ dept }}</td>
+          {% for skey, slabel in shifts.items() %}
+          <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;">
+            <input type="hidden" name="department" value="{{ dept }}">
+            <input type="hidden" name="shift" value="{{ skey }}">
+            <input type="number" min="0" name="target" value="{{ targets.get(dept, {}).get(skey, 0) }}" style="width:64px; padding:4px 6px; font-size:13px; border:1px solid var(--line); border-radius:5px; text-align:right;">
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div style="margin-top:16px;">
+      <button class="btn btn-gold btn-sm" type="submit">Save all changes</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel" style="margin-top:20px;">
+  <h2 class="panel-title" style="margin-bottom:2px;">Tracked processes</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:4px 0 14px;">Which processes count toward Ambassador Practice Health, per department. A department with nothing listed here isn't tracked at all — the Ambassador Practice page will say so explicitly rather than showing a misleading 0.</p>
+
+  <form method="POST" action="{{ url_for('ambassador_process_definition_add') }}" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:18px; padding-bottom:18px; border-bottom:1px solid var(--line);">
+    <div class="field" style="margin:0;">
+      <label>Department</label>
+      <select name="department" required>
+        {% for dept in departments %}<option value="{{ dept }}">{{ dept }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin:0; flex:1 1 200px;">
+      <label>Process name</label>
+      <input type="text" name="process" placeholder="Exact name as it appears in Cross-Training uploads" required>
+    </div>
+    <button class="btn btn-gold btn-sm" type="submit">Add process</button>
+  </form>
+
+  {% if process_definitions %}
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Process</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Added by</th>
+        <th style="padding:6px 8px; border-bottom:2px solid var(--navy);"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in process_definitions %}
+      <tr>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ d.department }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ d.process }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); color:var(--text-lo);" class="mono">{{ d.added_by or '—' }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;">
+          <form method="POST" action="{{ url_for('ambassador_process_definition_remove', definition_id=d.id) }}" onsubmit="return confirm('Stop tracking {{ d.process|e }} for {{ d.department|e }}? Existing hours data isn\'t affected, only what shows going forward.');">
+            <button type="submit" class="btn btn-ghost btn-sm">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:20px;">No processes tracked yet — add one above.</div>
+  {% endif %}
+</div>
+{% endblock %}

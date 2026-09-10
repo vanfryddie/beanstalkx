@@ -1,0 +1,34 @@
+<div class="needs-header">
+  <h3 style="margin:0 0 2px; font-size:14.5px; color:var(--navy);">Needs: {{ slot.training_name or 'this training' }}</h3>
+  <p style="margin:0; font-size:11.5px; color:var(--text-lo);">
+    {% if scope_am %}Your associates{% elif scope_shift %}{{ {'early':'Early','late':'Late','night':'Night'}[scope_shift] }} shift, all managers{% endif %}
+    · next 60 days, most overdue first
+  </p>
+</div>
+
+{% if needs %}
+<div class="needs-list">
+  {% for r in needs %}
+  <div class="gap-card needs-card {{ 'needs-planned' if r.planned_day_index is not none }}"
+       draggable="{{ 'false' if r.planned_day_index is not none else 'true' }}"
+       data-login="{{ r.employee_login }}" data-name="{{ r.full_name or r.employee_login }}" data-fc="{{ r.fc or '' }}">
+    {% if r.planned_flagged %}<span class="rec-flag" title="{{ r.planned_flag_reason }}">⚠️</span>{% endif %}
+    <div class="gap-name">{{ r.full_name or r.employee_login }}</div>
+    <div class="gap-topic">{{ r.subcategory or '—' }}{% if r.fc %} · {{ r.fc }}{% endif %}</div>
+    {% if r.planned_day_index is not none %}
+    <div class="gap-due"><span class="pill pill-planned">Planned for {{ day_names[r.planned_day_index] }}{% if r.planned_start_time %} at {{ r.planned_start_time }}{% endif %}</span></div>
+    {% else %}
+    <div class="gap-due">
+      <span class="pill pill-{{ 'gap' if r.days_to_due is not none and r.days_to_due < 0 else 'risk' }}">
+        {% if r.days_to_due is none %}no due date
+        {% elif r.days_to_due < 0 %}overdue {{ -r.days_to_due }}d
+        {% else %}due in {{ r.days_to_due }}d{% endif %}
+      </span>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state" style="padding:30px 10px;">Nobody currently needs this training within 60 days, in scope.</div>
+{% endif %}

@@ -1,0 +1,529 @@
+{% extends "base.html" %}
+{% block title %}AM Overview — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Your area's L&amp;D status at a glance</h1>
+<p class="page-sub">A focused view of L&D compliance, weekly planning, training requirements and staffing coverage.</p>
+
+{% if my_ld_rankings %}
+{% set total = my_ld_rankings.get('total') %}
+<div class="am-ld-rankings">
+  <div class="am-rank-grid">
+    {% for key, label, _sections in ld_metrics %}
+    {% set m = my_ld_rankings.get(key) %}
+    {% if m %}
+    <a href="{{ url_for('scorecards', tab='manager_rankings', metric=key) }}" class="am-rank-tile {{ 'am-rank-tile-ok' if m.status == 'on_target' else 'am-rank-tile-attention' }}">
+      <span class="am-rank-tile-label">{{ label }}</span>
+      <span class="am-rank-tile-num">#{{ m.rank if m.rank else '—' }}</span>
+      <span class="am-rank-tile-score">{{ m.score if m.score is not none else '—' }}{% if m.score is not none %}%{% endif %}</span>
+    </a>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if can_ops_manage or can_admin %}
+<form class="controls-bar" method="GET">
+  <input type="hidden" name="tab" value="{{ tab }}">
+  <div class="field">
+    <label>Area Manager</label>
+    <select name="am" onchange="this.form.submit()">
+      <option value="">All AMs</option>
+      {% for a in ams %}<option value="{{ a }}" {% if a==am_scope %}selected{% endif %}>{{ a }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label>FC</label>
+    <select name="fc" onchange="this.form.submit()">
+      <option value="">All FCs</option>
+      {% for f in fcs %}<option value="{{ f }}" {% if f==fc_scope %}selected{% endif %}>{{ f }}</option>{% endfor %}
+    </select>
+  </div>
+</form>
+{% endif %}
+
+<div class="tabbar">
+  <a href="{{ url_for('overview', tab='myscorecard', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='myscorecard' }}">My L&D Scorecard</a>
+  <a href="{{ url_for('overview', tab='planning', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='planning' }}">Planning</a>
+  <a href="{{ url_for('overview', tab='training', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='training' }}">My Trainings</a>
+  <a href="{{ url_for('overview', tab='olr', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='olr' }}">OLR</a>
+</div>
+
+{% macro section_grid(groups, scope_am, scope_fc) %}
+<div class="section-card-grid">
+  {% for key, card in groups.items() %}
+  <a class="section-card" href="{{ url_for('section_detail', section=key, am=scope_am, fc=scope_fc) }}">
+    <h4>{{ section_labels[key] }}</h4>
+    {% if card.total %}
+    <div class="bar">
+      {% if card.ok %}<div class="seg-ok" style="width:{{ (card.ok/card.total*100)|round(1) }}%"></div>{% endif %}
+      {% if card.risk %}<div class="seg-risk" style="width:{{ (card.risk/card.total*100)|round(1) }}%"></div>{% endif %}
+      {% if card.gap %}<div class="seg-gap" style="width:{{ (card.gap/card.total*100)|round(1) }}%"></div>{% endif %}
+    </div>
+    <div class="bar-legend">
+      <span class="leg-ok">{{ card.ok }} on track</span>
+      <span class="leg-risk">{{ card.risk }} at risk</span>
+      <span class="leg-gap">{{ card.gap }} gap</span>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:14px 0;">No records yet</div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{% if tab == 'myscorecard' %}
+  <div class="ldoc-swap-wrap" id="ldoc-swap-wrap">
+    <div class="ldoc-view" id="ldoc-grid-view">
+      <div class="ldoc-score-hero">
+        <div class="ldoc-score-ring" style="--pct: {{ overall_score if overall_score is not none else 0 }};">
+          <div class="ldoc-score-ring-inner">
+            <div class="ldoc-score-ring-value">{{ overall_score if overall_score is not none else '—' }}</div>
+            <div class="ldoc-score-ring-label">avg score</div>
+          </div>
+        </div>
+        {% if my_ld_rankings and my_ld_rankings.get('total') %}
+        <div class="ldoc-ld-rank">
+          <div class="ldoc-ld-rank-num">#{{ my_ld_rankings['total'].rank if my_ld_rankings['total'].rank else '—' }}</div>
+          <div class="ldoc-ld-rank-label">L&amp;D Rank</div>
+        </div>
+        {% endif %}
+        <div class="ldoc-score-caption">
+          <h2>My L&D Scorecard</h2>
+          <p>Average compliance across all six categories below. Click a card to see who's compliant and who isn't.</p>
+          {% if my_ld_rankings and my_ld_rankings.get('total') %}
+          <a href="{{ url_for('scorecards', tab='manager_rankings', metric='total') }}" class="ldoc-full-rankings-link">View full rankings →</a>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="ldoc-cat-grid">
+        {% for c in scorecard_categories %}
+        {% set m = my_ld_rankings.get(c.key) if my_ld_rankings else None %}
+        <button type="button" class="ldoc-cat-card" data-key="{{ c.key }}" data-label="{{ c.label }}" onclick="ldocOpenCategory('{{ c.key }}', '{{ c.label|e }}')">
+          {% if m %}
+          <div class="ldoc-cat-rank">Rank <strong>#{{ m.rank if m.rank else '—' }}</strong></div>
+          {% endif %}
+          {% set pct = c.card.pct_ok %}
+          <div class="ldoc-cat-value {{ 'v-ok' if pct is not none and pct >= 90 else ('v-risk' if pct is not none and pct >= 70 else 'v-gap') }}">
+            {{ pct if pct is not none else '—' }}{% if pct is not none %}<span style="font-size:18px;">%</span>{% endif %}
+          </div>
+          <div class="ldoc-cat-label">{{ c.label }}</div>
+          <div class="ldoc-cat-sub">
+            {% if c.key == 'instructor_mgmt' and c.card.current is defined %}
+              {{ c.card.current }}/{{ c.card.target }} Ambassadors{% if c.card.ambassador_gap < 0 %} · {{ c.card.ambassador_gap }} gap{% elif c.card.target > 0 %} · On target ✓{% endif %}
+            {% elif c.key == 'ambassador_readiness' and c.card.ready_count is defined %}
+              {{ c.card.ready_count }}/{{ c.card.total }} ready{% if c.card.not_ready_count %} · {{ c.card.not_ready_count }} below hours{% endif %}{% if c.card.avg_attendance_pct is not none %} · {{ c.card.avg_attendance_pct }}% attendance{% endif %}
+            {% elif c.key == 'indirect_roles' and c.card.department is defined %}
+              {{ c.card.ok }} w/ practice{% if c.card.risk %} · {{ c.card.risk }} no practice{% endif %}{% if c.card.gap %} · {{ c.card.gap }} not trained{% endif %}
+            {% else %}
+              {{ c.card.total }} record{{ 's' if c.card.total != 1 }}{% if c.key == 'cross_training' and c.card.refresh %} · {{ c.card.refresh }} on Refresh{% endif %}
+            {% endif %}
+          </div>
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="ldoc-view ldoc-entering-start" id="ldoc-detail-view" style="display:none;">
+      <a class="ldoc-detail-back btn btn-ghost btn-sm" href="#" onclick="ldocCloseCategory(); return false;">← Back to My L&D Scorecard</a>
+      <h2 class="panel-title" id="ldoc-detail-title" style="margin-bottom:16px;"></h2>
+      <div id="ldoc-detail-body"></div>
+    </div>
+  </div>
+
+  <script>
+  function ldocOpenCategory(key, label) {
+    var grid = document.getElementById('ldoc-grid-view');
+    var detail = document.getElementById('ldoc-detail-view');
+    var body = document.getElementById('ldoc-detail-body');
+    var title = document.getElementById('ldoc-detail-title');
+    title.textContent = label;
+    body.innerHTML = '<div class="empty-state">Loading…</div>';
+
+    grid.classList.add('ldoc-leaving');
+    setTimeout(function () {
+      grid.style.display = 'none';
+      detail.style.display = 'block';
+      requestAnimationFrame(function () {
+        detail.classList.remove('ldoc-entering-start');
+        detail.classList.add('ldoc-entering-end');
+      });
+    }, 220);
+
+    var qs = new URLSearchParams({ am: '{{ am_scope or "" }}', fc: '{{ fc_scope or "" }}' });
+    fetch('/api/category-detail/' + encodeURIComponent(key) + '?' + qs.toString())
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        body.innerHTML = html;
+        // <script> tags injected via innerHTML never execute — that's
+        // why the Safety Compliance list looked inert (clicks did
+        // nothing). Bind it for real, the same way the Weekly Training
+        // Plan modal already does after its own fragment fetch.
+        if (window.Ldoc && Ldoc.bindCategoryDetail) Ldoc.bindCategoryDetail(body);
+      })
+      .catch(function () { body.innerHTML = '<div class="empty-state">Couldn\'t load this category. Try again.</div>'; });
+  }
+  function ldocCloseCategory() {
+    var grid = document.getElementById('ldoc-grid-view');
+    var detail = document.getElementById('ldoc-detail-view');
+    detail.classList.remove('ldoc-entering-end');
+    detail.classList.add('ldoc-entering-start');
+    setTimeout(function () {
+      detail.style.display = 'none';
+      grid.style.display = 'block';
+      requestAnimationFrame(function () { grid.classList.remove('ldoc-leaving'); });
+    }, 220);
+  }
+  </script>
+{% elif tab == 'planning' %}
+  <p class="page-sub" style="margin-top:-8px;">Who's actually scheduled into what this week{% if am_scope %}, for your team{% endif %}.</p>
+  <div class="controls-bar">
+    <a class="btn btn-ghost btn-sm" href="{{ url_for('overview', tab='planning', am=am_scope, fc=fc_scope, pweek=planning_prev_week) }}">← Prev week</a>
+    <strong style="align-self:center;">Week of {{ planning_week }}</strong>
+    <a class="btn btn-ghost btn-sm" href="{{ url_for('overview', tab='planning', am=am_scope, fc=fc_scope, pweek=planning_next_week) }}">Next week →</a>
+    {% if planning_week != planning_this_week %}
+    <a class="btn btn-ghost btn-sm" href="{{ url_for('overview', tab='planning', am=am_scope, fc=fc_scope, pweek=planning_this_week) }}">This week</a>
+    {% endif %}
+  </div>
+  <div class="ld-board">
+    {% for i in range(7) %}
+    <div class="ld-day-col">
+      <div class="ld-day-head">{{ day_names[i] }}<span class="mono">{{ planning_week_dates[i][5:] }}</span></div>
+      {% for session in planning_calendar.get(i, []) %}
+      <div class="slot-card" style="cursor:default;">
+        <div class="slot-title">{{ session.training_name }}</div>
+        <div class="slot-meta">{% if session.start_time %}{{ session.start_time }} · {% endif %}{{ session.shift|capitalize }} · {{ session.attendees|length }} of yours</div>
+        <div class="slot-attendees">
+          {% for a in session.attendees %}
+          <span class="chip {{ 'chip-flagged' if a.flagged }}" {% if a.flagged %}title="{{ a.flag_reason }}"{% endif %}>{% if a.flagged %}<span class="chip-flag">⚠️</span>{% endif %}{{ a.full_name or a.employee_login }}</span>
+          {% endfor %}
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-state" style="padding:16px 6px; font-size:12px;">Nothing planned</div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+{% elif tab == 'training' %}
+  {% if not am_scope %}
+  <p class="page-sub" style="margin-top:-8px;">Pick an Area Manager above to see their trainings.</p>
+  <div class="empty-state">No Area Manager selected.</div>
+  {% else %}
+  <p class="page-sub" style="margin-top:-8px;">
+    {% if am_scope == login %}Your own training and compliance requirements — most urgent first.
+    {% else %}{{ am_scope }}'s own training and compliance requirements — most urgent first.{% endif %}
+  </p>
+  <div class="panel" style="padding:0;">
+    {% if my_trainings %}
+    <table>
+      <thead><tr><th>Training</th><th>Status</th><th>Due / target</th><th>Notes</th></tr></thead>
+      <tbody>
+        {% for t in my_trainings %}
+        <tr>
+          <td>{{ t.subcategory or section_labels.get(t.section, t.section) }}</td>
+          <td>
+            {% set bucket = 'ok' if t.status in ['Compliant','Graduated','Complete','Fully Covered','On Track'] else ('gap' if t.status in ['Overdue','Not Started','Not Covered','Gap'] else 'risk') %}
+            <span class="pill pill-{{ bucket }}">{{ t.status }}</span>
+          </td>
+          <td class="mono">
+            {% if t.due_date %}{{ t.due_date }}
+              {% if t.days_to_due is not none %}
+                {% if t.days_to_due < 0 %}<span style="color:var(--red);"> (expired {{ -t.days_to_due }}d ago)</span>
+                {% else %}<span style="color:var(--text-lo);"> (in {{ t.days_to_due }}d)</span>{% endif %}
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td>{{ t.notes or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No trainings on record.</div>
+    {% endif %}
+  </div>
+  {% endif %}
+{% elif tab == 'olr' %}
+  {% if not olr_data %}
+  <div class="empty-state">Pick an Area Manager, Operations Manager, or Senior Operations Manager above to see their OLR trend.</div>
+  {% elif not olr_data.has_history %}
+  <div class="empty-state">No weekly OLR snapshots yet for this person — they're captured automatically whenever new data comes in through L&D Settings' Data Upload. Check back after the next upload.</div>
+  {% else %}
+  <p class="page-sub" style="margin-top:-8px;">{{ olr_data.week_count }} week{{ 's' if olr_data.week_count != 1 }} of history. Figures without a stored history yet (like Safety's top overdue topics) are shown as today's live snapshot instead of a trend.</p>
+
+  <div class="panel">
+    <h2 class="panel-title" style="margin-bottom:2px;">Weekly L&amp;D score</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:4px 0 12px;">Each of the 7 metrics, plus the Total L&amp;D composite, per calendar week.</p>
+    {{ olr_data.score_chart|safe }}
+    <div class="olr-legend">
+      {% for label, color in olr_data.score_colors.items() %}
+      <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:16px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">Rank development</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:4px 0 12px;">Where this person ranked among every AM/OM/SOM, per metric, per week. Lower is better — the chart's y-axis is inverted so 'up' always means improving.</p>
+    {% if olr_data.rank_chart %}{{ olr_data.rank_chart|safe }}{% else %}<div class="empty-state">No rank history yet.</div>{% endif %}
+    <div class="olr-legend">
+      {% for label, color in olr_data.score_colors.items() %}
+      <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="olr-grid-2">
+    <div class="panel">
+      <h2 class="panel-title" style="margin-bottom:2px;">Safety — average overdue days</h2>
+      {% if olr_data.overdue_days_chart %}{{ olr_data.overdue_days_chart|safe }}{% else %}<div class="empty-state">No overdue history yet.</div>{% endif %}
+      <h3 style="font-size:12.5px; margin:14px 0 8px;">Top overdue topics right now</h3>
+      {% if olr_data.safety_overdue_detail.top_topics %}
+      <ul class="olr-topic-list">
+        {% for t in olr_data.safety_overdue_detail.top_topics %}
+        <li><span>{{ t.topic }}</span><strong>{{ t.count }}</strong></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="empty-state" style="padding:12px 0;">Nothing currently overdue.</div>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h2 class="panel-title" style="margin-bottom:2px;">Indirect Roles — gaps per week</h2>
+      {% if olr_data.ir_gap_chart %}{{ olr_data.ir_gap_chart|safe }}{% else %}<div class="empty-state">No gap history yet.</div>{% endif %}
+    </div>
+
+    <div class="panel">
+      <h2 class="panel-title" style="margin-bottom:2px;">Ambassador Availability — gaps per week</h2>
+      {% if olr_data.ambassador_gap_chart %}{{ olr_data.ambassador_gap_chart|safe }}{% else %}<div class="empty-state">No gap history yet.</div>{% endif %}
+    </div>
+
+    <div class="panel">
+      <h2 class="panel-title" style="margin-bottom:2px;">Cross-Training — proficiency per week</h2>
+      {% if olr_data.xt_chart %}{{ olr_data.xt_chart|safe }}{% else %}<div class="empty-state">No history yet.</div>{% endif %}
+      <div class="olr-legend">
+        {% for label, color in olr_data.xt_colors.items() %}
+        <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+{% else %}
+  <p class="page-sub" style="margin-top:-8px;">Cross-training coverage, ambassador/peer capacity, and indirect role staffing.</p>
+  {{ section_grid(staffing, am_scope, fc_scope) }}
+{% endif %}
+
+{% if my_escalations.record_escalations or my_escalations.tickets %}
+<div class="panel-row" style="grid-template-columns:1fr; margin-top:8px;">
+  <div class="panel" style="border-color:var(--red); background:#fef4f2;">
+    <h2 class="panel-title" style="margin-bottom:2px;">Escalations</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">Concerning you, or currently assigned to you.</p>
+    {% if my_escalations.record_escalations %}
+    <table>
+      <thead><tr><th>Employee</th><th>Login</th><th>Topic</th><th>Phase</th><th>Due</th><th>Escalated</th></tr></thead>
+      <tbody>
+        {% for e in my_escalations.record_escalations %}
+        <tr>
+          <td>{{ e.full_name or '—' }}</td>
+          <td class="mono">{{ e.employee_login or '—' }}</td>
+          <td>{{ e.subcategory or '—' }}</td>
+          <td><span class="pill pill-risk">Phase {{ e.phase }}</span></td>
+          <td class="mono">{{ e.due_date or '—' }}</td>
+          <td class="mono">{{ e.escalated_at[:10] if e.escalated_at else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if my_escalations.tickets %}
+    <table style="{{ 'margin-top:10px;' if my_escalations.record_escalations }}">
+      <thead><tr><th>Ticket</th><th>Categories</th><th>Stage</th><th>Phase</th><th>Due</th></tr></thead>
+      <tbody>
+        {% for t in my_escalations.tickets %}
+        <tr>
+          <td class="mono"><a href="#" onclick="Ldoc.openEscalationTicket({{ t.id }}); return false;">{{ t.ticket_number }}</a></td>
+          <td>{{ t.categories.replace(',', ', ') }}</td>
+          <td><span class="pill pill-risk">{{ t.stage or '—' }}</span></td>
+          <td><span class="pill pill-gap">Phase {{ t.phase }}</span></td>
+          <td class="mono">{{ t.due_date or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    <a href="{{ url_for('escalations') }}" class="btn btn-ghost btn-sm" style="margin-top:12px;">Open escalation log →</a>
+  </div>
+</div>
+{% endif %}
+
+<div class="ld-layout overview-workbench" style="margin-top:8px;">
+  <section class="overview-plan-canvas">
+    <div class="overview-plan-heading">
+      <div><span class="overview-plan-eyebrow">Week of {{ current_week }}</span><h2 class="panel-title">This week's training plan</h2></div>
+      <a class="overview-plan-link" href="{{ url_for('ld_shift', shift='early') }}">Open full plan <span aria-hidden="true">→</span></a>
+    </div>
+    <div class="ld-board ld-board-compact">
+    {% for shift_key, shift_label in training_plan_shifts.items() %}
+      {% for i in range(7) %}
+        {% set day_slots = shift_slots[shift_key]|selectattr('day_index', 'equalto', i)|list %}
+        {% if day_slots %}
+        <div class="ld-day-col">
+          <div class="ld-day-head">{{ shift_label }} · {{ day_names[i] }}<span class="mono">{{ week_dates[i][5:] }}</span></div>
+          {% for s in day_slots %}
+          <div class="slot-card dropzone" data-slot-id="{{ s.id }}" data-day-index="{{ i }}" data-start-time="{{ s.start_time or '' }}">
+            <div class="slot-title">{{ s.training_name or 'Untitled training' }}</div>
+            <div class="slot-meta"><span class="slot-count">{{ s.attendees|length }}</span>{% if s.start_time %}{{ s.start_time }} · {% endif %}{% if s.capacity %} / {{ s.capacity }}{% endif %} enrolled</div>
+            <div class="slot-attendees">
+              {% for a in s.attendees %}<span class="chip {{ 'chip-flagged' if a.flagged }}" data-attendee-id="{{ a.id }}" {% if a.flagged %}title="{{ a.flag_reason }}"{% endif %}>{% if a.flagged %}<span class="chip-flag">⚠️</span>{% endif %}{{ a.full_name or a.employee_login }}<button type="button" class="chip-x" onclick="ldocOverviewRemoveAttendee(event, {{ a.id }})">×</button></span>{% else %}<span class="drop-hint">Drop here to enrol</span>{% endfor %}
+            </div>
+            <button type="button" class="btn btn-gold btn-sm slot-add-selected" data-slot-id="{{ s.id }}" style="display:none; margin-top:6px;" onclick="ldocOverviewBulkAdd(this)">+ Add selected</button>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      {% endfor %}
+    {% endfor %}
+    {% if shift_slots.values()|map('length')|sum == 0 %}
+    <div class="empty-state" style="grid-column:1/-1;">No slots created yet this week — <a href="{{ url_for('ld_shift', shift='early') }}">start the plan on the Weekly training plan</a>.</div>
+    {% endif %}
+    </div>
+  </section>
+  <aside class="ld-sidebar overview-needs-rail">
+    <div class="overview-needs-panel">
+      <h2 class="panel-title">Needs training</h2>
+      <p style="font-size:12px; color:var(--text-lo); margin-top:-10px;">Click to select (multiple OK), then drag onto a slot or use its "+ Add selected" button. ⚡ = recommended this week.</p>
+      {% if compliance_gaps %}
+      <div class="gap-list" id="overviewGapList">
+        {% for g in compliance_gaps %}
+        <div class="gap-card needs-card {{ 'gap-recommended' if g.recommended }} {{ 'needs-planned' if g.planned_day_index is not none }}"
+             {% if g.planned_day_index is none %}data-draggable="1"{% endif %}
+             {% if g.planned_day_index is not none %}data-attendee-id="{{ g.planned_attendee_id }}"{% endif %}
+             data-login="{{ g.employee_login }}" data-name="{{ g.full_name or g.employee_login }}" data-fc="{{ g.fc or '' }}">
+          {% if g.recommended and g.planned_day_index is none %}<span class="rec-flag" title="Recommended this week">⚡</span>{% endif %}
+          {% if g.planned_flagged %}<span class="rec-flag" title="{{ g.planned_flag_reason }}">⚠️</span>{% endif %}
+          <div class="gap-name">{{ g.full_name or g.employee_login }}</div>
+          <div class="gap-topic">{{ g.subcategory or '—' }}</div>
+          <div class="gap-due">
+            {% if g.planned_day_index is not none %}
+            <span class="pill pill-planned">Planned for {{ day_names[g.planned_day_index] }}{% if g.planned_start_time %} at {{ g.planned_start_time }}{% endif %}</span>
+            <button type="button" class="chip-x" data-attendee-id="{{ g.planned_attendee_id }}" title="Remove from session" onclick="ldocOverviewRemoveAttendee(event, {{ g.planned_attendee_id }})">×</button>
+            {% else %}
+            <span class="pill pill-{{ 'gap' if g.days_to_expiry is not none and g.days_to_expiry < 0 else 'risk' }}">
+              {% if g.days_to_expiry is none %}no expiry on file
+              {% elif g.days_to_expiry < 0 %}expired {{ -g.days_to_expiry }}d ago
+              {% else %}due in {{ g.days_to_expiry }}d{% endif %}
+            </span>
+            {% if g.fc %}<span class="mono" style="margin-left:6px;">{{ g.fc }}</span>{% endif %}
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">No compliance gaps for this scope.</div>
+      {% endif %}
+    </div>
+  </aside>
+</div>
+<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+<script>
+(function () {
+  var list = document.getElementById('overviewGapList');
+  var board = document.querySelector('.ld-board-compact');
+
+  function appendChip(container, data, res) {
+    var hint = container.querySelector('.drop-hint');
+    if (hint) hint.remove();
+    var chip = document.createElement('span');
+    chip.className = 'chip chip-landing' + (res.mismatch ? ' chip-flagged' : '');
+    chip.dataset.attendeeId = res.attendee_id;
+    if (res.mismatch) chip.title = res.mismatch_reason || '';
+    chip.innerHTML = (res.mismatch ? '<span class="chip-flag">⚠️</span>' : '') + data.full_name +
+      '<button type="button" class="chip-x" onclick="ldocOverviewRemoveAttendee(event, ' + res.attendee_id + ')">×</button>';
+    container.appendChild(chip);
+    setTimeout(function () { chip.classList.remove('chip-landing'); }, 420);
+  }
+
+  function removeChipEverywhere(attendeeId) {
+    document.querySelectorAll('[data-attendee-id="' + attendeeId + '"]').forEach(function (el) {
+      if (el.tagName !== 'SPAN') return; // chips only — the needs-card itself is reverted separately
+      var slotCard = el.closest('.slot-card');
+      el.remove();
+      if (slotCard) {
+        var countEl = slotCard.querySelector('.slot-count');
+        if (countEl) countEl.textContent = slotCard.querySelectorAll('.chip').length;
+      }
+    });
+  }
+
+  // A manual × on a chip or a planned needs-card — same underlying
+  // "undo" as a mismatch revert, just user-initiated instead of automatic.
+  window.ldocOverviewRemoveAttendee = function (e, attendeeId) {
+    if (e) e.stopPropagation();
+    Ldoc.undoAttendee(attendeeId).then(function (res) {
+      if (!res.ok) return;
+      removeChipEverywhere(attendeeId);
+      var card = document.querySelector('.needs-card[data-attendee-id="' + attendeeId + '"]');
+      if (card) { card.classList.remove('gap-recommended'); Ldoc.revertPlanned(card); }
+      Ldoc.toast('Removed from session.', 'toast-warning');
+    });
+  };
+
+  if (!list) return;
+
+  function landInSlot(slotId, group) {
+    var slotCard = document.querySelector('.slot-card[data-slot-id="' + slotId + '"]');
+    var dayIndex = slotCard ? parseInt(slotCard.dataset.dayIndex, 10) : null;
+    var startTime = slotCard ? slotCard.dataset.startTime : '';
+    Ldoc.submitAttendees(slotId, group, function (card, res, data) {
+      if (slotCard && !res.already_enrolled) {
+        appendChip(slotCard.querySelector('.slot-attendees'), data, res);
+        var countEl = slotCard.querySelector('.slot-count');
+        if (countEl) countEl.textContent = slotCard.querySelectorAll('.chip').length;
+        slotCard.classList.add('slot-just-landed');
+        setTimeout(function () { slotCard.classList.remove('slot-just-landed'); }, 500);
+      }
+      card.dataset.attendeeId = res.attendee_id;
+      // Use the day/time the API itself confirms the slot has, falling
+      // back to the board's own data attributes if that's ever missing.
+      Ldoc.markPlanned(card, res.day_index !== undefined ? res.day_index : dayIndex, res.start_time || startTime);
+    }).then(function (result) {
+      updateSlotButtons();
+      if (result.mismatches.length) {
+        Ldoc.showMismatchDialog(result.mismatches, function (undone) {
+          undone.forEach(function (m) {
+            removeChipEverywhere(m.attendeeId);
+            Ldoc.revertPlanned(m.card);
+          });
+          Ldoc.toast(undone.length + ' undone.', 'toast-warning');
+          updateSlotButtons();
+        });
+      }
+    });
+  }
+
+  function updateSlotButtons() {
+    var n = Ldoc.getSelected(list, '.needs-card').length;
+    document.querySelectorAll('.slot-add-selected').forEach(function (btn) {
+      btn.style.display = n > 0 ? 'inline-block' : 'none';
+      btn.textContent = '+ Add ' + n + ' selected';
+    });
+  }
+
+  window.ldocOverviewBulkAdd = function (btn) {
+    var selected = Ldoc.getSelected(list, '.needs-card');
+    if (!selected.length) return;
+    landInSlot(btn.dataset.slotId, selected);
+  };
+
+  Ldoc.initSelectable(list, '.needs-card', updateSlotButtons);
+  Ldoc.bindDrag(list, '.needs-card[data-draggable="1"]', '.ld-board-compact .dropzone', landInSlot);
+})();
+</script>
+
+{% endblock %}

@@ -1,0 +1,95 @@
+<div class="panel" style="border-color:{{ 'var(--red)' if card.gap else ('var(--gold-deep)' if card.risk else 'var(--line)') }};">
+  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">
+      {% if card.department %}{{ card.department }} · {{ card.shift|capitalize }} Shift{% else %}{{ card.departments|length }} departments across {{ card.pairs|map(attribute=1)|unique|list|length }} shift{{ 's' if card.pairs|map(attribute=1)|unique|list|length != 1 }}{% endif %}
+    </h2>
+    <span class="pill {{ 'pill-ok' if card.pct_ok is not none and card.pct_ok >= 95 else ('pill-risk' if card.pct_ok is not none and card.pct_ok >= 80 else 'pill-gap') }}">{{ card.pct_ok }}% compliant</span>
+  </div>
+  {% if not card.department %}
+  <p style="font-size:11.5px; color:var(--text-lo); margin:4px 0 0;">{{ card.departments|join(', ') }}</p>
+  {% endif %}
+  <p style="font-size:12px; color:var(--text-lo); margin:8px 0 0;">Trained with practice counts toward compliance. Trained but no practice, and not trained but with practice, both count against it — a headcount target being met doesn't mean everyone behind it is actually ready.</p>
+  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+    <span class="pill pill-ok">{{ card.ok }} w/ practice</span>
+    <span class="pill pill-risk">{{ card.risk }} no practice</span>
+    <span class="pill pill-gap">{{ card.gap }} not trained</span>
+  </div>
+</div>
+
+{% if card.breakdown and card.breakdown|length > 1 %}
+<div class="panel" style="margin-top:12px; padding:0;">
+  <h2 class="panel-title" style="padding:14px 16px 0;">By department &amp; shift</h2>
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 16px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Shift</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Roles</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">W/ practice</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">No practice</th>
+        <th style="text-align:right; padding:6px 16px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Not trained</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in card.breakdown %}
+      <tr style="{{ 'background:#fef4f2;' if b.gap else ('background:#fffbe8;' if b.risk) }}">
+        <td style="padding:6px 16px; border-bottom:1px solid var(--line); font-weight:600;">{{ b.department }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ b.shift|capitalize }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right; color:var(--text-lo);">{{ b.role_count }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ b.ok }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;">{% if b.risk %}<span class="pill pill-risk">{{ b.risk }}</span>{% else %}<span class="mono">0</span>{% endif %}</td>
+        <td style="padding:6px 16px; border-bottom:1px solid var(--line); text-align:right;">{% if b.gap %}<span class="pill pill-gap">{{ b.gap }}</span>{% else %}<span class="mono">0</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel" style="margin-top:12px;">
+  <h2 class="panel-title" style="margin-bottom:10px;">Roles{% if card.department %} in {{ card.department }} ({{ card.shift|capitalize }}){% endif %}</h2>
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        {% if not card.department %}
+        <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+        {% endif %}
+        <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Role</th>
+
+        <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Section</th>
+        <th style="text-align:right; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">W/ Practice</th>
+        <th style="text-align:right; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">No Practice</th>
+        <th style="text-align:right; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Not Trained</th>
+        <th style="text-align:right; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Target</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in card.roles %}
+      <tr>
+        {% if not card.department %}
+        <td style="padding:6px 6px; border-bottom:1px solid var(--line); color:var(--text-lo);">{{ r.department }}</td>
+        {% endif %}
+        <td style="padding:6px 6px; border-bottom:1px solid var(--line);">{{ r.role }}</td>
+        <td style="padding:6px 6px; border-bottom:1px solid var(--line); color:var(--text-lo);">{{ r.section }}</td>
+        <td style="padding:6px 6px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+          {% if r.shift.trained %}<button type="button" class="ir-status-link" onclick="Ldoc.openIrRoleMembers({{ r.role_id }}, '{{ r.shift.shift }}', 'trained', '{{ r.role|e }}', '{{ r.shift.shift|capitalize }}', {wide:true})">{{ r.shift.trained }}</button>{% else %}0{% endif %}
+        </td>
+        <td style="padding:6px 6px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+          {% if r.shift.no_practice %}<button type="button" class="ir-status-link" onclick="Ldoc.openIrRoleMembers({{ r.role_id }}, '{{ r.shift.shift }}', 'no_practice', '{{ r.role|e }}', '{{ r.shift.shift|capitalize }}', {wide:true})">{{ r.shift.no_practice }}</button>{% else %}0{% endif %}
+        </td>
+        <td style="padding:6px 6px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+          {% if r.shift.not_trained %}<button type="button" class="ir-status-link" onclick="Ldoc.openIrRoleMembers({{ r.role_id }}, '{{ r.shift.shift }}', 'not_trained', '{{ r.role|e }}', '{{ r.shift.shift|capitalize }}', {wide:true})">{{ r.shift.not_trained }}</button>{% else %}0{% endif %}
+        </td>
+        <td style="padding:6px 6px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ r.shift.target if r.shift.target >= 0 else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <a href="{{ url_for('indirect_roles_overview') }}" class="btn btn-ghost btn-sm" style="margin-top:12px;">Open Indirect Roles →</a>
+</div>
+
+

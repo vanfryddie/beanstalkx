@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Sign in — L&D Operations Console{% endblock %}
+{% block content_standalone %}
+<div class="login-wrap">
+  <button class="theme-toggle login-theme-toggle" type="button" aria-label="Switch to day mode" aria-pressed="true">
+    <span class="theme-icon theme-icon-sun" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2.2M12 19.8V22M4.93 4.93l1.56 1.56m11.02 11.02 1.56 1.56M2 12h2.2M19.8 12H22M4.93 19.07l1.56-1.56M17.51 6.49l1.56-1.56"/></svg></span>
+    <span class="theme-switch-knob"></span>
+    <span class="theme-icon theme-icon-moon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19.4 15.2A8 8 0 0 1 8.8 4.6 8.2 8.2 0 1 0 19.4 15.2Z"/></svg></span>
+  </button>
+  <div class="login-hero">
+    <div class="login-brand-lockup" role="img" aria-label="LDIS — Learning and Development Intelligence Systems">
+      <span class="brand-lockup" aria-hidden="true">
+        <img class="brand-lockup-light" src="{{ url_for('static', filename='ldis_brand.svg', v='20260820g') }}" alt="">
+        <img class="brand-lockup-dark" src="{{ url_for('static', filename='ldis_brand_dark.svg', v='20260820g') }}" alt="">
+      </span>
+    </div>
+    <div class="login-product"><span>L&D Operations Console</span><small>by LDIS</small></div>
+    <p>The unified workspace for planning, training status, staffing coverage and compliance at SCN2.</p>
+    <div class="login-data-status"><span></span>{{ freshness.n or 0 }} records available across all sections</div>
+  </div>
+  <div class="login-form-wrap">
+    <div class="login-card">
+      <h2>Welcome back</h2>
+      <p class="helper">Sign in to open your role-specific workspace.</p>
+      <form method="POST">
+        <div class="field">
+          <label for="login_id">Your login</label>
+          <input type="text" name="login_id" id="login_id" placeholder="e.g. hsouheil" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="role">Role (dev only — first login for this username)</label>
+          <select name="role" id="role">
+            <option value="">No role yet (pending)</option>
+            {% for key, label in roles.items() %}
+            <option value="{{ key }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button class="btn btn-gold" type="submit">Continue</button>
+      </form>
+      <p class="login-security">Protected internal operations workspace</p>
+    </div>
+  </div>
+</div>
+{% endblock %}

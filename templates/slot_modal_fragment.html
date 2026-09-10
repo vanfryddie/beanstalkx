@@ -1,0 +1,100 @@
+<div class="slot-modal-header">
+  <div>
+    <div class="slot-modal-eyebrow">{{ day_names[slot.day_index] }}{% if slot.start_time %} · {{ slot.start_time }}{% endif %}</div>
+    <h2 class="slot-modal-title">{{ slot.training_name or 'Untitled training' }}</h2>
+  </div>
+  <button type="button" class="slot-modal-close" onclick="ldocCloseModal()" aria-label="Close">×</button>
+</div>
+
+<div class="slot-modal-body">
+  <div class="slot-modal-main">
+    <div class="slot-modal-meta">
+      {% if slot.instructor %}<span>Ambassador: <strong>{{ slot.instructor }}</strong></span>{% endif %}
+      {% if slot.room %}<span>Room: <strong>{{ slot.room }}</strong></span>{% endif %}
+      <span><span class="slot-count">{{ slot.attendees|length }}</span>{% if slot.capacity %} / {{ slot.capacity }}{% endif %} enrolled</span>
+    </div>
+
+    <div class="slot-modal-dropzone dropzone" data-slot-id="{{ slot.id }}" data-day-index="{{ slot.day_index }}" data-start-time="{{ slot.start_time or '' }}" id="modalDropzone">
+      {% if slot.attendees %}
+      <div class="attendee-list" id="modalAttendees">
+        {% for a in slot.attendees %}
+        <div class="attendee-row {{ 'attendee-row-flagged' if a.flagged }}" data-attendee-id="{{ a.id }}">
+          <span class="attendee-name">{{ a.full_name or a.employee_login }}</span>
+          <span class="attendee-login mono">{{ a.employee_login }}</span>
+          {% if a.fc %}<span class="attendee-fc mono">{{ a.fc }}</span>{% endif %}
+          {% if a.flagged %}<span class="attendee-flag" title="{{ a.flag_reason }}">⚠️ possible mismatch</span>{% endif %}
+          {% if can_edit_plan %}<button type="button" class="chip-x" onclick="removeAttendee(event, {{ a.id }})">×</button>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="attendee-list" id="modalAttendees">
+        <span class="drop-hint">Drag an associate from the right to enrol them</span>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if can_create_slots %}
+    <details class="add-slot" style="margin-top:14px;">
+      <summary>Edit this slot</summary>
+      <form id="slotEditForm" data-slot-id="{{ slot.id }}" class="add-slot-form">
+        <div class="field"><label>Training</label>
+          <select name="training_id">
+            <option value="">— none —</option>
+            {% for t in trainings %}<option value="{{ t.id }}" {% if slot.training_id == t.id %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field"><label>Time</label><input type="time" name="start_time" value="{{ slot.start_time or '' }}"></div>
+        <div class="field"><label>Capacity</label><input type="number" name="capacity" min="1" value="{{ slot.capacity or '' }}"></div>
+        <div class="field"><label>Ambassador / instructor</label><input type="text" name="instructor" value="{{ slot.instructor or '' }}"></div>
+        <div class="field"><label>Room</label><input type="text" name="room" value="{{ slot.room or '' }}"></div>
+        <button class="btn btn-gold btn-sm" type="submit">Save changes</button>
+        <span id="slotEditStatus" style="margin-left:8px; font-size:12px; color:var(--text-lo);"></span>
+      </form>
+    </details>
+    <form method="POST" action="{{ url_for('ld_slot_delete', slot_id=slot.id) }}" onsubmit="return confirm('Remove this slot?');" style="margin-top:14px;">
+      <button class="btn btn-ghost btn-sm" type="submit">Remove this slot</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="slot-modal-side">
+    <div class="needs-header">
+      <h3 style="margin:0 0 2px; font-size:13.5px; color:var(--navy);">Needs this training</h3>
+      <p style="margin:0; font-size:11px; color:var(--text-lo);">
+        {% if scope_am %}Your associates{% elif scope_shift %}{{ {'early':'Early','late':'Late','night':'Night'}[scope_shift] }} shift, all managers{% endif %}
+        · next 60 days · click to select, drag to enrol
+      </p>
+    </div>
+    <div id="modalBulkBar" class="bulk-bar" style="display:none;">
+      <span><span id="modalBulkCount">0</span> selected</span>
+      <button type="button" class="btn btn-gold btn-sm" onclick="ldocModalBulkAdd()">+ Add to this training</button>
+    </div>
+    {% if needs %}
+    <div class="needs-list">
+      {% for r in needs %}
+      <div class="gap-card needs-card {{ 'needs-planned' if r.planned_day_index is not none }}"
+           data-login="{{ r.employee_login }}" data-name="{{ r.full_name or r.employee_login }}" data-fc="{{ r.fc or '' }}"
+           {% if r.planned_day_index is none %}data-draggable="1"{% endif %}>
+        {% if r.planned_flagged %}<span class="rec-flag" title="{{ r.planned_flag_reason }}">⚠️</span>{% endif %}
+        <div class="gap-name">{{ r.full_name or r.employee_login }}</div>
+        <div class="gap-topic">{{ r.subcategory or '—' }}{% if r.fc %} · {{ r.fc }}{% endif %}</div>
+        {% if r.planned_day_index is not none %}
+        <div class="gap-due"><span class="pill pill-planned">Planned for {{ day_names[r.planned_day_index] }}{% if r.planned_start_time %} at {{ r.planned_start_time }}{% endif %}</span></div>
+        {% else %}
+        <div class="gap-due">
+          <span class="pill pill-{{ 'gap' if r.days_to_due is not none and r.days_to_due < 0 else 'risk' }}">
+            {% if r.days_to_due is none %}no due date
+            {% elif r.days_to_due < 0 %}overdue {{ -r.days_to_due }}d
+            {% else %}due in {{ r.days_to_due }}d{% endif %}
+          </span>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:30px 10px;">Nobody currently needs this training within 60 days, in scope.</div>
+    {% endif %}
+  </div>
+</div>

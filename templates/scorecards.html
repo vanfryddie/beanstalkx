@@ -1,0 +1,1171 @@
+{% extends "base.html" %}
+{% block title %}Reporting — L&D Operations Console{% endblock %}
+{% block content %}
+<div class="reporting-page">
+{% if tab == 'ambassador_hours' %}
+<div class="ah-page-head">
+  <div>
+    <h1 class="page-title">Ambassador Practice</h1>
+    <p class="page-sub">Monitor process practice against the 20-hour standard.</p>
+  </div>
+  <div class="ah-page-actions">
+    <span class="ah-period" aria-label="Reporting period: last 60 days">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7.5 3.5v4m9-4v4m-13 3h17"/></svg>
+      Last 60 days
+    </span>
+    <a class="btn ah-export" href="{{ url_for('ambassador_hours_export') }}" download>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 17v3h14v-3"/></svg>
+      Export report
+    </a>
+  </div>
+</div>
+{% elif tab == 'ambassador_attendance' %}
+<div class="ah-page-head">
+  <div>
+    <h1 class="page-title">Ambassador Attendance</h1>
+    <p class="page-sub">Compare attendance across departments and shifts.</p>
+  </div>
+</div>
+{% elif tab == 'manager_rankings' %}
+<div class="stc-page-head">
+  <div>
+    <h1 class="page-title">Safety Training Compliance Ranking</h1>
+    <p class="page-sub">Compare manager compliance, overdue risk and recent movement.</p>
+  </div>
+</div>
+{% else %}
+<h1 class="page-title">Reporting</h1>
+<p class="page-sub">Data flows from section records up through two topic scorecards, into one overall L&D Scorecard, and finally the Senior Leadership Scorecard — each level trading detail for aggregation.</p>
+{% endif %}
+
+{% if can_see_som_om %}
+<div class="tabbar">
+  <a href="{{ url_for('scorecards', tab='reporting') }}" class="{{ 'active' if tab=='reporting' }}">Reporting</a>
+  <a href="{{ url_for('scorecards', tab='som_om') }}" class="{{ 'active' if tab=='som_om' }}">SOM/OM Overview</a>
+  <a href="{{ url_for('scorecards', tab='manager_rankings') }}" class="{{ 'active' if tab=='manager_rankings' }}">Compliance Rankings</a>
+  {% if can_admin %}
+  <a href="{{ url_for('scorecards', tab='ambassador_attendance') }}" class="{{ 'active' if tab=='ambassador_attendance' }}">Ambassador Attendance</a>
+  <a href="{{ url_for('scorecards', tab='ambassador_hours') }}" class="{{ 'active' if tab=='ambassador_hours' }}">Ambassador Practice</a>
+  <a href="{{ url_for('scorecards', tab='escalations') }}" class="{{ 'active' if tab=='escalations' }}">Escalations</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if tab == 'escalations' %}
+<p class="page-sub" style="margin-top:-8px;">Every Senior Operations Manager and General Manager/Site Lead, with open escalations (both record escalations and Log Escalation tickets) assigned to them or anywhere in their reporting tree, by phase. Click a card to see who's been escalated and drill into the records.</p>
+
+<div class="panel-row" style="flex-wrap:wrap;">
+  {% for b in escalation_org_summary %}
+  <button type="button" class="panel" style="text-align:left; cursor:pointer; min-width:240px; flex:1 1 260px; border:1px solid var(--line); {% if b.senior_login=='other' %}border-color:var(--gold-deep); background:#fff8ec;{% endif %}" onclick="ldocOpenEscalationSenior('{{ b.senior_login }}')">
+    <h2 class="panel-title" style="margin-bottom:2px;">{{ 'Other' if b.senior_login == 'other' else (b.senior_name or b.senior_login) }}</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">
+      {% if b.senior_login == 'other' %}Escalations whose chain doesn't resolve up to a configured senior
+      {% else %}<span class="mono">{{ b.senior_login }}</span>{% if b.senior_title %} · {{ b.senior_title }}{% endif %}{% endif %}
+    </p>
+    <div class="escalation-phase-metrics">
+      <span><small>Phase 1</small><strong>{{ b.phase_1 }}</strong></span>
+      <span><small>Phase 2</small><strong>{{ b.phase_2 }}</strong></span>
+      <span><small>Phase 3</small><strong>{{ b.phase_3 }}</strong></span>
+    </div>
+  </button>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No Senior Operations Managers or General Managers/Site Leads found yet — assign the role in L&D Settings, or run auto-detect.</div>
+  {% endfor %}
+</div>
+
+<div class="panel" style="padding:0; margin-top:16px;">
+  <h2 class="panel-title" style="padding:16px 18px 0;">Phase 3 escalations — org-wide</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); padding:0 18px; margin:4px 0 12px;">Everything currently at the top escalation tier, regardless of which senior it landed under.</p>
+  {% set p3_total = (phase_3_escalations.record_escalations|length) + (phase_3_escalations.tickets|length) %}
+  {% if p3_total %}
+  <div style="overflow-x:auto;">
+  <table>
+    <thead><tr><th>Type</th><th>Who / employee</th><th>Login</th><th>Topic / categories</th><th>Assigned to</th><th></th></tr></thead>
+    <tbody>
+      {% for e in phase_3_escalations.record_escalations %}
+      <tr>
+        <td><span class="enterprise-tag">Record</span></td>
+        <td>{{ e.full_name or '—' }}</td>
+        <td class="mono">{{ e.employee_login or '—' }}</td>
+        <td>{{ e.subcategory or '—' }}</td>
+        <td class="mono">{{ e.target_login or (e.target_role|upper ~ ' (broadcast)' if e.target_role else '—') }}</td>
+        <td>
+          <form method="POST" action="{{ url_for('record_escalation_resolve', escalation_id=e.id) }}">
+            <button class="btn btn-ghost btn-sm" type="submit">Resolve</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% for t in phase_3_escalations.tickets %}
+      <tr>
+        <td><span class="enterprise-tag">Ticket</span></td>
+        <td colspan="2"><a href="#" onclick="Ldoc.openEscalationTicket({{ t.id }}); return false;" class="mono">{{ t.ticket_number }}</a></td>
+        <td>{{ t.categories.replace(',', ', ') }}</td>
+        <td class="mono">{{ t.target_login or '—' }}</td>
+        <td>
+          <form method="POST" action="{{ url_for('escalation_ticket_resolve', ticket_id=t.id) }}">
+            <button class="btn btn-ghost btn-sm" type="submit">Resolve</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">Nothing at Phase 3 right now.</div>
+  {% endif %}
+</div>
+
+<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+<script>
+function ldocOpenEscalationSenior(login) {
+  var panel = Ldoc.slidePanel({ title: (login === 'other' ? 'Other' : login), body: '<div class="empty-state" style="padding:24px;">Loading…</div>' });
+  fetch('/api/escalations/senior/' + encodeURIComponent(login))
+    .then(function (r) {
+      if (!r.ok) { throw new Error(r.status === 403 ? "You don't have access to view this." : 'Could not load this (' + r.status + ').'); }
+      return r.text();
+    })
+    .then(function (html) { panel.bodyEl.innerHTML = html; })
+    .catch(function (err) { panel.bodyEl.innerHTML = '<div class="empty-state" style="padding:24px;">' + err.message + '</div>'; });
+}
+</script>
+
+{% elif tab == 'ambassador_attendance' %}
+<div class="amb-report-heading">
+  <div><h2>Attendance by department &amp; shift</h2><p>Latest meeting status and individual attendance for every active Ambassador.</p></div>
+  <div class="amb-legend" aria-label="Attendance status legend">
+    <span class="amb-state amb-state--present"><i></i>Present</span>
+    <span class="amb-state amb-state--absent"><i></i>Absent</span>
+    <span class="amb-state amb-state--onsite_no_attend"><i></i>Onsite, did not attend</span>
+    <span class="amb-state amb-state--excused"><i></i>Excused</span>
+    <span class="amb-state amb-state--not_recorded"><i></i>Not recorded</span>
+  </div>
+  <button type="button" class="btn btn-ghost btn-sm" data-copy-target="#ambAttendanceMatrix" data-copy-mode="amb-matrix" data-copy-title="Ambassador Attendance by Department &amp; Shift" data-copy-filename="ambassador-attendance"><span>Copy as image</span></button>
+</div>
+
+<div class="amb-matrix-scroll">
+  <section class="amb-matrix amb-attendance-matrix" id="ambAttendanceMatrix" aria-label="Ambassador attendance by department and shift">
+    <header class="amb-matrix-header">
+      <div>Department</div>
+      {% for shift_key, shift_label in shifts.items() %}<div><strong>{{ shift_label }}</strong><span>Latest meeting</span></div>{% endfor %}
+    </header>
+    {% for department in ambassador_meeting_shift_grid.departments %}
+    <section class="amb-matrix-row" data-amb-matrix-row data-department="{{ department.department|e }}">
+      <header class="amb-department-label"><strong>{{ department.department }}</strong>{% if department.group_label != department.department %}<span>{{ department.group_label }} meeting</span>{% endif %}</header>
+      {% for shift_key, shift_label in shifts.items() %}
+      {% set cell = department.shifts[shift_key] %}
+      <article class="amb-shift-cell" data-amb-matrix-cell data-shift-label="{{ shift_label }}" data-total="{{ cell.total }}" data-week="{{ cell.week_start or 'No meeting date' }}" data-state-label="{{ 'No meeting' if cell.state=='no_record' else ('Cancelled' if cell.state=='cancelled' else ('Biweekly skip' if cell.state=='biweekly_skip' else ('Nobody attended' if cell.state=='no_show' else 'Held'))) }}" data-amb-people='{{ cell.ambassadors|tojson }}'>
+        <header class="amb-cell-head">
+          <div><strong>{{ cell.total }} Ambassador{{ 's' if cell.total != 1 else '' }}</strong><span>{{ cell.week_start or 'No meeting date' }}</span></div>
+          {% if cell.state == 'no_record' %}<span class="amb-meeting-state amb-meeting-state--critical"><i></i>No meeting</span>
+          {% elif cell.state == 'cancelled' %}<span class="amb-meeting-state amb-meeting-state--attention" title="{{ cell.cancel_reason or '' }}"><i></i>Cancelled</span>
+          {% elif cell.state == 'biweekly_skip' %}<span class="amb-meeting-state amb-meeting-state--neutral"><i></i>Biweekly skip</span>
+          {% elif cell.state == 'no_show' %}<span class="amb-meeting-state amb-meeting-state--critical"><i></i>Nobody attended</span>
+          {% else %}<span class="amb-meeting-state amb-meeting-state--ok"><i></i>Held</span>{% endif %}
+        </header>
+        <div class="amb-people-list">
+          {% for ambassador in cell.ambassadors %}
+          <div class="amb-person-line">
+            <div><strong>{{ ambassador.full_name }}</strong><span>{{ ambassador.login }}</span></div>
+            <span class="amb-state amb-state--{{ ambassador.attendance_status }}"><i></i>{{ ambassador.attendance_label }}</span>
+          </div>
+          {% else %}<div class="amb-cell-empty">No active Ambassadors</div>{% endfor %}
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  </section>
+</div>
+
+<details class="amb-history">
+  <summary>Meeting history</summary>
+  <div class="amb-history-filters">
+    <a class="{{ 'active' if not ambassador_attendance_shift }}" href="{{ url_for('scorecards', tab='ambassador_attendance') }}">All shifts</a>
+    {% for key, label in shifts.items() %}<a class="{{ 'active' if ambassador_attendance_shift==key }}" href="{{ url_for('scorecards', tab='ambassador_attendance', shift=key) }}">{{ label }}</a>{% endfor %}
+  </div>
+  <div class="amb-history-table">
+    {% if ambassador_attendance_report %}
+    <table>
+      <thead><tr><th>Week</th><th>Shift</th><th>Group</th><th>Meeting</th><th>Present</th><th>Absent</th><th>Onsite, no attend</th><th>Excused</th></tr></thead>
+      <tbody>{% for m in ambassador_attendance_report %}<tr>
+        <td>{{ m.week_start }}</td><td>{{ shifts.get(m.shift, m.shift) }}</td><td>{{ m.group_label }}</td>
+        <td>{{ ambassador_meeting_statuses.get(m.status, m.status) }}</td>
+        <td>{{ m.attendance_counts.present }}</td><td>{{ m.attendance_counts.absent }}</td><td>{{ m.attendance_counts.onsite_no_attend }}</td><td>{{ m.attendance_counts.excused }}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+    {% else %}<div class="amb-cell-empty">No meeting activity recorded yet.</div>{% endif %}
+  </div>
+</details>
+
+{% elif tab == 'ambassador_hours' %}
+<div class="amb-hours-overview">
+  {% set practice_health = ambassador_hours_overview.practice_health %}
+  <section class="amb-practice-health" aria-labelledby="ambPracticeHealthTitle">
+    <div class="amb-practice-ring" style="--practice-score: {{ practice_health.pct if practice_health.pct is not none else 0 }}%;" role="img" aria-label="Overall Practice Health: {{ practice_health.pct if practice_health.pct is not none else 'No data' }}{% if practice_health.pct is not none %} percent{% endif %}">
+      <div class="amb-practice-ring-inner">
+        <strong>{{ practice_health.pct if practice_health.pct is not none else '—' }}{% if practice_health.pct is not none %}%{% endif %}</strong>
+        <span>Health score</span>
+      </div>
+    </div>
+    <div class="amb-practice-health-copy">
+      <span>Overall Practice Health</span>
+      <h2 id="ambPracticeHealthTitle">{% if practice_health.pct is not none %}{{ practice_health.pct }}% of required practice completed{% else %}No practice data available{% endif %}</h2>
+      <p>Each Ambassador process contributes up to its 20-hour requirement, so surplus hours cannot offset another process gap.</p>
+    </div>
+    <div class="amb-practice-health-stats">
+      <div><strong>{{ '%.1f'|format(practice_health.credited_hours) }}h</strong><span>Credited hours</span></div>
+      <div><strong>{{ '%.1f'|format(practice_health.required_hours) }}h</strong><span>Required hours</span></div>
+      <div><strong>{{ practice_health.target_pct }}%</strong><span>Health target</span></div>
+    </div>
+  </section>
+
+  <section class="amb-hours-kpis" aria-label="Ambassador Practice status summary">
+    <article class="amb-hours-kpi amb-hours-kpi--on_target"><span>On Target</span><strong>{{ ambassador_hours_overview.on_target_count }}</strong><small>20 hours or more in every process</small></article>
+    <article class="amb-hours-kpi amb-hours-kpi--at_risk"><span>At Risk</span><strong>{{ ambassador_hours_overview.at_risk_count }}</strong><small>10–19.9 hours in at least one process</small></article>
+    <article class="amb-hours-kpi amb-hours-kpi--critical"><span>Critical</span><strong>{{ ambassador_hours_overview.critical_count }}</strong><small>Under 10 hours, including zero</small></article>
+  </section>
+
+  <section class="amb-priority-insight">
+    <span>Priority insight</span>
+    {% if ambassador_hours_overview.priority %}
+    <strong>{{ ambassador_hours_overview.priority.department }} · {{ ambassador_hours_overview.priority.shift_label }}</strong>
+    <p>{{ ambassador_hours_overview.priority.critical_count }} Critical and {{ ambassador_hours_overview.priority.at_risk_count }} At Risk out of {{ ambassador_hours_overview.priority.total }} Ambassadors.</p>
+    {% else %}<strong>All Ambassadors are On Target</strong><p>Every monitored process meets the 20-hour standard.</p>{% endif %}
+  </section>
+
+  <div class="amb-report-heading">
+    <div><h2>Practice Health by department &amp; shift</h2><p>Health credits up to 20 hours per Ambassador process from the last 60 days.</p></div>
+    <div class="amb-legend" aria-label="Hours status legend">
+      <span class="amb-state amb-state--on_target"><i></i>On Target · ≥20h</span>
+      <span class="amb-state amb-state--at_risk"><i></i>At Risk · 10–19.9h</span>
+      <span class="amb-state amb-state--critical"><i></i>Critical · &lt;10h</span>
+    </div>
+    <button type="button" class="btn btn-ghost btn-sm" data-copy-target="#ambPracticeMatrix" data-copy-mode="amb-hours-matrix" data-copy-title="Ambassador Practice Health by Department &amp; Shift" data-copy-filename="ambassador-practice"><span>Copy as image</span></button>
+  </div>
+
+  <div class="amb-matrix-scroll">
+    <section class="amb-matrix amb-hours-matrix" id="ambPracticeMatrix" aria-label="Ambassador Practice Health by department and shift">
+      <header class="amb-matrix-header">
+        <div>Department</div>
+        {% for shift_key, shift_label in shifts.items() %}<div><strong>{{ shift_label }}</strong><span>20h target per process</span></div>{% endfor %}
+      </header>
+      {% for department in ambassador_hours_overview.departments %}
+      <section class="amb-matrix-row" data-amb-matrix-row data-department="{{ department.department|e }}">
+        <header class="amb-department-label">
+          <strong>{{ department.department }}</strong>
+          <span>{{ department.total }}/{{ department.target }} Ambassadors</span>
+          <small class="amb-count-summary">
+            <span class="amb-count amb-count--critical {{ 'is-zero' if department.status_counts.critical == 0 else '' }}">{{ department.status_counts.critical }} Critical</span><i>·</i>
+            <span class="amb-count amb-count--at_risk {{ 'is-zero' if department.status_counts.at_risk == 0 else '' }}">{{ department.status_counts.at_risk }} At Risk</span><i>·</i>
+            <span class="amb-count amb-count--on_target {{ 'is-zero' if department.status_counts.on_target == 0 else '' }}">{{ department.status_counts.on_target }} On Target</span>
+          </small>
+        </header>
+        {% if department.no_processes_defined %}
+        <div style="grid-column: 2 / -1; padding: 16px 18px; background: #fef4f2; border-left: 3px solid var(--red); font-size: 12.5px; color: var(--ink); display:flex; align-items:center;">
+          No process list is configured for {{ department.department }} yet, so Ambassadors here can't be tracked for Practice Health — this isn't the same as 0 hours, it means nothing is being measured at all. Tell L&D Settings which processes should count for this department to fix this.
+        </div>
+        {% else %}
+        {% for shift_key, shift_label in shifts.items() %}
+        {% set cell = department.shifts[shift_key] %}
+        <article class="amb-shift-cell" data-amb-matrix-cell data-shift-label="{{ shift_label }}" data-total="{{ cell.total }}/{{ cell.target }}" data-state-label="{{ cell.practice_health_pct if cell.practice_health_pct is not none else '—' }}{% if cell.practice_health_pct is not none %}%{% endif %} Health · {{ cell.status_counts.critical }} Critical / {{ cell.status_counts.at_risk }} At Risk / {{ cell.status_counts.on_target }} On Target" data-amb-hours-people='{{ cell.ambassadors|tojson }}' data-credited="{{ '%.1f'|format(cell.credited_hours) }}" data-required="{{ '%.1f'|format(cell.required_hours) }}">
+          <header class="amb-cell-head amb-hours-cell-head">
+            <div>
+              <strong>{{ cell.total }}/{{ cell.target }} Ambassadors</strong>
+              <span class="amb-count-summary">
+                <span class="amb-count amb-count--critical {{ 'is-zero' if cell.status_counts.critical == 0 else '' }}">{{ cell.status_counts.critical }} Critical</span><i>·</i>
+                <span class="amb-count amb-count--at_risk {{ 'is-zero' if cell.status_counts.at_risk == 0 else '' }}">{{ cell.status_counts.at_risk }} At Risk</span><i>·</i>
+                <span class="amb-count amb-count--on_target {{ 'is-zero' if cell.status_counts.on_target == 0 else '' }}">{{ cell.status_counts.on_target }} On Target</span>
+              </span>
+            </div>
+            <div class="amb-shift-health {{ 'is-empty' if cell.practice_health_pct is none else ('is-met' if cell.practice_health_met else 'is-below') }}">
+              <strong>{{ cell.practice_health_pct if cell.practice_health_pct is not none else '—' }}{% if cell.practice_health_pct is not none %}%{% endif %}</strong>
+              <span>Practice Health</span>
+              <small>{{ '%.1f'|format(cell.credited_hours) }}/{{ '%.1f'|format(cell.required_hours) }}h credited</small>
+            </div>
+          </header>
+          <div class="amb-people-list">
+            {% for ambassador in cell.ambassadors %}
+            <details class="amb-hours-person">
+              <summary class="amb-person-line">
+                <div><strong>{{ ambassador.full_name }}</strong><span>{{ ambassador.login }}</span><small>{% if ambassador.low_processes %}{{ ambassador.low_processes | map(attribute='process') | join(', ') }}{% else %}All processes On Target{% endif %}</small></div>
+                <div class="amb-hours-result"><strong>{{ '%.1f'|format(ambassador.worst_process.hours) }}h</strong><span class="amb-state amb-state--{{ ambassador.severity }}"><i></i>{{ ambassador.severity_label }}</span></div>
+              </summary>
+              <div class="amb-process-breakdown">
+                {% for process in ambassador.processes %}<div><span>{{ process.process }}</span><strong>{{ '%.1f'|format(process.hours) }}h</strong><em class="amb-state amb-state--{{ process.severity }}"><i></i>{{ process.severity_label }}</em></div>{% endfor %}
+              </div>
+            </details>
+            {% else %}<div class="amb-cell-empty">No Process Ambassadors</div>{% endfor %}
+          </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+      </section>
+      {% endfor %}
+    </section>
+  </div>
+</div>
+
+{% if false %}
+<div class="ah-dashboard" id="ambassadorHoursDashboard">
+  <section class="ah-kpi-grid" aria-label="Ambassador hours summary">
+    <article class="ah-kpi ah-kpi--attention">
+      <div class="ah-kpi-value">{{ ambassador_hours_overview.flagged_count }}</div>
+      <div class="ah-kpi-copy"><span class="ah-status-dot"></span><strong>Need attention</strong><small>of {{ ambassador_hours_overview.monitored_count }} monitored</small></div>
+    </article>
+    <article class="ah-kpi ah-kpi--critical">
+      <div class="ah-kpi-value">{{ ambassador_hours_overview.zero_count }}</div>
+      <div class="ah-kpi-copy"><span class="ah-status-dot"></span><strong>Zero hours</strong><small>on at least one process</small></div>
+    </article>
+    <article class="ah-kpi ah-kpi--risk">
+      <div class="ah-kpi-value">{{ ambassador_hours_overview.under_ten_count }}</div>
+      <div class="ah-kpi-copy"><span class="ah-status-dot"></span><strong>Under 10 hours</strong><small>excluding zero-hour cases</small></div>
+    </article>
+    <article class="ah-kpi ah-kpi--ready">
+      <div class="ah-kpi-value">{{ ambassador_hours_overview.meeting_standard_count }}</div>
+      <div class="ah-kpi-copy"><span class="ah-status-dot"></span><strong>Meeting standard</strong><small>20h in every process</small></div>
+    </article>
+  </section>
+
+  <section class="ah-toolbar" aria-label="Filter ambassador hours report">
+    <div class="ah-shift-switch" role="group" aria-label="Shift">
+      <button type="button" class="active" data-ah-shift="all">All shifts</button>
+      {% for shift_key, shift_label in shifts.items() %}<button type="button" data-ah-shift="{{ shift_key }}">{{ shift_label.replace(' Shift', '') }}</button>{% endfor %}
+    </div>
+    <label class="visually-hidden" for="ahDepartmentFilter">Department</label>
+    <select id="ahDepartmentFilter" class="ah-select">
+      <option value="all">All departments</option>
+      {% for department in ambassador_hours_overview.department_names %}<option value="{{ department }}">{{ department }}</option>{% endfor %}
+    </select>
+    <label class="visually-hidden" for="ahSeverityFilter">Risk level</label>
+    <select id="ahSeverityFilter" class="ah-select">
+      <option value="all">All risk levels</option>
+      <option value="critical">Critical · 0–4.9h</option>
+      <option value="at_risk">At risk · 5–14.9h</option>
+      <option value="near_target">Near target · 15–19.9h</option>
+    </select>
+    <label class="ah-search" for="ahSearch">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 4.2 4.2"/></svg>
+      <span class="visually-hidden">Search ambassador</span>
+      <input id="ahSearch" type="search" placeholder="Search ambassador" autocomplete="off">
+    </label>
+    <button type="button" class="ah-reset" id="ahResetFilters">Reset</button>
+  </section>
+
+  <section class="ah-risk-panel">
+    <header class="ah-section-head">
+      <div>
+        <h2>Risk by department &amp; shift</h2>
+        <p>Select a cell to focus the action list.</p>
+      </div>
+      <span class="ah-target-label">Target {{ ambassador_hours_overview.target_hours }}h per process</span>
+    </header>
+    <div class="ah-matrix-scroll">
+      <table class="ah-risk-matrix">
+        <thead><tr><th>Department</th>{% for shift_key, shift_label in shifts.items() %}<th>{{ shift_label.replace(' Shift', '') }}</th>{% endfor %}<th class="ah-total-col">Total</th></tr></thead>
+        <tbody>
+          {% for department in ambassador_hours_overview.departments %}
+          <tr data-ah-matrix-department="{{ department.department }}">
+            <th scope="row"><strong>{{ department.department }}</strong><small>{{ department.total }} ambassador{{ 's' if department.total != 1 }}</small></th>
+            {% for shift_key, shift_label in shifts.items() %}
+            {% set cell = department.shifts[shift_key] %}
+            <td>
+              <button type="button" class="ah-matrix-cell" data-filter-department="{{ department.department }}" data-filter-shift="{{ shift_key }}" aria-label="Show {{ department.department }}, {{ shift_label }}: {{ cell.flagged_count }} of {{ cell.total }} flagging">
+                <span><i class="ah-dot ah-dot--{{ cell.severity }}"></i><strong>{{ cell.flagged_count }} flagging</strong></span>
+                <small>{{ cell.flagged_count }} of {{ cell.total }}</small>
+              </button>
+            </td>
+            {% endfor %}
+            <td class="ah-total-col">
+              <button type="button" class="ah-matrix-cell" data-filter-department="{{ department.department }}" data-filter-shift="all" aria-label="Show all {{ department.department }} shifts: {{ department.flagged_count }} of {{ department.total }} flagging">
+                <span><i class="ah-dot ah-dot--{{ department.severity }}"></i><strong>{{ department.flagged_count }} flagging</strong></span>
+                <small>{{ department.flagged_count }} of {{ department.total }}</small>
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="ah-legend" aria-label="Risk level legend">
+      <span><i class="ah-dot ah-dot--critical"></i>Critical 0–4.9h</span>
+      <span><i class="ah-dot ah-dot--at_risk"></i>At risk 5–14.9h</span>
+      <span><i class="ah-dot ah-dot--near_target"></i>Near target 15–19.9h</span>
+      <span><i class="ah-dot ah-dot--on_target"></i>On target ≥20h</span>
+    </div>
+  </section>
+
+  <div class="ah-detail-layout">
+    <section class="ah-attention-panel">
+      <header class="ah-section-head ah-attention-head">
+        <div>
+          <h2>Ambassadors needing attention</h2>
+          <p id="ahResultCount">{{ ambassador_hours_overview.flagged_count }} ambassadors shown</p>
+        </div>
+        <label class="ah-sort" for="ahSort">
+          <span class="visually-hidden">Sort ambassadors</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14m0 0-3-3m3 3 3-3M16 19V5m0 0-3 3m3-3 3 3"/></svg>
+          <select id="ahSort">
+            <option value="gap_desc">Largest gap first</option>
+            <option value="hours_desc">Closest to target</option>
+            <option value="name_asc">Ambassador A–Z</option>
+          </select>
+        </label>
+      </header>
+
+      <div class="ah-table-head" aria-hidden="true"><span>Ambassador</span><span>Process</span><span>Hours</span><span>Gap to target</span><span>Status</span></div>
+      <div class="ah-groups" id="ahAmbassadorGroups">
+        {% for department in ambassador_hours_overview.departments if department.flagged_count %}
+        <section class="ah-department-group" data-ah-department-group="{{ department.department }}">
+          <button type="button" class="ah-group-toggle" aria-expanded="true">
+            <span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6.5 8 3.5 3.5L13.5 8"/></svg><strong>{{ department.department }}</strong></span>
+            <em><b data-ah-group-count>{{ department.flagged_count }}</b> flagging</em>
+          </button>
+          <div class="ah-department-body">
+            {% for shift_key, shift_label in shifts.items() %}
+            {% set shift = department.shifts[shift_key] %}
+            {% if shift.flagged_count %}
+            <section class="ah-shift-group" data-ah-shift-group="{{ shift_key }}">
+              <div class="ah-shift-divider"><strong>{{ shift_label }}</strong><span><b data-ah-shift-count>{{ shift.flagged_count }}</b> flagging</span></div>
+              <div class="ah-shift-rows">
+                {% for ambassador in shift.flagged_ambassadors %}
+                <article class="ah-ambassador-row" data-ah-row data-department="{{ department.department }}" data-shift="{{ shift_key }}" data-severity="{{ ambassador.severity }}" data-gap="{{ ambassador.max_gap }}" data-hours="{{ ambassador.min_hours }}" data-name="{{ (ambassador.full_name ~ ' ' ~ ambassador.login)|lower|e }}">
+                  <div class="ah-person"><strong>{{ ambassador.full_name }}</strong><small>{{ ambassador.login }}</small></div>
+                  <div class="ah-process-cell">
+                    <details class="ah-process-details">
+                      <summary><span class="ah-process-primary">{{ ambassador.worst_process.process }}</span>{% if ambassador.low_processes|length > 1 %}<span class="ah-process-more">{{ ambassador.low_processes|length - 1 }} more process{{ 'es' if ambassador.low_processes|length > 2 else '' }}</span>{% endif %}</summary>
+                      {% if ambassador.low_processes|length > 1 %}
+                      <div class="ah-process-list">
+                        {% for process in ambassador.low_processes %}<span><strong>{{ process.process }}</strong><em>{{ '%.1f'|format(process.hours) }}h / {{ '%.0f'|format(process.required_hours) }}h</em></span>{% endfor %}
+                      </div>
+                      {% endif %}
+                    </details>
+                  </div>
+                  <div class="ah-hours-cell">
+                    <div class="ah-progress ah-progress--{{ ambassador.severity }}" aria-hidden="true"><i style="width:{{ ambassador.worst_process.progress_pct }}%"></i></div>
+                    <span>{{ '%.1f'|format(ambassador.worst_process.hours) }}h / {{ '%.0f'|format(ambassador.worst_process.required_hours) }}h</span>
+                  </div>
+                  <div class="ah-gap ah-gap--{{ ambassador.severity }}">{{ '%.1f'|format(ambassador.worst_process.gap) }}h short</div>
+                  <div><span class="ah-status ah-status--{{ ambassador.severity }}"><i aria-hidden="true"></i>{{ ambassador.severity_label }}</span></div>
+                </article>
+                {% endfor %}
+              </div>
+            </section>
+            {% endif %}
+            {% endfor %}
+          </div>
+        </section>
+        {% endfor %}
+      </div>
+      <div class="ah-no-results" id="ahNoResults" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 4.2 4.2"/></svg>
+        <strong>No matching ambassadors</strong><span>Try changing or resetting the filters.</span>
+      </div>
+      {% if not ambassador_hours_overview.flagged_count %}
+      <div class="ah-all-ready"><span>✓</span><div><strong>Every ambassador meets the standard</strong><p>No process-hour exceptions need action right now.</p></div></div>
+      {% endif %}
+    </section>
+
+    <aside class="ah-insight-panel">
+      <div class="ah-insight-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 18h6m-5 3h4M8.4 15.3A7 7 0 1 1 15.6 15.3c-.8.6-1.1 1.2-1.1 1.7h-5c0-.5-.3-1.1-1.1-1.7Z"/></svg></div>
+      <span class="ah-insight-label">Priority insight</span>
+      {% if ambassador_hours_overview.priority %}
+      <h3>{{ ambassador_hours_overview.priority.department }} · {{ ambassador_hours_overview.priority.shift_label }} has the highest concentration of risk: {{ ambassador_hours_overview.priority.flagged_count }} of {{ ambassador_hours_overview.priority.total }} ambassadors flagging.</h3>
+      {% if ambassador_hours_overview.priority.zero_count %}<p>{{ ambassador_hours_overview.priority.zero_count }} ambassador{{ 's have' if ambassador_hours_overview.priority.zero_count != 1 else ' has' }} zero hours in at least one required process.</p>{% else %}<p>Prioritize the largest hour gaps before scheduling near-target practice.</p>{% endif %}
+      <button type="button" class="ah-insight-link" data-filter-department="{{ ambassador_hours_overview.priority.department }}" data-filter-shift="{{ ambassador_hours_overview.priority.shift }}">View group <span>→</span></button>
+      {% else %}
+      <h3>All monitored ambassadors currently meet the 20-hour process standard.</h3>
+      <p>There are no priority exceptions to action.</p>
+      {% endif %}
+    </aside>
+  </div>
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById('ambassadorHoursDashboard');
+  if (!root || root.dataset.ready === '1') return;
+  root.dataset.ready = '1';
+
+  var shift = 'all';
+  var department = 'all';
+  var severity = 'all';
+  var search = '';
+  var shiftButtons = Array.prototype.slice.call(root.querySelectorAll('[data-ah-shift]'));
+  var departmentSelect = root.querySelector('#ahDepartmentFilter');
+  var severitySelect = root.querySelector('#ahSeverityFilter');
+  var searchInput = root.querySelector('#ahSearch');
+  var sortSelect = root.querySelector('#ahSort');
+  var rows = Array.prototype.slice.call(root.querySelectorAll('[data-ah-row]'));
+  var resultCount = root.querySelector('#ahResultCount');
+  var noResults = root.querySelector('#ahNoResults');
+
+  function syncShiftButtons() {
+    shiftButtons.forEach(function (button) {
+      var active = button.dataset.ahShift === shift;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function sortRows() {
+    var mode = sortSelect ? sortSelect.value : 'gap_desc';
+    root.querySelectorAll('.ah-shift-rows').forEach(function (container) {
+      var groupRows = Array.prototype.slice.call(container.querySelectorAll('[data-ah-row]'));
+      groupRows.sort(function (a, b) {
+        if (mode === 'name_asc') return a.dataset.name.localeCompare(b.dataset.name);
+        if (mode === 'hours_desc') return parseFloat(b.dataset.hours) - parseFloat(a.dataset.hours);
+        return parseFloat(b.dataset.gap) - parseFloat(a.dataset.gap);
+      });
+      groupRows.forEach(function (row) { container.appendChild(row); });
+    });
+  }
+
+  function applyFilters() {
+    var visible = 0;
+    rows.forEach(function (row) {
+      var show = (department === 'all' || row.dataset.department === department) &&
+        (shift === 'all' || row.dataset.shift === shift) &&
+        (severity === 'all' || row.dataset.severity === severity) &&
+        (!search || row.dataset.name.indexOf(search) !== -1);
+      row.hidden = !show;
+      if (show) visible += 1;
+    });
+
+    root.querySelectorAll('.ah-shift-group').forEach(function (group) {
+      var count = group.querySelectorAll('[data-ah-row]:not([hidden])').length;
+      group.hidden = count === 0;
+      var countNode = group.querySelector('[data-ah-shift-count]');
+      if (countNode) countNode.textContent = count;
+    });
+    root.querySelectorAll('.ah-department-group').forEach(function (group) {
+      var count = group.querySelectorAll('[data-ah-row]:not([hidden])').length;
+      group.hidden = count === 0;
+      var countNode = group.querySelector('[data-ah-group-count]');
+      if (countNode) countNode.textContent = count;
+      if (count && (department !== 'all' || search)) {
+        var body = group.querySelector('.ah-department-body');
+        var toggle = group.querySelector('.ah-group-toggle');
+        body.hidden = false;
+        toggle.setAttribute('aria-expanded', 'true');
+      }
+    });
+
+    root.querySelectorAll('.ah-matrix-cell').forEach(function (cell) {
+      var selected = department !== 'all' && cell.dataset.filterDepartment === department &&
+        cell.dataset.filterShift === shift;
+      cell.classList.toggle('is-selected', selected);
+    });
+    if (resultCount) resultCount.textContent = visible + ' ambassador' + (visible === 1 ? '' : 's') + ' shown';
+    if (noResults) noResults.hidden = visible !== 0 || rows.length === 0;
+  }
+
+  function focusGroup(nextDepartment, nextShift) {
+    department = nextDepartment || 'all';
+    shift = nextShift || 'all';
+    departmentSelect.value = department;
+    severity = 'all';
+    severitySelect.value = 'all';
+    search = '';
+    searchInput.value = '';
+    syncShiftButtons();
+    applyFilters();
+    var attention = root.querySelector('.ah-attention-panel');
+    if (attention) attention.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  shiftButtons.forEach(function (button) {
+    button.addEventListener('click', function () {
+      shift = button.dataset.ahShift;
+      syncShiftButtons();
+      applyFilters();
+    });
+  });
+  departmentSelect.addEventListener('change', function () { department = this.value; applyFilters(); });
+  severitySelect.addEventListener('change', function () { severity = this.value; applyFilters(); });
+  searchInput.addEventListener('input', function () { search = this.value.trim().toLowerCase(); applyFilters(); });
+  if (sortSelect) sortSelect.addEventListener('change', function () { sortRows(); });
+  root.querySelector('#ahResetFilters').addEventListener('click', function () {
+    shift = department = severity = 'all'; search = '';
+    departmentSelect.value = severitySelect.value = 'all'; searchInput.value = '';
+    syncShiftButtons(); applyFilters();
+  });
+  root.querySelectorAll('[data-filter-department][data-filter-shift]').forEach(function (control) {
+    control.addEventListener('click', function () { focusGroup(control.dataset.filterDepartment, control.dataset.filterShift); });
+  });
+  root.querySelectorAll('.ah-group-toggle').forEach(function (toggle) {
+    toggle.addEventListener('click', function () {
+      var body = toggle.parentNode.querySelector('.ah-department-body');
+      var expanded = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      body.hidden = expanded;
+    });
+  });
+
+  sortRows();
+  syncShiftButtons();
+  applyFilters();
+})();
+</script>
+{% endif %}
+
+{% elif tab == 'som_om' %}
+<p class="page-sub" style="margin-top:-8px;">Every Area Manager's combined L&D score, worst first — pick one to open their AM Overview.</p>
+<div class="panel" style="padding:0;">
+  {% if am_breakdown %}
+  <table>
+    <thead><tr><th>Area Manager</th><th>Combined score</th><th></th></tr></thead>
+    <tbody>
+      {% for r in am_breakdown %}
+      <tr>
+        <td class="mono">{{ r.am_login }}</td>
+        <td>
+          {% if r.score is not none %}
+          <span class="pill pill-{{ 'ok' if r.score >= 90 else ('risk' if r.score >= 70 else 'gap') }}">{{ r.score }}%</span>
+          {% else %}<span style="color:var(--text-lo);">no data</span>{% endif %}
+        </td>
+        <td><a class="btn btn-ghost btn-sm" href="{{ url_for('overview', am=r.am_login) }}">View AM Overview →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No Area Managers with data yet.</div>
+  {% endif %}
+</div>
+
+{% elif tab == 'manager_rankings' %}
+<div class="ld-rank-switcher" role="tablist" aria-label="Choose ranking metric">
+  <button type="button" class="ld-rank-tab active" data-ld-rank-target="stcRanking">Safety Compliance (detailed)</button>
+  {% for key, label, _sections in ld_metrics %}
+  {% if key != 'safety_compliance' %}
+  <button type="button" class="ld-rank-tab" data-ld-rank-target="ldRank-{{ key }}">{{ label }}</button>
+  {% endif %}
+  {% endfor %}
+  <button type="button" class="ld-rank-tab" data-ld-rank-target="ldRank-total">Total L&amp;D Score</button>
+</div>
+
+<div id="ldRankPanels">
+<div class="stc-ranking" id="stcRanking">
+  <section class="stc-kpis" aria-label="Safety compliance summary">
+    <article class="stc-kpi stc-kpi--overall">
+      <div class="stc-ring" style="--stc-score:{{ safety_ranking.overall_score or 0 }}" aria-hidden="true"><span></span></div>
+      <div><span>Overall compliance</span><strong>{{ safety_ranking.overall_score if safety_ranking.overall_score is not none else '—' }}{% if safety_ranking.overall_score is not none %}%{% endif %}</strong></div>
+    </article>
+    <article class="stc-kpi stc-kpi--target"><span>On target</span><strong>{{ safety_ranking.on_target_count }}/{{ safety_ranking.manager_count }}</strong></article>
+    <article class="stc-kpi stc-kpi--critical"><span>Critical overdue</span><strong>{{ safety_ranking.critical_overdue }}</strong></article>
+    <article class="stc-kpi stc-kpi--days"><span>Total overdue days</span><strong>{{ safety_ranking.overdue_days }}</strong></article>
+  </section>
+
+  <section class="stc-insight" aria-label="Ranking insight">
+    <span class="stc-info-icon" aria-hidden="true">i</span>
+    <div>
+      <strong>Ranking insight</strong>
+      {% if safety_ranking.top_tie_count > 1 %}
+      <p>{{ safety_ranking.top_tie_count }} managers are tied at {{ safety_ranking.top_score }}%. Tied scores share the same rank; overdue risk determines action priority.</p>
+      {% elif safety_ranking.attention_count %}
+      <p>{{ safety_ranking.attention_count }} manager{{ '' if safety_ranking.attention_count == 1 else 's' }} need{{ 's' if safety_ranking.attention_count == 1 else '' }} attention. Risk First prioritizes critical overdue training and accumulated overdue days.</p>
+      {% else %}
+      <p>All scored managers have reached the {{ safety_ranking.target }}% target. Continue monitoring overdue risk and four-week movement.</p>
+      {% endif %}
+    </div>
+    <button type="button" class="stc-insight-action" id="stcReviewAttention">Review attention list <span aria-hidden="true">→</span></button>
+  </section>
+
+  <div class="stc-thresholds" aria-label="Compliance thresholds">
+    <span>Target ≥{{ safety_ranking.target }}%</span><i></i><span>Needs attention &lt;{{ safety_ranking.target }}%</span>
+  </div>
+
+  <section class="stc-surface">
+    <div class="stc-toolbar">
+      <label class="stc-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+        <input id="stcSearch" type="search" placeholder="Search manager or login" autocomplete="off">
+      </label>
+      <select id="stcRoleFilter" aria-label="Filter by role">
+        <option value="all">All roles</option>
+        {% for role in safety_ranking.roles %}<option value="{{ role }}">{{ {'am':'Area Manager','om':'Operations Manager','som':'Senior Operations Manager'}.get(role, role) }}</option>{% endfor %}
+      </select>
+      <select id="stcDepartmentFilter" aria-label="Filter by department">
+        <option value="all">All departments</option>
+        {% for department in safety_ranking.departments %}<option value="{{ department }}">{{ department }}</option>{% endfor %}
+      </select>
+      <div class="stc-sort" role="group" aria-label="Ranking order">
+        <button type="button" data-sort="risk">Risk first</button>
+        <button type="button" class="is-active" data-sort="best">Best first</button>
+      </div>
+      <div class="stc-toolbar-actions">
+        <button type="button" id="stcCopy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg><span>Copy</span></button>
+        <button type="button" id="stcExport"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 17v3h14v-3"/></svg><span>Export</span></button>
+      </div>
+    </div>
+
+    <div class="stc-table-scroll">
+      <table class="stc-table" id="stcTable">
+        <thead><tr><th>Rank</th><th>Manager</th><th>Role &amp; department</th><th>Compliance</th><th>Critical overdue</th><th>Overdue days</th><th>4-week change</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for manager in safety_ranking.rows %}
+          <tr data-name="{{ manager.full_name }}" data-login="{{ manager.login }}" data-search="{{ manager.full_name|lower }} {{ manager.login|lower }}" data-role="{{ manager.role }}" data-department="{{ manager.department }}" data-rank="{{ manager.rank or 999999 }}" data-score="{{ manager.score if manager.score is not none else -1 }}" data-critical="{{ manager.critical_overdue }}" data-overdue="{{ manager.overdue_days }}" data-status="{{ manager.status }}" data-trend="{{ manager.trend if manager.trend is not none else '' }}">
+            <td class="stc-rank">{{ manager.rank or '—' }}</td>
+            <td class="stc-manager"><strong>{{ manager.full_name }}</strong><span>{{ manager.login }}</span></td>
+            <td class="stc-role"><strong>{{ manager.role_label }}</strong><span aria-hidden="true">•</span><em>{{ manager.department }}</em></td>
+            <td class="stc-compliance">
+              {% if manager.score is not none %}
+              <strong>{{ manager.score }}%</strong><span class="stc-progress"><i class="{{ 'stc-bar-ok' if manager.score >= 95 else ('stc-bar-risk' if manager.score >= 90 else 'stc-bar-gap') }}" style="width:{{ manager.score }}%"></i></span>
+              {% else %}<strong class="is-muted">No data</strong>{% endif %}
+            </td>
+            <td class="stc-number {{ 'is-alert' if manager.critical_overdue else '' }}">{{ manager.critical_overdue }}</td>
+            <td class="stc-number {{ 'is-alert' if manager.overdue_days else '' }}">{{ manager.overdue_days }}</td>
+            <td class="stc-trend {{ 'is-up' if manager.trend is not none and manager.trend > 0 else ('is-down' if manager.trend is not none and manager.trend < 0 else '') }}">
+              {% if manager.trend is none %}<span class="is-muted">—</span>{% elif manager.trend > 0 %}<span>↑</span> {{ manager.trend }} pp{% elif manager.trend < 0 %}<span>↓</span> {{ manager.trend|abs }} pp{% else %}<span class="is-muted">→ 0.0 pp</span>{% endif %}
+            </td>
+            <td><span class="stc-status stc-status--{{ manager.status }}"><i></i>{{ 'On target' if manager.status == 'on_target' else 'Needs attention' }}</span></td>
+          </tr>
+          {% endfor %}
+          <tr class="stc-empty" id="stcEmpty" hidden><td colspan="8">No managers match these filters.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <footer class="stc-footer">
+      <strong id="stcResultCount">{{ safety_ranking.manager_count }} managers</strong>
+    </footer>
+  </section>
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById('stcRanking');
+  if (!root || root.dataset.bound === '1') return;
+  root.dataset.bound = '1';
+  var tbody = root.querySelector('tbody');
+  var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr[data-score]'));
+  var search = document.getElementById('stcSearch');
+  var role = document.getElementById('stcRoleFilter');
+  var department = document.getElementById('stcDepartmentFilter');
+  var empty = document.getElementById('stcEmpty');
+  var resultCount = document.getElementById('stcResultCount');
+  var sortMode = 'best';
+  var attentionOnly = false;
+  var filteredRows = [];
+
+  function number(row, key) { return parseFloat(row.dataset[key]); }
+  function compare(a, b) {
+    var as = number(a, 'score'), bs = number(b, 'score');
+    if (as < 0 || bs < 0) return as < 0 && bs >= 0 ? 1 : (bs < 0 && as >= 0 ? -1 : a.dataset.name.localeCompare(b.dataset.name));
+    if (sortMode === 'risk') {
+      var attention = (a.dataset.status === 'needs_attention' ? 0 : 1) - (b.dataset.status === 'needs_attention' ? 0 : 1);
+      if (attention) return attention;
+      if (number(a, 'critical') !== number(b, 'critical')) return number(b, 'critical') - number(a, 'critical');
+      if (number(a, 'overdue') !== number(b, 'overdue')) return number(b, 'overdue') - number(a, 'overdue');
+      if (as !== bs) return as - bs;
+    } else {
+      if (as !== bs) return bs - as;
+      if (number(a, 'critical') !== number(b, 'critical')) return number(a, 'critical') - number(b, 'critical');
+      if (number(a, 'overdue') !== number(b, 'overdue')) return number(a, 'overdue') - number(b, 'overdue');
+    }
+    return a.dataset.name.localeCompare(b.dataset.name);
+  }
+
+  function render(resetPage) {
+    var query = search.value.trim().toLowerCase();
+    filteredRows = rows.filter(function (row) {
+      return (!query || row.dataset.search.indexOf(query) !== -1)
+        && (role.value === 'all' || row.dataset.role === role.value)
+        && (department.value === 'all' || row.dataset.department === department.value)
+        && (!attentionOnly || row.dataset.status === 'needs_attention');
+    }).sort(compare);
+    filteredRows.forEach(function (row) { tbody.insertBefore(row, empty); });
+    rows.forEach(function (row) { row.hidden = true; });
+    filteredRows.forEach(function (row) { row.hidden = false; });
+    empty.hidden = filteredRows.length !== 0;
+    resultCount.textContent = filteredRows.length + ' manager' + (filteredRows.length === 1 ? '' : 's');
+  }
+
+  [search, role, department].forEach(function (control) { control.addEventListener('input', function () { attentionOnly = false; render(true); }); });
+
+  root.querySelectorAll('[data-sort]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      sortMode = button.dataset.sort;
+      root.querySelectorAll('[data-sort]').forEach(function (item) { item.classList.toggle('is-active', item === button); });
+      render(true);
+    });
+  });
+
+  document.getElementById('stcReviewAttention').addEventListener('click', function () {
+    attentionOnly = true;
+    search.value = '';
+    role.value = 'all';
+    department.value = 'all';
+    sortMode = 'risk';
+    root.querySelectorAll('[data-sort]').forEach(function (item) { item.classList.toggle('is-active', item.dataset.sort === 'risk'); });
+    render(true);
+    root.querySelector('.stc-surface').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  function exportRows(asCsv) {
+    var headings = ['Rank','Manager','Login','Role','Department','Compliance','Critical overdue','Overdue days','4-week change','Status'];
+    var data = filteredRows.map(function (row) {
+      var score = number(row, 'score');
+      return [row.dataset.rank === '999999' ? '' : row.dataset.rank, row.dataset.name, row.dataset.login, row.dataset.role, row.dataset.department, score < 0 ? '' : score + '%', row.dataset.critical, row.dataset.overdue, row.dataset.trend ? row.dataset.trend + ' pp' : '', row.dataset.status === 'on_target' ? 'On target' : 'Needs attention'];
+    });
+    if (!asCsv) return [headings].concat(data).map(function (line) { return line.join('\t'); }).join('\n');
+    return [headings].concat(data).map(function (line) { return line.map(function (value) { return '"' + String(value).replace(/"/g, '""') + '"'; }).join(','); }).join('\n');
+  }
+
+  // Renders the currently-visible, filtered rows as a PNG image, drawn
+  // natively on a <canvas> — deliberately not using an external
+  // rendering library (e.g. html2canvas via CDN): this app has zero
+  // external script dependencies anywhere, on the reasonable
+  // assumption that a corporate network might not reliably reach a
+  // public CDN, and a "snip" button that silently fails for some users
+  // would be worse than not having one. Returns a canvas ready for
+  // .toBlob().
+  function renderTableAsImage() {
+    var cols = [
+      { label: 'Rank', width: 50, align: 'left' },
+      { label: 'Manager', width: 190, align: 'left' },
+      { label: 'Role & department', width: 220, align: 'left' },
+      { label: 'Compliance', width: 150, align: 'left' },
+      { label: 'Critical', width: 80, align: 'right' },
+      { label: 'Overdue days', width: 100, align: 'right' },
+      { label: '4-week change', width: 110, align: 'right' },
+      { label: 'Status', width: 130, align: 'left' },
+    ];
+    var rowHeight = 46;
+    var headerHeight = 40;
+    var padX = 14;
+    var titleHeight = 40;
+    var totalWidth = cols.reduce(function (sum, c) { return sum + c.width; }, 0);
+    var totalHeight = titleHeight + headerHeight + filteredRows.length * rowHeight + 20;
+
+    var dpr = window.devicePixelRatio || 1;
+    var canvas = document.createElement('canvas');
+    canvas.width = totalWidth * dpr;
+    canvas.height = totalHeight * dpr;
+    var ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, totalWidth, totalHeight);
+
+    ctx.fillStyle = '#101828';
+    ctx.font = '600 15px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Safety Training Compliance Ranking', padX, titleHeight / 2 + 6);
+
+    var y = titleHeight;
+    ctx.fillStyle = '#f5f6f8';
+    ctx.fillRect(0, y, totalWidth, headerHeight);
+    ctx.fillStyle = '#6e6e73';
+    ctx.font = '600 11px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+    var x = padX;
+    cols.forEach(function (col) {
+      ctx.textAlign = col.align;
+      ctx.fillText(col.label.toUpperCase(), col.align === 'right' ? x + col.width - padX : x, y + headerHeight / 2);
+      x += col.width;
+    });
+    ctx.strokeStyle = '#101828';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, y + headerHeight); ctx.lineTo(totalWidth, y + headerHeight); ctx.stroke();
+    y += headerHeight;
+
+    filteredRows.forEach(function (row, i) {
+      if (i % 2 === 1) { ctx.fillStyle = '#fafafa'; ctx.fillRect(0, y, totalWidth, rowHeight); }
+      ctx.strokeStyle = '#e5e5ea';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, y + rowHeight); ctx.lineTo(totalWidth, y + rowHeight); ctx.stroke();
+
+      var score = number(row, 'score');
+      var midY = y + rowHeight / 2;
+      x = padX;
+
+      ctx.fillStyle = '#101828';
+      ctx.font = '600 13px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(row.dataset.rank === '999999' ? '—' : row.dataset.rank, x, midY);
+      x += cols[0].width;
+
+      ctx.font = '600 13px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.fillStyle = '#101828';
+      ctx.fillText(row.dataset.name, x, midY - 8);
+      ctx.font = '400 11px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.fillStyle = '#6e6e73';
+      ctx.fillText(row.dataset.login, x, midY + 8);
+      x += cols[1].width;
+
+      ctx.font = '500 12px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.fillStyle = '#101828';
+      ctx.fillText(row.dataset.role, x, midY - 8);
+      ctx.font = '400 11px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.fillStyle = '#6e6e73';
+      ctx.fillText(row.dataset.department, x, midY + 8);
+      x += cols[2].width;
+
+      if (score >= 0) {
+        ctx.font = '600 13px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+        ctx.fillStyle = '#101828';
+        ctx.fillText(score + '%', x, midY - 8);
+        var barW = 100, barH = 4, barY = midY + 3;
+        ctx.fillStyle = '#e5e5ea';
+        ctx.fillRect(x, barY, barW, barH);
+        ctx.fillStyle = score >= 95 ? '#248a3d' : '#d70015';
+        ctx.fillRect(x, barY, Math.min(barW, barW * score / 100), barH);
+      } else {
+        ctx.font = '400 12px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+        ctx.fillStyle = '#8e8e93';
+        ctx.fillText('No data', x, midY);
+      }
+      x += cols[3].width;
+
+      ctx.font = '500 13px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = row.dataset.critical !== '0' ? '#d70015' : '#101828';
+      ctx.fillText(row.dataset.critical, x + cols[4].width - padX, midY);
+      x += cols[4].width;
+
+      ctx.fillStyle = row.dataset.overdue !== '0' ? '#d70015' : '#101828';
+      ctx.fillText(row.dataset.overdue, x + cols[5].width - padX, midY);
+      x += cols[5].width;
+
+      var trend = row.dataset.trend;
+      ctx.font = '500 12px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      if (trend === '' || trend === undefined) {
+        ctx.fillStyle = '#8e8e93'; ctx.fillText('—', x + cols[6].width - padX, midY);
+      } else {
+        var t = parseFloat(trend);
+        ctx.fillStyle = t > 0 ? '#248a3d' : (t < 0 ? '#d70015' : '#8e8e93');
+        var arrow = t > 0 ? '↑ ' : (t < 0 ? '↓ ' : '→ ');
+        ctx.fillText(arrow + Math.abs(t).toFixed(1) + ' pp', x + cols[6].width - padX, midY);
+      }
+      x += cols[6].width;
+
+      ctx.textAlign = 'left';
+      var onTarget = row.dataset.status === 'on_target';
+      ctx.fillStyle = onTarget ? '#248a3d' : '#d70015';
+      ctx.beginPath(); ctx.arc(x + 5, midY, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.font = '500 12px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.fillText(onTarget ? 'On target' : 'Needs attention', x + 16, midY);
+
+      y += rowHeight;
+    });
+
+    return canvas;
+  }
+
+  document.getElementById('stcCopy').addEventListener('click', function (event) {
+    var button = event.currentTarget;
+    var label = button.querySelector('span');
+    function fed(text) { var original = label.textContent; label.textContent = text; setTimeout(function () { label.textContent = original; }, 1600); }
+    var canvas = renderTableAsImage();
+    canvas.toBlob(function (blob) {
+      if (!blob) { fed('Failed'); return; }
+      if (navigator.clipboard && window.ClipboardItem) {
+        navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+          .then(function () { fed('Copied as image'); })
+          .catch(function () { downloadPngFallback(blob); });
+      } else {
+        downloadPngFallback(blob);
+      }
+    }, 'image/png');
+    function downloadPngFallback(blob) {
+      var link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'safety-training-compliance-ranking.png';
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
+      fed('Downloaded');
+    }
+  });
+  document.getElementById('stcExport').addEventListener('click', function () {
+    var blob = new Blob([exportRows(true)], { type: 'text/csv;charset=utf-8' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'safety-training-compliance-ranking.csv';
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
+  });
+  render(true);
+})();
+</script>
+</div><!-- /stcRanking -->
+
+{% macro ld_rank_table(ranking, label, table_id, metric_key=none) %}
+<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+  <button type="button" class="btn btn-ghost btn-sm" data-copy-target="#{{ table_id }}" data-copy-title="{{ label }} Ranking" data-copy-filename="{{ table_id }}"><span>Copy as image</span></button>
+</div>
+<div style="overflow-x:auto;">
+<table id="{{ table_id }}" style="width:100%; border-collapse:collapse; font-size:13px;">
+  <thead>
+    <tr>
+      <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Rank</th>
+      <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Manager</th>
+      <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Role &amp; department</th>
+      <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">{{ label }}</th>
+      <th style="text-align:right; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Gaps</th>
+      {% if metric_key == 'cross_training' %}
+      <th style="text-align:right; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Retention</th>
+      {% endif %}
+      <th style="text-align:right; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">4-week change</th>
+      <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in ranking.rows %}
+    <tr style="{{ 'background:#fef4f2;' if m.status == 'needs_attention' }}">
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line); font-weight:700;">{{ m.rank or '—' }}</td>
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line);"><strong>{{ m.full_name }}</strong><br><span class="mono" style="font-size:11px; color:var(--text-lo);">{{ m.login }}</span></td>
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line); font-size:12.5px; color:var(--text-lo);">{{ m.role_label }} · {{ m.department }}</td>
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line);">
+        {% if m.score is not none %}
+        <strong>{{ m.score }}%</strong>
+        <span style="display:block; width:100px; height:6px; background:#e5e5ea; border-radius:1px; overflow:hidden; margin-top:4px;"><i style="display:block; height:100%; width:{{ [m.score, 100]|min }}%; background:{{ 'var(--green)' if m.score >= 95 else ('#d9a406' if m.score >= 90 else 'var(--red)') }};"></i></span>
+        {% else %}<span style="color:var(--text-lo);">No data</span>{% endif %}
+      </td>
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ m.gap }}</td>
+      {% if metric_key == 'cross_training' %}
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+        {% if m.retention_pct is not none %}
+        <span style="color:{{ 'var(--green)' if m.retention_pct >= 95 else ('#d9a406' if m.retention_pct >= 90 else 'var(--red)') }};">{{ m.retention_pct }}%</span>
+        {% else %}<span style="color:var(--text-lo);">—</span>{% endif %}
+      </td>
+      {% endif %}
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line); text-align:right;">
+        {% if m.trend is none %}<span style="color:var(--text-lo);">—</span>
+        {% elif m.trend > 0 %}<span style="color:var(--green);">↑ {{ m.trend }} pp</span>
+        {% elif m.trend < 0 %}<span style="color:var(--red);">↓ {{ m.trend|abs }} pp</span>
+        {% else %}<span style="color:var(--text-lo);">→ 0.0 pp</span>{% endif %}
+      </td>
+      <td style="padding:8px 12px; border-bottom:1px solid var(--line);">
+        <span class="pill {{ 'pill-ok' if m.status=='on_target' else 'pill-gap' }}">{{ 'On target' if m.status=='on_target' else 'Needs attention' }}</span>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if not ranking.rows %}<div class="empty-state" style="padding:20px;">No managers to rank yet.</div>{% endif %}
+{% endmacro %}
+
+{% for key, label, _sections in ld_metrics %}
+{% if key != 'safety_compliance' %}
+<div class="panel ld-rank-panel" id="ldRank-{{ key }}" hidden>
+  <h2 class="panel-title" style="margin-bottom:10px;">{{ label }} ranking</h2>
+  {{ ld_rank_table(ld_all_rankings[key], label, 'ldRankTable-' ~ key, metric_key=key) }}
+</div>
+{% endif %}
+{% endfor %}
+<div class="panel ld-rank-panel" id="ldRank-total" hidden>
+  <h2 class="panel-title" style="margin-bottom:2px;">Total L&amp;D Score ranking</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 12px;">The average of whichever of the 7 L&amp;D metrics each manager has a score for.</p>
+  {{ ld_rank_table(ld_all_rankings['total'], 'Total L&D Score', 'ldRankTable-total') }}
+</div>
+</div><!-- /ldRankPanels -->
+
+<script>
+(function () {
+  var tabs = document.querySelectorAll('.ld-rank-tab');
+  var panels = { 'stcRanking': document.getElementById('stcRanking') };
+  document.querySelectorAll('.ld-rank-panel').forEach(function (p) { panels[p.id] = p; });
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (t) { t.classList.remove('active'); });
+      tab.classList.add('active');
+      Object.keys(panels).forEach(function (id) { if (panels[id]) panels[id].hidden = (id !== tab.dataset.ldRankTarget); });
+    });
+  });
+  var jump = new URLSearchParams(window.location.search).get('metric');
+  if (jump) {
+    var target = jump === 'total' ? 'ldRank-total' : (jump === 'safety_compliance' ? 'stcRanking' : 'ldRank-' + jump);
+    var matchTab = Array.prototype.find.call(tabs, function (t) { return t.dataset.ldRankTarget === target; });
+    if (matchTab) matchTab.click();
+  }
+  if (window.Ldoc) Ldoc.wireCopyAsImageButtons(document);
+})();
+</script>
+
+{% else %}
+<div class="rp-overview">
+  <section class="rp-surface rp-site-health" aria-labelledby="rpSiteHealthTitle">
+    <header class="rp-surface-head">
+      <div><h2 id="rpSiteHealthTitle">Site health</h2><p>The six signals requiring the closest operational attention.</p></div>
+      <span>Current reporting period</span>
+    </header>
+    <div class="rp-health-grid">
+      <article class="rp-health-item {{ 'rp-tone-ok' if safety_health.pct is not none and safety_health.pct >= 95 else 'rp-tone-attention' }}">
+        <span>Safety compliance</span>
+        <strong>{{ safety_health.pct if safety_health.pct is not none else '—' }}{% if safety_health.pct is not none %}%{% endif %}</strong>
+        <small>Overall health</small>
+      </article>
+      <article class="rp-health-item {{ 'rp-tone-attention' if safety_health.overdue else 'rp-tone-ok' }}">
+        <span>Overdue records</span>
+        <strong>{{ safety_health.overdue }}</strong>
+        <small>Safety compliance</small>
+      </article>
+      <article class="rp-health-item {{ 'rp-tone-attention' if safety_health.overdue_managers else 'rp-tone-ok' }}">
+        <span>Managers affected</span>
+        <strong>{{ safety_health.overdue_managers }}</strong>
+        <small>With overdue records</small>
+      </article>
+      <article class="rp-health-item {{ 'rp-tone-ok' if xt_site_compliance.pct is not none and xt_site_compliance.pct >= 97 else 'rp-tone-attention' }}">
+        <span>Cross-Training</span>
+        <strong>{{ xt_site_compliance.pct if xt_site_compliance.pct is not none else '—' }}{% if xt_site_compliance.pct is not none %}%{% endif %}</strong>
+        <small>{{ xt_site_compliance.excess }} trained above target</small>
+      </article>
+      <article class="rp-health-item {{ 'rp-tone-ok' if ir_summary_site.overall_pct is not none and ir_summary_site.overall_pct >= 97 else 'rp-tone-attention' }}">
+        <span>Indirect Roles</span>
+        <strong>{{ ir_summary_site.overall_pct if ir_summary_site.overall_pct is not none else '—' }}{% if ir_summary_site.overall_pct is not none %}%{% endif %}</strong>
+        <small>Overall compliance</small>
+      </article>
+      <article class="rp-health-item {{ 'rp-tone-attention' if ir_summary_site.people_needing_action else 'rp-tone-ok' }}">
+        <span>Training gaps</span>
+        <strong>{{ ir_summary_site.people_needing_action }}</strong>
+        <small>Indirect Roles</small>
+      </article>
+    </div>
+  </section>
+
+  <section class="rp-surface rp-scorecard rp-overall">
+    <header class="rp-surface-head">
+      <div><h2>L&amp;D Scorecard</h2><p>One consolidated view of compliance and staffing performance.</p></div>
+      <span>Overall</span>
+    </header>
+    <div class="rp-metric-grid rp-metric-grid--4">
+      <div class="rp-metric rp-tone-ok"><strong>{{ ld_overall.ok }}</strong><span><i></i>On track</span></div>
+      <div class="rp-metric rp-tone-attention"><strong>{{ ld_overall.risk }}</strong><span><i></i>At risk</span></div>
+      <div class="rp-metric rp-tone-critical"><strong>{{ ld_overall.gap }}</strong><span><i></i>Gap</span></div>
+      <div class="rp-metric rp-tone-primary"><strong>{{ ld_overall.pct_ok if ld_overall.pct_ok is not none else '—' }}{% if ld_overall.pct_ok is not none %}%{% endif %}</strong><span><i></i>On-track rate</span></div>
+    </div>
+  </section>
+
+  <section class="rp-surface rp-leadership">
+    <header class="rp-surface-head">
+      <div><h2>Senior Leadership</h2><p>Network-critical staffing signals for Cross-Training, Indirect Roles and Ambassador Practice.</p></div>
+    </header>
+    <div class="rp-leadership-grid">
+      <article class="{{ 'rp-tone-critical' if leadership.xt.gap else ('rp-tone-attention' if leadership.xt.risk else 'rp-tone-ok') }}">
+        <span>Cross-Training status</span>
+        <strong>{{ leadership.xt.pct_ok if leadership.xt.pct_ok is not none else '—' }}{% if leadership.xt.pct_ok is not none %}%{% endif %}</strong>
+        <small>{{ leadership.xt.total }} records</small>
+      </article>
+      <article class="{{ 'rp-tone-critical' if leadership.indirect_roles.gap else ('rp-tone-attention' if leadership.indirect_roles.risk else 'rp-tone-ok') }}">
+        <span>Indirect Roles staffing</span>
+        <strong>{{ leadership.indirect_roles.pct_ok if leadership.indirect_roles.pct_ok is not none else '—' }}{% if leadership.indirect_roles.pct_ok is not none %}%{% endif %}</strong>
+        <small>{{ leadership.indirect_roles.total }} records</small>
+      </article>
+      <article class="{{ 'rp-tone-critical' if leadership.instructor_hours.gap else ('rp-tone-attention' if leadership.instructor_hours.risk else 'rp-tone-ok') }}">
+        <span>Ambassador Practice capacity</span>
+        <strong>{{ leadership.instructor_hours.pct_ok if leadership.instructor_hours.pct_ok is not none else '—' }}{% if leadership.instructor_hours.pct_ok is not none %}%{% endif %}</strong>
+        <small>{{ leadership.instructor_hours.total }} records</small>
+      </article>
+    </div>
+  </section>
+</div>
+{% endif %}
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  if (window.Ldoc) Ldoc.wireCopyAsImageButtons(document);
+});
+if (document.readyState !== 'loading' && window.Ldoc) Ldoc.wireCopyAsImageButtons(document);
+</script>
+{% endblock %}

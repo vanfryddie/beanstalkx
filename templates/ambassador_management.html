@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Ambassador Management — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Ambassador Management</h1>
+<p class="page-sub">Departmental ambassadors by shift — Receive, RSP, Pack Singles, Pack Multis, AFE, Ship Dock, and ICQA.</p>
+
+<div class="tabbar">
+  {% for key, label in shifts.items() %}
+  <a href="{{ url_for('ambassador_management', shift=key, type=type_filter) }}" class="{{ 'active' if shift==key }}">{{ label }}</a>
+  {% endfor %}
+  <a href="{{ url_for('ambassador_definitions') }}">Definitions</a>
+</div>
+
+<div class="tabbar" style="margin-top:-4px;">
+  <a href="{{ url_for('ambassador_management', shift=shift) }}" class="{{ 'active' if not type_filter }}">All ambassadors</a>
+  <a href="{{ url_for('ambassador_management', shift=shift, type='process') }}" class="{{ 'active' if type_filter=='process' }}">Process</a>
+  <a href="{{ url_for('ambassador_management', shift=shift, type='indirect_roles') }}" class="{{ 'active' if type_filter=='indirect_roles' }}">Indirect Roles</a>
+</div>
+
+<div class="panel" style="padding:0; margin-bottom:16px;">
+  <h2 class="panel-title" style="padding:14px 16px 0;">Ambassador gaps — {{ shifts[shift] }}</h2>
+  <p style="font-size:12px; color:var(--text-lo); padding:0 16px; margin:4px 0 10px;">Current active ambassadors vs. target, per department.</p>
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 16px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+        <th style="text-align:right; padding:6px 16px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Ambassadors</th>
+        <th style="text-align:left; padding:6px 16px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Gap</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in gap_summary %}
+      <tr>
+        <td style="padding:6px 16px; border-bottom:1px solid var(--line);">{{ row.department }}</td>
+        <td style="padding:6px 16px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ row.current }}/{{ row.target }} Ambassadors</td>
+        <td style="padding:6px 16px; border-bottom:1px solid var(--line);">
+          {% if row.gap < 0 %}
+          <span class="pill pill-gap">{{ row.gap }} {{ row.department }} ambassador{{ 's' if row.gap != -1 }} gap</span>
+          {% elif row.target > 0 %}
+          <span class="pill pill-ok">On target ✓</span>
+          {% else %}
+          <span style="color:var(--text-lo); font-size:12px;">No target set</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="panel">
+  <h2 class="panel-title">Add an ambassador — {{ shifts[shift] }}</h2>
+  <form method="POST" id="ambAddForm" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+    <input type="hidden" name="action" value="add">
+    <div class="field" style="min-width:180px;">
+      <label>Department</label>
+      <select name="department" required>
+        {% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="min-width:160px;">
+      <label>Login</label>
+      <input type="text" id="ambLoginInput" name="login" placeholder="Associate login" required>
+    </div>
+    <div class="field" style="min-width:200px;">
+      <label>Full name (auto-filled from hours data if found)</label>
+      <input type="text" id="ambNameInput" name="full_name" placeholder="Full name">
+    </div>
+    <div class="field" style="min-width:220px;">
+      <label>Ambassador type</label>
+      <div style="display:flex; gap:14px; align-items:center; height:36px;">
+        <label style="display:flex; align-items:center; gap:5px; font-weight:400; font-size:13px;"><input type="checkbox" name="is_process_ambassador" checked> Process</label>
+        <label style="display:flex; align-items:center; gap:5px; font-weight:400; font-size:13px;"><input type="checkbox" id="ambAddIrCheckbox" name="is_indirect_roles_ambassador"> Indirect Roles</label>
+      </div>
+    </div>
+    <button class="btn btn-gold btn-sm" type="submit">Add ambassador</button>
+  </form>
+
+  <div id="ambAddIrRolesPicker" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid var(--line);">
+    <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 10px;">Which Indirect Roles will this ambassador train? (FSRI and palletizer roles are centrally trained, not shown here.)</p>
+    {% for section, rows in ir_role_sections.items() %}
+    <h3 style="font-size:12px; text-transform:uppercase; color:var(--text-lo); margin:14px 0 6px;">{{ section }}</h3>
+    <div style="display:flex; flex-wrap:wrap; gap:10px 18px;">
+      {% for row in rows %}
+      <label style="display:flex; align-items:center; gap:6px; font-weight:400; font-size:13px;">
+        <input type="checkbox" name="ir_role_config_id" value="{{ row.id }}" form="ambAddForm">
+        {{ row.role }}
+      </label>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+(function () {
+  var irCheckbox = document.getElementById('ambAddIrCheckbox');
+  var picker = document.getElementById('ambAddIrRolesPicker');
+  if (irCheckbox && picker) {
+    irCheckbox.addEventListener('change', function () {
+      picker.style.display = irCheckbox.checked ? '' : 'none';
+    });
+  }
+})();
+</script>
+
+<script>
+(function () {
+  var loginInput = document.getElementById('ambLoginInput');
+  var nameInput = document.getElementById('ambNameInput');
+  var nameEdited = false;
+  nameInput.addEventListener('input', function () { nameEdited = true; });
+  var debounceTimer = null;
+  loginInput.addEventListener('input', function () {
+    clearTimeout(debounceTimer);
+    var login = loginInput.value.trim();
+    if (login.length < 2 || nameEdited) return;
+    debounceTimer = setTimeout(function () {
+      fetch('/api/xt-employee-lookup?login=' + encodeURIComponent(login))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.full_name && !nameEdited) nameInput.value = data.full_name;
+        });
+    }, 300);
+  });
+})();
+</script>
+
+<div class="panel-row" style="flex-wrap:wrap;">
+  {% for dept in departments %}
+  <div class="panel" style="min-width:280px; flex:1 1 320px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">{{ dept }}</h2>
+    <p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">{{ roster.get(dept, [])|length }} ambassador{{ 's' if roster.get(dept, [])|length != 1 }}</p>
+    {% if roster.get(dept) %}
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Ambassador</th>
+          <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Login</th>
+          <th style="text-align:left; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Type</th>
+          {% for proc in (roster[dept][0].process_hours or []) %}
+          <th style="text-align:right; padding:6px 6px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">{{ proc.process }}<br><span style="font-size:9px; font-weight:400; text-transform:none;">hrs, 60d</span></th>
+          {% endfor %}
+          <th style="padding:6px 6px; border-bottom:2px solid var(--navy);"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in roster[dept] %}
+        <tr>
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line);">{{ a.full_name or '—' }}</td>
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line);" class="mono">{{ a.login }}</td>
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line);">
+            <div style="display:flex; flex-direction:column; gap:3px;">
+              <form method="POST" style="display:flex; gap:8px; align-items:center;">
+                <input type="hidden" name="action" value="set_types">
+                <input type="hidden" name="ambassador_id" value="{{ a.id }}">
+                <label style="display:flex; align-items:center; gap:3px; font-weight:400; font-size:11px;" title="Process Ambassador"><input type="checkbox" name="is_process_ambassador" onchange="this.form.requestSubmit()" {{ 'checked' if a.is_process_ambassador }}> Process</label>
+                <label style="display:flex; align-items:center; gap:3px; font-weight:400; font-size:11px;" title="Indirect Roles Ambassador"><input type="checkbox" name="is_indirect_roles_ambassador" onchange="this.form.requestSubmit()" {{ 'checked' if a.is_indirect_roles_ambassador }}> IR</label>
+              </form>
+              {% if a.is_indirect_roles_ambassador %}
+              <div id="ambTrainsWrap-{{ a.id }}" style="display:flex; flex-wrap:wrap; gap:3px; align-items:center; max-width:220px;">
+                {% for r in a.ir_roles %}<span class="pill pill-ok" style="font-size:10.5px;">{{ r.role }}</span>{% endfor %}
+                {% if not a.ir_roles %}<span style="font-size:11px; color:var(--text-lo);">No roles assigned yet</span>{% endif %}
+              </div>
+              <button type="button" class="btn btn-ghost btn-sm" id="ambTrainsBtn-{{ a.id }}" style="align-self:flex-start; padding:1px 6px; font-size:10.5px;" onclick='Ldoc.manageAmbassadorIrRoles({{ a.id }}, {{ (a.full_name or a.login)|tojson }})'>Manage <span id="ambTrainsCount-{{ a.id }}" style="display:none;">{{ a.ir_roles|length }}</span></button>
+              {% endif %}
+            </div>
+          </td>
+          {% for proc in a.process_hours %}
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+            {% if proc.flagged %}<span class="pill pill-risk" title="Under {{ 20 }}hrs in the last 60 days">{{ proc.hours_60 if proc.hours_60 is not none else 0 }}</span>
+            {% else %}{{ proc.hours_60 }}{% endif %}
+          </td>
+          {% endfor %}
+          <td style="padding:6px 6px; border-bottom:1px solid var(--line); text-align:right;">
+            <form method="POST" onsubmit="return confirm('Delist {{ a.login }} as an ambassador for {{ dept }}?');">
+              <input type="hidden" name="action" value="delist">
+              <input type="hidden" name="ambassador_id" value="{{ a.id }}">
+              <button class="btn btn-ghost btn-sm" type="submit">Delist</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state" style="padding:16px 4px;">No ambassadors yet.</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}OLR — {{ person.login }} — L&D Operations Console{% endblock %}
+{% block content %}
+<a href="{{ url_for('olr_overview') }}" class="btn btn-ghost btn-sm" style="margin-bottom:12px;">← Back to Operational Leadership Review</a>
+<h1 class="page-title">{{ person.full_name or person.login }}</h1>
+<p class="page-sub">{{ person.title or person.role|capitalize }} · <span class="mono">{{ person.login }}</span> · Last 12 months</p>
+
+<div class="panel-row" style="flex-wrap:wrap;">
+  <div class="panel" style="flex:1; min-width:180px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">WoW average</h2>
+    <p style="font-size:24px; font-weight:700; margin:6px 0 0;">{{ averages.wow_composite_avg if averages.wow_composite_avg is not none else '—' }}{% if averages.wow_composite_avg is not none %}%{% endif %}</p>
+    <p style="font-size:11.5px; color:var(--text-lo); margin:4px 0 0;">{{ averages.weeks_recorded }} week{{ 's' if averages.weeks_recorded != 1 }} recorded</p>
+  </div>
+  <div class="panel" style="flex:1; min-width:180px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">Latest quarter</h2>
+    <p style="font-size:24px; font-weight:700; margin:6px 0 0;">{{ averages.latest_quarter_avg if averages.latest_quarter_avg is not none else '—' }}{% if averages.latest_quarter_avg is not none %}%{% endif %}</p>
+    <p style="font-size:11.5px; color:var(--text-lo); margin:4px 0 0;">{{ averages.latest_quarter or '—' }}</p>
+  </div>
+  <div class="panel" style="flex:1; min-width:180px;">
+    <h2 class="panel-title" style="margin-bottom:2px;">Development</h2>
+    {% if averages.development %}
+      {% if averages.development.direction == 'up' %}<p style="font-size:22px; font-weight:700; margin:6px 0 0; color:var(--green);">▲ +{{ averages.development.diff }}</p>
+      {% elif averages.development.direction == 'down' %}<p style="font-size:22px; font-weight:700; margin:6px 0 0; color:var(--red);">▼ {{ averages.development.diff }}</p>
+      {% else %}<p style="font-size:22px; font-weight:700; margin:6px 0 0;">→ Flat</p>{% endif %}
+      <p style="font-size:11.5px; color:var(--text-lo); margin:4px 0 0;">vs. the quarter before</p>
+    {% else %}<p style="font-size:14px; color:var(--text-lo); margin:6px 0 0;">Not enough quarters of data yet</p>{% endif %}
+  </div>
+  <div class="panel" style="flex:1; min-width:180px;">
+    <h2 class="panel-title" style="margin-bottom:8px;">Escalations concerning them</h2>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <span class="pill pill-risk">Phase 1: {{ escalations[1] }}</span>
+      <span class="pill pill-risk">Phase 2: {{ escalations[2] }}</span>
+      <span class="pill pill-gap">Phase 3: {{ escalations[3] }}</span>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2 class="panel-title" style="margin-bottom:10px;">Monthly averages</h2>
+  {% if averages.month_avgs %}
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
+    {% for month in averages.month_avgs.keys()|sort(reverse=True) %}
+    <div style="border:1px solid var(--line); border-radius:8px; padding:8px 12px; min-width:90px; text-align:center;">
+      <div style="font-size:11px; color:var(--text-lo);">{{ month }}</div>
+      <div style="font-size:18px; font-weight:700;">{{ averages.month_avgs[month] }}%</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">No monthly data yet.</div>
+  {% endif %}
+</div>
+
+<div class="panel" style="margin-top:16px; padding:0;">
+  <h2 class="panel-title" style="padding:16px 18px 0;">Weekly metrics — WoW</h2>
+  {% if weeks %}
+  <div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 10px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Week of</th>
+        {% for key in metric_keys %}
+        <th style="text-align:right; padding:6px 10px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">{{ metric_labels[key] }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for week in weeks %}
+      <tr>
+        <td style="padding:6px 10px; border-bottom:1px solid var(--line);" class="mono">{{ week }}</td>
+        {% for key in metric_keys %}
+        <td style="padding:6px 10px; border-bottom:1px solid var(--line); text-align:right;" class="mono">
+          {% if series[week].get(key) is not none %}{{ series[week][key] }}%{% else %}—{% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No weekly metrics uploaded for this person yet.</div>
+  {% endif %}
+</div>
+{% endblock %}

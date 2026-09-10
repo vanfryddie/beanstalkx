@@ -1,0 +1,666 @@
+{% extends "base.html" %}
+{% block title %}Cross-Training — L&D Operations Console{% endblock %}
+{% block content %}
+{% from "_xt_cards_macro.html" import xt_cards %}
+
+
+
+<h1 class="page-title">Cross-Training</h1>
+<p class="page-sub">
+{% if tab == 'directory' %}Look up a specific associate's trained processes, or see cross-training coverage by department and process — including anything happening outside the ten approved standards below.
+{% else %}Approved cross-training paths, target % of source headcount, and where actuals currently stand — recalculated live from the uploaded hours-on-function data.
+  Positive gaps mean you're ahead of target; negative means behind. Click a path name for all three shifts, or an Actuals number for just that shift.{% endif %}
+</p>
+
+<div class="tabbar">
+  <a href="{{ url_for('cross_training', tab='standards') }}" class="{{ 'active' if tab=='standards' }}">Cross-Training Standards</a>
+  <a href="{{ url_for('cross_training', tab='directory') }}" class="{{ 'active' if tab=='directory' }}">Associate Directory</a>
+  <a href="{{ url_for('cross_training', tab='retention') }}" class="{{ 'active' if tab=='retention' }}">Retention</a>
+  {% if can_manage_xt_exclusions %}
+  <a href="{{ url_for('cross_training', tab='exclusions') }}" class="{{ 'active' if tab=='exclusions' }}">Exclusions</a>
+  {% endif %}
+  {% if can_manage_xt %}
+  <a href="{{ url_for('cross_training', tab='definitions') }}" class="{{ 'active' if tab=='definitions' }}">Definitions</a>
+  {% endif %}
+</div>
+
+{% if tab == 'standards' %}
+<div class="panel" style="margin-bottom:14px; display:flex; align-items:center; gap:10px;">
+  <label for="xtDropDaysInput" style="font-size:12.5px; font-weight:600;">Project becoming Lapsed within</label>
+  <input type="number" id="xtDropDaysInput" min="0" value="{{ xt_drop_days }}" style="width:80px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px;">
+  <span style="font-size:12.5px; color:var(--text-lo);">days — updates every card live as you type. <a href="{{ url_for('cross_training', tab='definitions') }}#xtDefinitionsExplainer">How this is calculated</a>, based on the {{ xt_proficiency_expiry_days }}-day expiry window set on the Definitions tab.</span>
+</div>
+<div class="tabbar" style="margin-top:-4px;">
+
+  {% for key, label in xt_scenarios %}
+  <a href="{{ url_for('cross_training', tab='standards', scenario=key) }}" class="{{ 'active' if scenario==key }}">{{ label }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="panel xt-data-strip">
+  <p>
+    <span class="status-dot" aria-hidden="true"></span>
+    <strong>{{ freshness.n or 0 }} data rows</strong>
+    {% if freshness.ts %}<span>Last import {{ freshness.ts[:16].replace('T',' ') }} UTC</span>{% else %}<span>Waiting for the first import</span>{% endif %}
+  </p>
+  <a href="{{ url_for('ld_settings', tab='data') }}" class="btn btn-ghost btn-sm">Manage source data <span aria-hidden="true">→</span></a>
+</div>
+
+{% if tab == 'standards' and internal_xt_overview %}
+<div class="panel" style="margin-bottom:16px;">
+  <h2 class="panel-title" style="margin-bottom:2px;">Internal Cross-Training Overview</h2>
+  <p style="font-size:12px; color:var(--text-lo); margin:4px 0 16px;">Home HC, Target, Net Actuals, Gap, and Lapsing projection per shift — the exact same live computation and layout as Cross-Training to Inbound/Outbound below, matched against the internal target list instead. Editable on the Definitions tab.</p>
+  {% for direction in ['Inbound', 'Outbound'] %}
+  {% if internal_xt_overview.get(direction) %}
+  <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:18px 0 10px;">
+    <h3 style="font-size:14px; margin:0;">Internal Cross-Training to {{ direction }}</h3>
+    <button type="button" class="btn btn-ghost btn-sm" data-copy-target="#internalXt{{ direction }}" data-copy-mode="xt-cards" data-copy-title="Internal Cross-Training to {{ direction }}" data-copy-filename="internal-xt-{{ direction|lower }}"><span>Copy as image</span></button>
+  </div>
+  {{ xt_cards(internal_xt_overview[direction], show_fn='ldocShowInternalXtEmployees', container_id='internalXt' ~ direction) }}
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if tab == 'directory' %}
+
+<section class="panel xt-directory-search">
+  <div class="xt-directory-search-head">
+    <div>
+      <h2 class="panel-title">Find associates</h2>
+      <p>Search directly by name or login, or narrow the directory by manager, department and shift.</p>
+    </div>
+    <span class="xt-directory-count">{{ freshness.n or 0 }} records</span>
+  </div>
+
+  <div class="xt-search-primary">
+    <span class="xt-search-icon" aria-hidden="true"></span>
+    <input type="text" id="xtAssocSearch" aria-label="Search associates by name or login" placeholder="Search by name or login — use commas for multiple associates">
+  </div>
+
+  <div class="xt-filter-line" aria-label="Directory filters">
+    <div class="xt-filter-field xt-filter-manager">
+      <label for="xtManagerSearch">Manager</label>
+      <input type="text" id="xtManagerSearch" placeholder="Any manager">
+    </div>
+    <div class="xt-filter-field">
+      <label for="xtDeptSearch">Department</label>
+      <select id="xtDeptSearch">
+        <option value="">Any department</option>
+        {% for d in home_departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="xt-filter-field">
+      <label for="xtProcessSearch">Trained in process</label>
+      <select id="xtProcessSearch">
+        <option value="">Any process</option>
+        {% for p in xt_processes %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="xt-filter-field xt-filter-shift">
+      <label for="xtCombinedShift">Shift</label>
+      <select id="xtCombinedShift">
+        <option value="">Any shift</option>
+        {% for key, label in shifts.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <button type="button" id="xtDirectoryFilterGo" class="btn xt-directory-search-btn">Apply filters</button>
+  </div>
+  <div id="xtDirectoryResults" class="xt-directory-results" aria-live="polite"></div>
+</section>
+
+<div class="panel">
+  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:10px;">
+    <div>
+      <h2 class="panel-title" style="margin-bottom:2px;">Coverage by department &amp; process</h2>
+      <p style="font-size:12.5px; color:var(--text-lo); margin:0;">How many distinct associates from each home department are Trained in each process — the full picture, not just the ten tracked standards. Cells with a value but no matching standard above are cross-training happening "off the books."</p>
+    </div>
+    <div class="tabbar" style="margin:0;">
+      {% for key, label in shifts.items() %}
+      <a href="{{ url_for('cross_training', tab='directory', matrix_shift=key) }}" class="{{ 'active' if matrix_shift==key }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  <div style="overflow-x:auto; margin-top:12px;">
+  <table class="xt-standards-table xt-directory-table">
+    <thead>
+      <tr>
+        <th>Home dept \ Process</th>
+        {% for proc in matrix.procs %}<th style="text-align:center;">{{ proc }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for dept in matrix.depts %}
+      <tr>
+        <td><strong>{{ dept }}</strong></td>
+        {% for proc in matrix.procs %}
+        {% set n = matrix.grid.get((dept, proc)) %}
+        <td class="mono" style="text-align:center; {% if n %}background:#eef5fc;{% endif %}">{{ n or '—' }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<script>
+(function () {
+  var associateInput = document.getElementById('xtAssocSearch');
+  var results = document.getElementById('xtDirectoryResults');
+  var debounceTimer = null;
+
+  function showLoading() {
+    results.innerHTML = '<div class="xt-search-state">Searching directory…</div>';
+  }
+
+  associateInput.addEventListener('input', function () {
+    clearTimeout(debounceTimer);
+    var q = associateInput.value.trim();
+    debounceTimer = setTimeout(function () {
+      if (q.length < 2) { results.innerHTML = ''; return; }
+      showLoading();
+      fetch('/api/xt-associates/search?q=' + encodeURIComponent(q))
+        .then(function (r) { return r.text(); })
+        .then(function (html) { results.innerHTML = html; });
+    }, 250);
+  });
+
+  document.getElementById('xtDirectoryFilterGo').addEventListener('click', function () {
+    var shift = document.getElementById('xtCombinedShift').value;
+    var manager = document.getElementById('xtManagerSearch').value.trim();
+    var dept = document.getElementById('xtDeptSearch').value;
+    var process = document.getElementById('xtProcessSearch').value;
+    associateInput.value = '';
+    if (!manager && !dept && !process && !shift) {
+      results.innerHTML = '<div class="xt-search-state">Choose at least one filter to search the directory.</div>';
+      return;
+    }
+    showLoading();
+    if (manager && !dept && !process && !shift) {
+      fetch('/api/xt-team/' + encodeURIComponent(manager))
+        .then(function (r) { return r.text(); })
+        .then(function (html) { results.innerHTML = html; });
+      return;
+    }
+    if (dept && !manager && !process && !shift) {
+      fetch('/api/xt-departments/' + encodeURIComponent(dept))
+        .then(function (r) { return r.text(); })
+        .then(function (html) { results.innerHTML = html; });
+      return;
+    }
+    var params = new URLSearchParams();
+    if (shift) params.set('shift', shift);
+    if (manager) params.set('manager', manager);
+    if (dept) params.set('department', dept);
+    if (process) params.set('process', process);
+    fetch('/api/xt-coverage-table?' + params.toString())
+      .then(function (r) { return r.text(); })
+      .then(function (html) { results.innerHTML = html; });
+  });
+})();
+</script>
+
+{% elif tab == 'retention' %}
+<p class="page-sub" style="margin-top:-8px;">Who's projected to become Lapsed — not just move down a tier, but lose the qualification entirely — within the window below, if they don't get staffed on the process again. <a href="{{ url_for('cross_training', tab='definitions') }}#xtDefinitionsExplainer">See exactly how this is defined and calculated.</a> Every process's likely 'home' department is determined from the data itself (whichever department most people doing that process actually belong to) — Home means the associate's own department matches; XT means they're cross-trained in from somewhere else. Departments with nobody currently projected to lapse aren't shown.</p>
+
+<div class="panel" style="margin-bottom:14px; display:flex; align-items:center; gap:10px;">
+  <label for="retentionDaysInput" style="font-size:12.5px; font-weight:600;">Becoming Lapsed within</label>
+  <input type="number" id="retentionDaysInput" min="0" value="30" style="width:80px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px;">
+  <span style="font-size:12.5px; color:var(--text-lo);">days — every number below updates live as you type.</span>
+</div>
+
+<div style="display:grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); gap:14px; align-items:start;">
+  {% for shift_key, shift_label in shifts.items() %}
+  <div class="panel">
+    <h2 class="panel-title" style="margin-bottom:10px;">{{ shift_label }}</h2>
+    {% set depts = xt_retention_report.get(shift_key, {}) %}
+    {% if depts %}
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      {% for dept, buckets in depts.items() %}
+      <div class="retention-dept-row" data-home='{{ buckets.home|tojson }}' data-xt='{{ buckets.xt|tojson }}' data-dept="{{ dept|e }}" data-shift-label="{{ shift_label|e }}" style="border:1px solid var(--line); border-radius:8px; padding:10px 12px;">
+        <div style="font-weight:600; font-size:13px; margin-bottom:6px;">{{ dept }}</div>
+        <div style="display:flex; gap:14px;">
+          <div>
+            <button type="button" class="retention-count-btn" data-bucket="home" style="background:none; border:none; padding:0; cursor:pointer; font:inherit; text-align:left;"><div class="retention-home-count" style="font-size:20px; font-weight:700;">0</div></button>
+            <div style="font-size:11px; color:var(--text-lo);">Home dept becoming Lapsed</div>
+          </div>
+          <div>
+            <button type="button" class="retention-count-btn" data-bucket="xt" style="background:none; border:none; padding:0; cursor:pointer; font:inherit; text-align:left;"><div class="retention-xt-count" style="font-size:20px; font-weight:700;">0</div></button>
+            <div style="font-size:11px; color:var(--text-lo);">XT / cross-trained becoming Lapsed</div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:16px;">No expiring associates found for this shift.</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+(function () {
+  var input = document.getElementById('retentionDaysInput');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.retention-dept-row'));
+  function recalc() {
+    var maxDays = parseInt(input.value, 10);
+    if (isNaN(maxDays)) maxDays = 0;
+    rows.forEach(function (row) {
+      var home = JSON.parse(row.dataset.home || '[]');
+      var xt = JSON.parse(row.dataset.xt || '[]');
+      var homeDropping = home.filter(function (r) { return r.days_until <= maxDays; });
+      var xtDropping = xt.filter(function (r) { return r.days_until <= maxDays; });
+      row.dataset.currentHome = JSON.stringify(homeDropping);
+      row.dataset.currentXt = JSON.stringify(xtDropping);
+      row.querySelector('.retention-home-count').textContent = homeDropping.length;
+      row.querySelector('.retention-xt-count').textContent = xtDropping.length;
+    });
+  }
+  input.addEventListener('input', recalc);
+  recalc();
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.retention-count-btn');
+    if (!btn) return;
+    var row = btn.closest('.retention-dept-row');
+    var bucket = btn.dataset.bucket;
+    var list = JSON.parse((bucket === 'home' ? row.dataset.currentHome : row.dataset.currentXt) || '[]');
+    var title = row.dataset.dept + ' — ' + row.dataset.shiftLabel + ' shift (' + (bucket === 'home' ? 'Home dept' : 'XT / cross-trained') + ')';
+    var body = list.length
+      ? '<table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr>' +
+        '<th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Associate</th>' +
+        '<th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Login</th>' +
+        '<th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Process</th>' +
+        '<th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Becomes Lapsed in</th>' +
+        '</tr></thead><tbody>' +
+        list.sort(function (a, b) { return a.days_until - b.days_until; }).map(function (r) {
+          var when = r.days_until <= 0 ? '<span class="pill pill-gap">Overdue</span>' : r.days_until + ' day' + (r.days_until !== 1 ? 's' : '');
+          return '<tr><td style="padding:6px 8px; border-bottom:1px solid var(--line);">' + r.name + '</td>' +
+            '<td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">' + r.login + '</td>' +
+            '<td style="padding:6px 8px; border-bottom:1px solid var(--line);">' + r.process + '</td>' +
+            '<td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;">' + when + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty-state" style="padding:20px;">Nobody in this window.</div>';
+    Ldoc.slidePanel({ title: title, body: body, wide: true });
+  });
+})();
+</script>
+
+{% elif tab == 'exclusions' %}
+<p class="page-sub" style="margin-top:-8px;">Stop a specific associate from being counted as Trained on a specific process — takes effect immediately, does not require a new data upload. Limited to trainers and admins; a reason is required and stays attached to the exclusion.</p>
+
+<div class="panel" style="margin-bottom:20px;">
+  <h2 class="panel-title" style="margin-bottom:12px;">Add an exclusion</h2>
+  <form method="POST" action="{{ url_for('xt_exclusions_add') }}" style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
+    <div class="field" style="margin:0;">
+      <label>Associate</label>
+      <input list="xtExclusionAssociateList" name="employee_login" placeholder="Search name or login…" autocomplete="off" required>
+      <datalist id="xtExclusionAssociateList">
+        {% for a in exclusion_associates %}
+        <option value="{{ a.employee_login }}">{{ a.full_name or a.employee_login }} ({{ a.employee_login }})</option>
+        {% endfor %}
+      </datalist>
+      <p style="font-size:11px; color:var(--text-lo); margin:4px 0 0;">Type a login exactly — this isn't a picker, matching is on the login you enter.</p>
+    </div>
+    <div class="field" style="margin:0;">
+      <label>Process</label>
+      <select name="merged_function" required>
+        <option value="" disabled selected>Select a process…</option>
+        {% for p in xt_processes %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin:0; grid-column: 1 / -1;">
+      <label>Reason for exclusion</label>
+      <textarea name="reason" rows="2" placeholder="Why shouldn't this count as Trained? (required)" required></textarea>
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <button class="btn btn-gold" type="submit">Add exclusion</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel" style="padding:0;">
+  <div style="padding:16px 18px 0; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:10px;">
+    <h2 class="panel-title" style="margin:0;">Active exclusions</h2>
+    <span id="xtExclCount" style="font-size:12.5px; color:var(--text-lo);">{{ exclusions|length }} active</span>
+  </div>
+  {% if exclusions %}
+  <div style="padding:14px 18px 0; display:flex; gap:8px; flex-wrap:wrap;" id="xtExclFilters">
+    <input type="text" id="xtExclSearch" placeholder="Search associate, login, or reason…" style="flex:1 1 220px; min-width:180px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;">
+    <select id="xtExclProcess" style="padding:7px 10px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;">
+      <option value="">All processes</option>
+      {% for p in exclusions|map(attribute='merged_function')|unique|sort %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select>
+    <select id="xtExclManager" style="padding:7px 10px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;">
+      <option value="">All managers</option>
+      {% for m in exclusions|map(attribute='supervisor_login')|select|unique|sort %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+    </select>
+    <select id="xtExclDept" style="padding:7px 10px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;">
+      <option value="">All departments</option>
+      {% for d in exclusions|map(attribute='fclm_mapped')|select|unique|sort %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+    </select>
+    <select id="xtExclShift" style="padding:7px 10px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;">
+      <option value="">All shifts</option>
+      <option value="early">Early</option><option value="late">Late</option><option value="night">Night</option>
+    </select>
+    <button type="button" id="xtExclClear" class="btn btn-ghost btn-sm">Clear filters</button>
+  </div>
+  <div style="overflow-x:auto; margin-top:12px;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Associate</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Process</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Manager</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Shift</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Reason</th>
+        <th style="text-align:left; padding:8px 12px; border-bottom:2px solid var(--navy); font-size:10.5px; text-transform:uppercase; color:var(--text-lo);">Excluded by</th>
+        <th style="padding:8px 12px; border-bottom:2px solid var(--navy);"></th>
+      </tr>
+    </thead>
+    <tbody id="xtExclTbody">
+      {% for e in exclusions %}
+      <tr data-xt-excl-row
+          data-search="{{ ((e.full_name or '') ~ ' ' ~ e.employee_login ~ ' ' ~ e.reason)|lower|e }}"
+          data-process="{{ e.merged_function|e }}"
+          data-manager="{{ e.supervisor_login or '' }}"
+          data-dept="{{ e.fclm_mapped or '' }}"
+          data-shift="{{ e.shift or '' }}">
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">
+          <strong>{{ e.full_name or e.employee_login }}</strong><br><span class="mono" style="font-size:11px; color:var(--text-lo);">{{ e.employee_login }}</span>
+          {% if not e.full_name %}<br><span class="pill pill-gap" style="margin-top:3px;">Not in current data</span>{% endif %}
+        </td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">{{ e.merged_function }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);" class="mono">{{ e.supervisor_login or '—' }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">{{ e.fclm_mapped or '—' }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);">{{ {'early':'Early','late':'Late','night':'Night'}.get(e.shift, e.shift or '—') }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line); max-width:220px;">{{ e.reason }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line);" class="mono">{{ e.excluded_by or '—' }}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid var(--line); text-align:right;">
+          <form method="POST" action="{{ url_for('xt_exclusions_remove', exclusion_id=e.id) }}" onsubmit="return confirm('Remove this exclusion? ' + {{ (e.full_name or e.employee_login)|tojson }} + ' will count as Trained on {{ e.merged_function|e }} again immediately.');">
+            <button type="submit" class="btn btn-ghost btn-sm">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="empty-state" id="xtExclEmpty" style="display:none; padding:24px;">No exclusions match the current filters.</div>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">No exclusions currently active.</div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  var search = document.getElementById('xtExclSearch');
+  if (!search) return;
+  var processSel = document.getElementById('xtExclProcess');
+  var managerSel = document.getElementById('xtExclManager');
+  var deptSel = document.getElementById('xtExclDept');
+  var shiftSel = document.getElementById('xtExclShift');
+  var clearBtn = document.getElementById('xtExclClear');
+  var countEl = document.getElementById('xtExclCount');
+  var emptyEl = document.getElementById('xtExclEmpty');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('[data-xt-excl-row]'));
+
+  function apply() {
+    var q = search.value.trim().toLowerCase();
+    var proc = processSel.value, mgr = managerSel.value, dept = deptSel.value, shift = shiftSel.value;
+    var shown = 0;
+    rows.forEach(function (row) {
+      var matches = (!q || row.dataset.search.indexOf(q) !== -1)
+        && (!proc || row.dataset.process === proc)
+        && (!mgr || row.dataset.manager === mgr)
+        && (!dept || row.dataset.dept === dept)
+        && (!shift || row.dataset.shift === shift);
+      row.style.display = matches ? '' : 'none';
+      if (matches) shown += 1;
+    });
+    countEl.textContent = shown + ' of ' + rows.length + ' shown';
+    emptyEl.style.display = shown === 0 ? '' : 'none';
+  }
+
+  [search].forEach(function (el) { el.addEventListener('input', apply); });
+  [processSel, managerSel, deptSel, shiftSel].forEach(function (el) { el.addEventListener('change', apply); });
+  clearBtn.addEventListener('click', function () {
+    search.value = '';
+    [processSel, managerSel, deptSel, shiftSel].forEach(function (el) { el.value = ''; });
+    apply();
+  });
+})();
+</script>
+
+{% elif tab == 'definitions' %}
+
+<div class="panel" id="xtDefinitionsExplainer">
+  <h2 class="panel-title" style="margin-bottom:10px;">What these terms actually mean</h2>
+
+  <h3 style="font-size:13px; margin:0 0 4px;">Trained / Not Trained</h3>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 14px;">Comes straight from the uploaded hours-on-function export's "Trained Status" column — this app doesn't calculate it from hours or apply any threshold of its own. Whatever the source system says (Trained or Not Trained) is what shows here, unchanged.</p>
+
+  <h3 style="font-size:13px; margin:0 0 4px;">Proficiency status (Proficient / Practice / Refresh / Lapsed)</h3>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 6px;">Imported directly from the "Proficiency Status" column — this app doesn't decide which tier someone is in, that determination is made upstream. The actual upstream logic, a cascading check from the most recent window down:</p>
+  <pre style="font-size:12px; background:#f5f6f8; border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:0 0 10px; overflow-x:auto;">ifelse(
+    {Total_Hours_60} &gt;= 20, "Proficient",
+    {Total_Hours_90} &gt;= 20, "Practice",
+    {Total_Hours_180} &gt;= 20, "Refresh",
+    "Lapsed"
+)</pre>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 6px;">In plain terms: 20+ hours within the last 60 days is Proficient; falling short of that but still 20+ within 90 days is Practice; falling short of that but still 20+ somewhere within 180 days is Refresh; under 20 hours across the whole 180-day window is Lapsed. Because Practice is checked against the shorter (90-day) window and Refresh against the longer (180-day) one, Practice is the more-current state of the two, despite what the label alone suggests. What this app <em>does</em> define is the score each tier is worth on the Cross-Training Compliance scorecard, matching that same order:</p>
+  <ul style="font-size:12.5px; color:var(--text-lo); margin:0 0 14px 18px; padding:0;">
+    <li><strong>Proficient</strong> = 100 points — 20+ hours within the last 60 days.</li>
+    <li><strong>Practice</strong> = 60 points — 20+ hours within the last 90 days, but not 60.</li>
+    <li><strong>Refresh</strong> = 30 points — 20+ hours within the last 180 days, but not 90.</li>
+    <li><strong>Lapsed</strong> = 0 points — under 20 hours across the full 180-day window.</li>
+  </ul>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 14px;">The Cross-Training Score shown elsewhere is the average of these points across every record in scope.</p>
+
+  <h3 style="font-size:13px; margin:0 0 4px;">Becoming Lapsed — the "Lapsing in X days" / Retention projections</h3>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 14px;">This <strong>is</strong> something this app calculates, from the "last date on process" column: <code>projected Lapsed date = last date on process + {{ xt_proficiency_expiry_days }} days</code>. It's a single uniform countdown applied the same way to anyone not already Lapsed (Proficient, Practice, or Refresh) — there's no separate per-tier timer, so it always means "days until this person is projected to become fully Lapsed on this process," never "days until they drop one step down." <strong>This day count itself isn't a value LDIS has an authoritative source for</strong> — it's currently {{ xt_proficiency_expiry_days }} days as a placeholder.</p>
+
+  <h3 style="font-size:13px; margin:0 0 4px;">Ambassador hours threshold</h3>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 4px;">Separate from the above, and specific to the Ambassador Hours/Readiness features (not general Cross-Training): every tracked ambassador process uses the same flat <strong>20-hour</strong> standard (last 60 days) — an ambassador below 20 hours on any of their department's tracked processes is flagged as needing more practice.</p>
+</div>
+
+<div class="panel">
+  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+    <div>
+      <h2 class="panel-title" style="margin-bottom:2px;">Cross-Training path definitions</h2>
+      <p style="font-size:12.5px; color:var(--text-lo); margin:0;">Add, edit, or remove approved paths and their target %, per scenario. Only admins, trainers, learning managers, and Senior Operations Managers can change these.</p>
+    </div>
+  </div>
+  <div class="tabbar" style="margin-bottom:14px;">
+    {% for key, label in xt_scenarios %}
+    <a href="{{ url_for('cross_training', tab='definitions', scenario=key) }}" class="{{ 'active' if scenario==key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+
+  <form method="POST" action="{{ url_for('xt_definitions_bulk_update') }}">
+    <input type="hidden" name="scenario" value="{{ scenario }}">
+    <div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Key</th>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Label</th>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Group</th>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Source dept(s)</th>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Target process</th>
+          <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">ES %</th>
+          <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">LS %</th>
+          <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">NS %</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for std in xt_definitions %}
+        <tr>
+          <input type="hidden" name="row_id" value="{{ std.id }}">
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);" class="mono">{{ std.std_key }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="label" value="{{ std.label }}" style="width:150px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);">
+            <select name="group" style="padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;">
+              <option value="ib" {% if std.group=='ib' %}selected{% endif %}>IB</option>
+              <option value="ob" {% if std.group=='ob' %}selected{% endif %}>OB</option>
+            </select>
+          </td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="source" value="{{ std.source|join(', ') }}" placeholder="e.g. Pack Multis, Receive" style="width:160px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="target" value="{{ std.target }}" style="width:140px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" step="0.1" name="pct_early" value="{{ (std.pct.early * 100)|round(1) }}" style="width:60px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" step="0.1" name="pct_late" value="{{ (std.pct.late * 100)|round(1) }}" style="width:60px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" step="0.1" name="pct_night" value="{{ (std.pct.night * 100)|round(1) }}" style="width:60px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap;">
+            <button class="btn btn-ghost btn-sm" type="submit" form="xtDeleteForm{{ std.id }}">Delete</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div style="margin-top:14px;">
+      <button class="btn btn-gold btn-sm" type="submit">Save all changes</button>
+    </div>
+  </form>
+
+  {% for std in xt_definitions %}
+  <form method="POST" action="{{ url_for('xt_definitions_delete', row_id=std.id) }}" id="xtDeleteForm{{ std.id }}" onsubmit="return confirm('Remove {{ std.label|e }}?');" style="display:none;">
+    <input type="hidden" name="scenario" value="{{ scenario }}">
+  </form>
+  {% endfor %}
+</div>
+
+<div class="panel">
+  <h2 class="panel-title" style="margin-bottom:2px;">Add a new path to {{ xt_scenario_labels.get(scenario, scenario) }}</h2>
+  <form method="POST" action="{{ url_for('xt_definitions_add') }}" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
+    <input type="hidden" name="scenario" value="{{ scenario }}">
+    <div class="field" style="margin:0;"><label>Key</label><input type="text" name="key" placeholder="e.g. p2r_stow" required style="width:130px;"></div>
+    <div class="field" style="margin:0;"><label>Label</label><input type="text" name="label" placeholder="e.g. P2R → STOW" required style="width:160px;"></div>
+    <div class="field" style="margin:0;">
+      <label>Group</label>
+      <select name="group"><option value="ib">IB</option><option value="ob">OB</option></select>
+    </div>
+    <div class="field" style="margin:0;">
+      <label>Source dept(s)</label>
+      <select name="source" multiple size="4" style="width:170px;">
+        {% for d in home_departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin:0;">
+      <label>Target process</label>
+      <select name="target" required style="width:170px;">
+        <option value="">Choose…</option>
+        {% for p in xt_processes %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin:0;"><label>ES %</label><input type="number" step="0.1" name="pct_early" placeholder="25" style="width:60px;"></div>
+    <div class="field" style="margin:0;"><label>LS %</label><input type="number" step="0.1" name="pct_late" placeholder="20" style="width:60px;"></div>
+    <div class="field" style="margin:0;"><label>NS %</label><input type="number" step="0.1" name="pct_night" placeholder="30" style="width:60px;"></div>
+    <button class="btn btn-gold btn-sm" type="submit">Add</button>
+  </form>
+  <p style="font-size:11.5px; color:var(--text-lo); margin:8px 0 0;">Hold Ctrl/Cmd to select multiple source departments.</p>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2 class="panel-title" style="margin-bottom:2px;">Internal Cross-Training targets</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:4px 0 12px;">Source department and target process for the Internal Cross-Training Overview shown at the top of Standards. Several of these were transcribed from a spreadsheet, not confirmed against real data — worth checking Source dept / Target process actually match a real department and Merged Function before trusting the numbers.</p>
+  {% if internal_xt_targets %}
+  <form method="POST" action="{{ url_for('internal_xt_targets_bulk_update') }}">
+    <div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Direction</th>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Label</th>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Source dept</th>
+          <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Target process</th>
+          <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">ES</th>
+          <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">LS</th>
+          <th style="text-align:right; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">NS</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in internal_xt_targets %}
+        <tr>
+          <input type="hidden" name="row_id" value="{{ row.id }}">
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line); color:var(--text-lo);">{{ row.direction }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="label" value="{{ row.label }}" style="width:140px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="source_dept" value="{{ row.source_dept or '' }}" list="xtHomeDeptSuggestions" style="width:130px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="text" name="target_process" value="{{ row.target_process or '' }}" list="xtProcessSuggestions" style="width:130px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" name="target_early" value="{{ row.target_early }}" style="width:56px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" name="target_late" value="{{ row.target_late }}" style="width:56px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);"><input type="number" name="target_night" value="{{ row.target_night }}" style="width:56px; padding:3px 5px; font-size:12px; border:1px solid var(--line); border-radius:5px; text-align:right;"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <datalist id="xtHomeDeptSuggestions">{% for d in home_departments %}<option value="{{ d }}">{% endfor %}</datalist>
+    <datalist id="xtProcessSuggestions">{% for p in xt_processes %}<option value="{{ p }}">{% endfor %}</datalist>
+    <div style="margin-top:14px;">
+      <button class="btn btn-gold btn-sm" type="submit">Save all changes</button>
+    </div>
+  </form>
+  {% else %}
+  <div class="empty-state">No internal targets configured.</div>
+  {% endif %}
+</div>
+
+{% else %}
+
+<div class="panel xt-note">
+  <span class="xt-note-icon" aria-hidden="true">i</span>
+  <p><strong>About source-only paths</strong><span>Decant and Ship don't receive cross-trained headcount from elsewhere. They appear only as sources feeding other functions.</span></p>
+</div>
+
+
+<div class="panel xt-group-panel">
+  <div class="xt-group-header">
+    <div><h2 class="panel-title">Cross-training to Inbound</h2><p>Approved paths building receiving and stow capability.</p></div>
+    <span class="xt-group-count">{{ standards|selectattr('group','equalto','ib')|list|length }} paths</span>
+    <button type="button" class="btn btn-ghost btn-sm" data-copy-target="#xtStandardsInbound" data-copy-mode="xt-cards" data-copy-title="Cross-Training to Inbound" data-copy-filename="cross-training-inbound"><span>Copy as image</span></button>
+  </div>
+  {{ xt_cards(standards|selectattr('group','equalto','ib')|list, container_id='xtStandardsInbound') }}
+</div>
+
+<div class="panel xt-group-panel">
+  <div class="xt-group-header">
+    <div><h2 class="panel-title">Cross-training to Outbound</h2><p>Approved paths building pack, pick and flow capability.</p></div>
+    <span class="xt-group-count">{{ standards|selectattr('group','equalto','ob')|list|length }} paths</span>
+    <button type="button" class="btn btn-ghost btn-sm" data-copy-target="#xtStandardsOutbound" data-copy-mode="xt-cards" data-copy-title="Cross-Training to Outbound" data-copy-filename="cross-training-outbound"><span>Copy as image</span></button>
+  </div>
+  {{ xt_cards(standards|selectattr('group','equalto','ob')|list, container_id='xtStandardsOutbound') }}
+</div>
+
+<p class="xt-method-note">
+  Rows involving ICQA, a standalone IB source/target, and Preslam aren't included — their source headcount definitions weren't specified precisely enough to compute without guessing.
+</p>
+
+{% endif %}
+
+<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+<script>
+var LDOC_SHIFT_LABELS = { early: 'Early', late: 'Late', night: 'Night' };
+var LDOC_XT_SCENARIO = '{{ scenario }}';
+
+function ldocShowXtEmployees(key, shift, label) {
+  Ldoc.showXtEmployees(key, shift, label, LDOC_XT_SCENARIO);
+}
+
+function ldocShowInternalXtEmployees(targetId, shift, label) {
+  var numericId = String(targetId).replace(/^internal_/, '');
+  Ldoc.showInternalXtEmployees(numericId, shift, label);
+}
+
+(function () {
+  var input = document.getElementById('xtDropDaysInput');
+  if (input) Ldoc.wireXtDropProjections(document, input);
+  Ldoc.wireCopyAsImageButtons(document);
+})();
+</script>
+{% endblock %}

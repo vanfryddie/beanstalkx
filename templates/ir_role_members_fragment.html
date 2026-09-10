@@ -1,0 +1,96 @@
+<div class="ir-member-head">
+  <div>
+    <span>{{ section }} · {{ shift_label }}</span>
+    <strong>{{ 'Trained with practice' if bucket=='trained' else ('Trained, no practice' if bucket=='no_practice' else 'Not trained') }}</strong>
+  </div>
+  <span class="ir-member-total">{{ members|length }} associate{{ '' if members|length == 1 else 's' }}</span>
+</div>
+
+<form method="POST" action="{{ url_for('indirect_roles_escalate') }}" id="irMembersForm">
+  <input type="hidden" name="role_label" value="{{ role }}">
+  <input type="hidden" name="shift_label" value="{{ shift_label }}">
+  <input type="hidden" name="is_training_request" value="{{ '1' if bucket == 'not_trained' else '' }}">
+
+  {% if bucket == 'not_trained' and can_escalate %}
+  <p style="font-size:11.5px; color:var(--text-lo); margin:0 0 8px;">Anyone already flagged as not trained for this role/shift is pinned at the top and pre-selected — untick to leave them off this request ("delist"). Search below to pull in anyone else from the roster.</p>
+  {% endif %}
+
+  <div class="ir-member-tools">
+    <label class="ir-member-filter" for="irMemberFilter">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.5 15.5 4 4"/></svg>
+      <input type="search" id="irMemberFilter" placeholder="Filter this list" autocomplete="off">
+    </label>
+    {% if can_escalate %}
+    <div class="ir-member-selection">
+      <span id="irSelectedCount">0 selected</span>
+      <button type="button" id="irSelectVisible">Select visible</button>
+      <button type="button" id="irClearSelection">Clear</button>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="ir-members-table-wrap">
+  <table class="ir-members-table" id="irMembersTable">
+    <thead>
+      <tr>
+        {% if can_escalate %}<th style="width:24px; padding:6px 8px; border-bottom:1px solid var(--line);"></th>{% endif %}
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Login</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Name</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Detail</th>
+        <th style="text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Hours (90d)</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Manager</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Department</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in members %}
+      <tr data-ir-member-row data-search-text="{{ ((m.login or '') ~ ' ' ~ (m.full_name or '') ~ ' ' ~ (m.manager_login or '') ~ ' ' ~ (m.department or ''))|lower|e }}">
+        {% if can_escalate %}<td style="padding:6px 8px; border-bottom:1px solid var(--line);"><input class="ir-member-checkbox" type="checkbox" name="member_login" value="{{ m.login }}" {% if bucket == 'not_trained' %}checked{% endif %}></td>{% endif %}
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">{{ m.login }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ m.full_name or '—' }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ m.detail or '—' }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ m.hours if m.hours not in (None, '') else 'N/A' }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">{{ m.manager_login or '—' }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ m.department or '—' }}</td>
+      </tr>
+      {% endfor %}
+      {% if not members %}
+      <tr id="irMembersEmptyRow"><td colspan="7" style="padding:16px 8px; color:var(--text-lo);">No one in this bucket{% if bucket == 'not_trained' %} — search below to add associates to train.{% else %}.{% endif %}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+
+  {% if can_escalate %}
+  {% if bucket == 'not_trained' %}
+  <div style="border-bottom:1px solid var(--line); padding-bottom:14px; margin-bottom:14px;">
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">Add associates from the roster</label>
+    <div style="position:relative; margin-top:8px;">
+      <input type="text" id="irRosterSearchInput" placeholder="Search by login or name…" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;" autocomplete="off">
+      <div id="irRosterSearchResults" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;"></div>
+    </div>
+  </div>
+  {% endif %}
+  <div>
+    <label style="font-size:11px; text-transform:uppercase; color:var(--text-lo); font-weight:600;">{{ 'Request training' if bucket == 'not_trained' else 'Escalate selected' }}</label>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+      <select name="concerning_manager" required style="flex:1; min-width:160px;">
+        <option value="">Concerning manager…</option>
+        {% for m in assignable_managers %}
+        <option value="{{ m.login }}">{{ m.full_name or m.login }} ({{ m.login }}) — {{ m.stage }}</option>
+        {% endfor %}
+      </select>
+      <select name="assignee" required style="flex:1; min-width:160px;">
+        <option value="">Assign to…</option>
+        {% for m in assignable_managers %}
+        <option value="{{ m.login }}">{{ m.full_name or m.login }} ({{ m.login }}) — {{ m.stage }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-gold btn-sm" type="submit">{{ 'Request training' if bucket == 'not_trained' else 'Create escalation ticket' }}</button>
+    </div>
+  </div>
+  {% else %}
+  <p style="font-size:12px; color:var(--text-lo);">Only trainers/L&D can {{ 'request training' if bucket == 'not_trained' else 'log an escalation' }} from here.</p>
+  {% endif %}
+</form>
+

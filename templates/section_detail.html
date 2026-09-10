@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}{{ section_label }} — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ section_label }}</h1>
+<p class="page-sub"><a href="{{ url_for('overview') }}">← Back to AM Overview</a></p>
+
+<div class="kpi-row">
+  <div class="kpi-card k-ok"><div class="kpi-value">{{ card.ok }}</div><div class="kpi-label">On track</div></div>
+  <div class="kpi-card k-risk"><div class="kpi-value">{{ card.risk }}</div><div class="kpi-label">At risk</div></div>
+  <div class="kpi-card k-gap"><div class="kpi-value">{{ card.gap }}</div><div class="kpi-label">Gap</div></div>
+  <div class="kpi-card"><div class="kpi-value">{{ card.total }}</div><div class="kpi-label">Total records</div></div>
+</div>
+
+<div class="panel" style="padding:0;">
+  {% if items %}
+  {% if section == 'planning_de_tech' %}
+  <form method="POST" action="{{ url_for('create_de_tech_internal_training') }}" id="deTechTrainingForm">
+  <div class="panel" style="margin:14px; padding:12px 14px; display:none;" id="deTechCreateBar">
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <div class="field" style="margin:0; min-width:180px;">
+        <label>Ambassador</label>
+        <select name="ambassador_login" required>
+          <option value="">Choose an ambassador…</option>
+          {% for a in de_tech_ambassadors %}<option value="{{ a.login }}">{{ a.full_name or a.login }} ({{ a.department }})</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field" style="margin:0;">
+        <label>Shift</label>
+        <select name="shift">
+          {% for key, label in shift_options.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field" style="margin:0;">
+        <label>Day (this week)</label>
+        <select name="day_index">
+          <option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option>
+          <option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
+        </select>
+      </div>
+      <div class="field" style="margin:0;">
+        <label>Start time</label>
+        <input type="time" name="start_time" value="09:00">
+      </div>
+      <input type="hidden" name="week_start" value="{{ current_week }}">
+      <button class="btn btn-gold btn-sm" type="submit"><span id="deTechSelectedCount">0</span> record(s) — Create internal training</button>
+    </div>
+    <p style="font-size:11.5px; color:var(--text-lo); margin:8px 0 0;">FSRI and Palletizer briefings are trained by Trainers, not ambassadors — those rows can't be selected here.</p>
+  </div>
+  {% endif %}
+  <table>
+    <thead>
+      <tr>
+        {% if section == 'planning_de_tech' %}<th style="width:24px;"><input type="checkbox" id="deTechSelectAll"></th>{% endif %}
+        <th>Employee</th><th>Login</th><th>FC</th><th>Subcategory</th><th>Status</th><th>Due / target</th><th>Value</th><th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in items %}
+      <tr>
+        {% if section == 'planning_de_tech' %}
+        <td>
+          {% if r.subcategory and r.subcategory not in de_tech_centrally_scheduled %}
+          <input type="checkbox" name="tracked_item_id" value="{{ r.id }}" class="js-de-tech-check">
+          {% endif %}
+        </td>
+        {% endif %}
+        <td>{{ r.full_name or '—' }}</td>
+        <td class="mono">{{ r.employee_login or '—' }}</td>
+        <td class="mono">{{ r.fc or '—' }}</td>
+        <td>{{ r.subcategory or '—' }}</td>
+        <td>
+          {% set bucket = 'ok' if r.status in ['Compliant','Graduated','Complete','Fully Covered','On Track'] else ('gap' if r.status in ['Overdue','Not Started','Not Covered','Gap'] else 'risk') %}
+          <span class="pill pill-{{ bucket }}">{{ r.status }}</span>
+        </td>
+        <td class="mono">{{ r.due_date or '—' }}</td>
+        <td class="mono">{{ r.value if r.value is not none else '—' }}</td>
+        <td>{{ r.notes or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if section == 'planning_de_tech' %}
+  </form>
+  <script>
+  (function () {
+    var bar = document.getElementById('deTechCreateBar');
+    var countEl = document.getElementById('deTechSelectedCount');
+    var selectAll = document.getElementById('deTechSelectAll');
+    function checks() { return Array.prototype.slice.call(document.querySelectorAll('.js-de-tech-check')); }
+    function update() {
+      var n = checks().filter(function (c) { return c.checked; }).length;
+      countEl.textContent = n;
+      bar.style.display = n > 0 ? '' : 'none';
+    }
+    checks().forEach(function (c) { c.addEventListener('change', update); });
+    if (selectAll) selectAll.addEventListener('change', function () {
+      checks().forEach(function (c) { c.checked = selectAll.checked; });
+      update();
+    });
+  })();
+  </script>
+  {% endif %}
+  {% else %}
+  <div class="empty-state">
+    <h3>No records in this section yet</h3>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

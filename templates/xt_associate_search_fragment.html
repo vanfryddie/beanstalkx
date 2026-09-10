@@ -1,0 +1,54 @@
+{% if not is_department_lookup and query|length < 2 %}
+<div class="empty-state" style="padding:24px 10px;">{% if is_team_lookup %}Type a manager's login.{% else %}Type at least 2 characters to search.{% endif %}</div>
+{% elif not employees %}
+<div class="empty-state" style="padding:24px 10px;">{% if is_team_lookup %}Nobody in this data reports to "{{ manager_login }}".{% elif is_department_lookup %}No associates found for "{{ department }}".{% else %}No associates match "{{ query }}".{% endif %}</div>
+{% else %}
+<div style="display:flex; flex-direction:column; gap:14px;">
+  {% for e in employees %}
+  <div class="panel" style="margin-bottom:0;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+      <strong style="font-size:14px; color:var(--navy);">{{ e.full_name or e.employee_login }}</strong>
+      <span class="mono" style="font-size:11.5px; color:var(--text-lo);">{{ e.employee_login }} · {{ e.fclm_mapped or '—' }}</span>
+    </div>
+    <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Process</th>
+          <th style="text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Status</th>
+          <th style="text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Proficiency</th>
+          <th style="text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Shift</th>
+          <th style="text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">60d</th>
+          <th style="text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">90d</th>
+          <th style="text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">180d</th>
+          <th style="text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Last on process</th>
+          <th style="text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Projected expiry</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in e.functions %}
+        <tr>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ f.merged_function }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);">
+            <span class="pill {{ 'pill-ok' if f.trained_status=='Trained' else 'pill-gap' }}">{{ f.trained_status }}</span>
+          </td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ f.proficiency_status or '—' }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ {'early':'Early','late':'Late','night':'Night'}.get(f.shift, f.shift or '—') }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ '%.1f'|format(f.hours_60|float) if f.hours_60 not in (none, '') else '—' }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ '%.1f'|format(f.hours_90|float) if f.hours_90 not in (none, '') else '—' }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ '%.1f'|format(f.hours_180|float) if f.hours_180 not in (none, '') else '—' }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);" class="mono">{{ f.last_date_on_process or '—' }}</td>
+          <td style="padding:5px 8px; border-bottom:1px solid var(--line);" class="mono">
+            {% if f.expiry_date %}
+            {{ f.expiry_date }}
+            {% if f.days_until_expiry <= 0 %}<span class="pill pill-gap" style="margin-left:4px;">Overdue</span>
+            {% elif f.days_until_expiry <= 14 %}<span class="pill pill-risk" style="margin-left:4px;">{{ f.days_until_expiry }}d</span>{% endif %}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

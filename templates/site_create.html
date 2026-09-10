@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Sites — L&D Operations Console{% endblock %}
+{% block content %}
+<h1 class="page-title">Sites</h1>
+<p class="page-sub">Create a new site with a completely empty database — no Indirect Role definitions, Cross-Training standards, or Ambassador departments carried over. Configure each from scratch through the same Definitions pages used for any site, after switching to it from the site switcher (top left).</p>
+
+<div class="panel" style="margin-bottom:20px;">
+  <h2 class="panel-title" style="margin-bottom:12px;">Create a new site</h2>
+  <form method="POST" action="{{ url_for('site_create') }}" style="display:grid; grid-template-columns: 1fr 2fr 1fr; gap:14px; align-items:end;">
+    <div class="field" style="margin:0;">
+      <label>Site code</label>
+      <input type="text" name="site_code" placeholder="e.g. STR1" maxlength="10" style="text-transform:uppercase;" required>
+    </div>
+    <div class="field" style="margin:0;">
+      <label>Site name</label>
+      <input type="text" name="site_name" placeholder="e.g. STR1 — Stralsund" required>
+    </div>
+    <div class="field" style="margin:0;">
+      <label>Region</label>
+      <input type="text" name="region" placeholder="e.g. EU12">
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <button class="btn btn-gold" type="submit">Create site</button>
+    </div>
+  </form>
+</div>
+
+<div class="panel" style="margin-bottom:20px;">
+  <h2 class="panel-title" style="margin-bottom:12px;">Registered sites</h2>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Code</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Name</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Region</th>
+        <th style="text-align:left; padding:6px 8px; border-bottom:2px solid var(--navy); font-size:10px; text-transform:uppercase; color:var(--text-lo);">Created by</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sites %}
+      <tr>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono"><strong>{{ s.site_code }}</strong></td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ s.site_name }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); color:var(--text-lo);">{{ s.region or '—' }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">{{ s.created_by or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2 class="panel-title" style="margin-bottom:2px;">Regional access</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:4px 0 14px;">Logins with regional access can switch between every site and see the Weekly Business Review comparing all of them — separate from their normal per-site role, which stays specific to whichever site is currently selected.</p>
+
+  <form method="POST" action="{{ url_for('site_global_admin_add') }}" style="display:flex; gap:10px; align-items:flex-end; margin-bottom:16px;">
+    <div class="field" style="margin:0; flex:1;">
+      <label>Login</label>
+      <input type="text" name="login" placeholder="Login to grant regional access" required>
+    </div>
+    <button class="btn btn-gold btn-sm" type="submit">Grant access</button>
+  </form>
+
+  {% if global_admins %}
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <tbody>
+      {% for a in global_admins %}
+      <tr>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line);" class="mono">{{ a.login }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); color:var(--text-lo);">Added by {{ a.added_by or '—' }}</td>
+        <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;">
+          <form method="POST" action="{{ url_for('site_global_admin_remove', login=a.login) }}">
+            <button type="submit" class="btn btn-ghost btn-sm">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state" style="padding:16px 0;">No one has regional access yet — bootstrap admins can still create sites and grant access here.</div>
+  {% endif %}
+</div>
+{% endblock %}
