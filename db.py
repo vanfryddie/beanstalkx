@@ -7190,6 +7190,61 @@ def _olr_composite(week_values):
     return sum(vals) / len(vals) if vals else None
 
 
+def get_site_weekly_composite_series(weeks=8):
+    """The current site's Total L&D score, week by week, from the OLR
+    weekly snapshots — the trend line behind each site card on Regional
+    Overview.
+
+    Built as the mean of each manager's own composite for that week,
+    which is NOT the same quantity as the live site-wide rollup shown as
+    the site's headline score (that one is computed across every tracked
+    item at once, not averaged per manager). The two can differ, so the
+    page labels this series for what it is rather than implying the last
+    point should equal the headline. Weeks with no snapshot are absent
+    rather than zero — a site that was not being snapshotted yet has no
+    history, and drawing that as 0% would read as a catastrophic score.
+    """
+    cutoff = (date.today() - timedelta(weeks=weeks)).isoformat()
+    placeholders = ",".join("?" * len(OLR_METRIC_KEYS))
+    conn = get_db()
+    rows = conn.execute(
+        f"SELECT week_start, login, metric_key, value FROM olr_weekly_metrics "
+        f"WHERE week_start >= ? AND metric_key IN ({placeholders}) AND value IS NOT NULL "
+        f"ORDER BY week_start",
+        [cutoff] + list(OLR_METRIC_KEYS),
+    ).fetchall()
+    conn.close()
+
+    by_week = {}
+    for r in rows:
+        by_week.setdefault(r["week_start"], {}).setdefault(r["login"], {})[r["metric_key"]] = r["value"]
+
+    series = []
+    for week_start in sorted(by_week):
+        composites = [c for c in (_olr_composite(v) for v in by_week[week_start].values())
+                      if c is not None]
+        if composites:
+            series.append((week_start, round(sum(composites) / len(composites), 1)))
+    return series
+
+
+def get_week_plan_utilisation(week_start):
+    """Seats booked against seats offered on the current site's approved
+    training plan for one week. Slots with no capacity set contribute
+    their booked attendees but no seats, so utilisation can never be
+    inflated by a slot nobody sized."""
+    slots = get_training_slots(week_start)
+    capacity = sum(s["capacity"] or 0 for s in slots)
+    booked = sum(len(s.get("attendees") or []) for s in slots)
+    return {
+        "slots": len(slots),
+        "capacity": capacity,
+        "booked": booked,
+        "seats_free": max(capacity - booked, 0),
+        "pct": round(100 * booked / capacity) if capacity else None,
+    }
+
+
 def get_olr_averages(login):
     """WoW average (mean of every uploaded week in the last 12 months),
     month averages, quarter averages, and a simple development trend —

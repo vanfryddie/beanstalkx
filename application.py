@@ -1765,7 +1765,55 @@ def _can_manage_xt_exclusions(login, role):
     return login in BOOTSTRAP_ADMIN_LOGINS or role in ("admin", "trainer")
 
 
-def get_regional_overview():
+REGIONAL_TREND_WEEKS = 8
+
+# Two different thresholds are in play on this page and they are not
+# interchangeable, so both are named rather than written as bare numbers.
+# A whole site's composite is held to 90 (what Regional Overview has
+# always flagged on); a single metric is held to the same 95 every
+# scorecard and ranking judges "on target" by. A site sitting at 92 is
+# therefore genuinely "stable overall, with metrics to fix" — which is
+# the real state, not a contradiction.
+SITE_STABLE_AT = 90
+SITE_SERIOUS_BELOW = 75
+
+
+def _site_status(score):
+    """good / watch / serious for a whole site's composite score, or None
+    when there is no score at all — which is deliberately not the same
+    as a bad score, and must not be coloured like one."""
+    if score is None:
+        return None
+    if score >= SITE_STABLE_AT:
+        return "good"
+    if score >= SITE_SERIOUS_BELOW:
+        return "watch"
+    return "serious"
+
+
+def _metric_status(score):
+    """Same three states for one metric, against the metric-level target
+    every other page already uses."""
+    if score is None:
+        return None
+    if score >= SAFETY_COMPLIANCE_TARGET:
+        return "good"
+    if score >= SITE_SERIOUS_BELOW:
+        return "watch"
+    return "serious"
+
+
+def _series_delta(series):
+    """Change between the last two points of a [(week, value)] series —
+    None when there aren't two points to compare, so the UI can say
+    "no comparison yet" instead of showing a fabricated 0.0."""
+    if not series or len(series) < 2:
+        return None
+    change = round(series[-1][1] - series[-2][1], 1)
+    return 0.0 if change == -0.0 else change
+
+
+def get_regional_overview(region=None, status=None):
     """One row per registered site: its site-wide score on each of the 7
     L&D metrics, the Total L&D composite, open escalation count, and
     which single metric most needs attention there — for the Regional
@@ -1776,7 +1824,9 @@ def get_regional_overview():
     raises — leaving the site context pointed at the wrong site for the
     rest of the request would corrupt everything else on the page."""
     original_site = db.get_current_site()
+    current_week = db.week_start_for()
     rows = []
+    all_regions = []
     try:
         for site in db.get_sites():
             db.set_current_site(site["site_code"])
@@ -1788,6 +1838,9 @@ def get_regional_overview():
             scored = [(key, label, metrics.get(key)) for key, label, _s in LD_METRICS if metrics.get(key) is not None]
             focus_metric = min(scored, key=lambda t: t[2]) if scored else None
 
+            trend = db.get_site_weekly_composite_series(weeks=REGIONAL_TREND_WEEKS)
+            plan = db.get_week_plan_utilisation(current_week)
+
             rows.append({
                 "site_code": site["site_code"],
                 "site_name": site["site_name"],
@@ -1798,17 +1851,103 @@ def get_regional_overview():
                 "manager_count": manager_count,
                 "focus_metric_label": focus_metric[1] if focus_metric else None,
                 "focus_metric_score": focus_metric[2] if focus_metric else None,
+                "focus_metric_key": focus_metric[0] if focus_metric else None,
+                "trend": trend,
+                "trend_delta": _series_delta(trend),
+                "plan": plan,
+                "status": _site_status(overall_score),
+                "metrics_below_target": sum(
+                    1 for _k, _l, _s in LD_METRICS
+                    if metrics.get(_k) is not None and metrics[_k] < SAFETY_COMPLIANCE_TARGET
+                ),
             })
     finally:
         db.set_current_site(original_site)
 
+    # Every region present before filtering, so the filter control can
+    # still offer the option that's currently filtering them out.
+    all_regions = sorted({r["region"] for r in rows if r.get("region")})
+    if region:
+        rows = [r for r in rows if (r.get("region") or "") == region]
+    if status:
+        rows = [r for r in rows if r["status"] == status]
+
     scored_totals = [r["total_score"] for r in rows if r["total_score"] is not None]
+
+    # One list of "what's actually wrong in the region", every site's
+    # below-target metrics pooled and ordered worst-first, so attention
+    # goes to the worst metric anywhere rather than to whichever site
+    # happens to sort first.
+    attention = []
+    for row in rows:
+        for key, label, _sections in LD_METRICS:
+            value = row["metrics"].get(key)
+            if value is not None and value < SAFETY_COMPLIANCE_TARGET:
+                attention.append({
+                    "site_code": row["site_code"],
+                    "site_name": row["site_name"],
+                    "metric_key": key,
+                    "metric_label": label,
+                    "score": value,
+                    "shortfall": round(SAFETY_COMPLIANCE_TARGET - value, 1),
+                    "severity": _metric_status(value),
+                })
+    attention.sort(key=lambda a: (a["score"], a["site_code"]))
+
+    # Region-wide metric averages, so the pulse row reflects the region
+    # rather than repeating one site's numbers.
+    metric_rollup = []
+    for key, label, _sections in LD_METRICS:
+        values = [r["metrics"][key] for r in rows if r["metrics"].get(key) is not None]
+        metric_rollup.append({
+            "key": key,
+            "label": label,
+            "avg": round(sum(values) / len(values), 1) if values else None,
+            "sites_reporting": len(values),
+            "sites_below": sum(1 for v in values if v < SAFETY_COMPLIANCE_TARGET),
+            "worst": min(values) if values else None,
+            "best": max(values) if values else None,
+        })
+
+    total_capacity = sum(r["plan"]["capacity"] for r in rows)
+    total_booked = sum(r["plan"]["booked"] for r in rows)
+
+    # Region trend: each week's mean across whichever sites have a
+    # snapshot for it, so one site's missing history doesn't drag the
+    # regional line down.
+    weeks = {}
+    for row in rows:
+        for week_start, value in row["trend"]:
+            weeks.setdefault(week_start, []).append(value)
+    region_trend = [(w, round(sum(v) / len(v), 1)) for w, v in sorted(weeks.items())]
+
     return {
         "sites": rows,
         "site_count": len(rows),
         "avg_total_score": round(sum(scored_totals) / len(scored_totals), 1) if scored_totals else None,
         "total_open_escalations": sum(r["open_escalations"] for r in rows),
-        "sites_needing_attention": sum(1 for r in rows if r["total_score"] is not None and r["total_score"] < 90),
+        "sites_needing_attention": sum(1 for r in rows if r["total_score"] is not None and r["total_score"] < SITE_STABLE_AT),
+        "sites_stable": sum(1 for r in rows if r["total_score"] is not None and r["total_score"] >= SITE_STABLE_AT),
+        "sites_without_data": sum(1 for r in rows if r["total_score"] is None),
+        "manager_count": sum(r["manager_count"] for r in rows),
+        "attention": attention,
+        "metric_rollup": metric_rollup,
+        "region_trend": region_trend,
+        "region_trend_delta": _series_delta(region_trend),
+        "plan": {
+            "capacity": total_capacity,
+            "booked": total_booked,
+            "seats_free": max(total_capacity - total_booked, 0),
+            "pct": round(100 * total_booked / total_capacity) if total_capacity else None,
+        },
+        "week_start": current_week,
+        "all_regions": all_regions,
+        "active_region": region or "",
+        "active_status": status or "",
+        "is_filtered": bool(region or status),
+        "trend_weeks": REGIONAL_TREND_WEEKS,
+        "site_stable_at": SITE_STABLE_AT,
+        "metric_target": SAFETY_COMPLIANCE_TARGET,
     }
 
 
@@ -2950,11 +3089,16 @@ def regional_overview():
         return redirect(url_for("login"))
     if not (db.is_global_admin(login_id) or login_id in BOOTSTRAP_ADMIN_LOGINS):
         return _deny("Only regional/global admins can see the Regional Overview.")
+    region = (request.args.get("region") or "").strip() or None
+    status = (request.args.get("status") or "").strip() or None
+    if status not in ("good", "watch", "serious"):
+        status = None
     return render_template(
         "regional_overview.html",
         **_login_context(),
-        overview=get_regional_overview(),
+        overview=get_regional_overview(region=region, status=status),
         ld_metrics=LD_METRICS,
+        today=date.today(),
     )
 
 
