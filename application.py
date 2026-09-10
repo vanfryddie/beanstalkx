@@ -1094,6 +1094,24 @@ _global_db_initialized = False
 
 
 @application.before_request
+def open_db_scope():
+    """Opens this request's database scope before anything touches the
+    database, so every get_db() call for the rest of the request shares
+    one connection instead of opening its own. Registered before
+    establish_site() below, which itself queries the site registry."""
+    db.begin_request_scope()
+
+
+@application.teardown_request
+def close_db_scope(exc=None):
+    """Releases whatever this request opened. teardown_request runs even
+    when the view raised, which is what keeps a failing request from
+    leaking a pooled connection the way the pool-exhaustion incident
+    did."""
+    db.end_request_scope()
+
+
+@application.before_request
 def establish_site():
     """Sets which site's database this request's queries should use —
     registered before ensure_db() below so the site is already known

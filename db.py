@@ -23,6 +23,7 @@ import io
 import uuid
 import re
 import threading
+import functools
 from datetime import datetime, date, timedelta
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
@@ -256,13 +257,11 @@ class PGConnection:
         _get_pg_pool().putconn(self._conn)  # returned to the pool, not actually closed
 
 
-def get_db():
-    """Connection scoped to the current site (see set_current_site) —
-    Postgres via a schema-scoped search_path, SQLite via a per-site
-    file. Every one of this file's ~120 existing call sites keeps
-    working unchanged: whichever site was set for this request, every
-    query on this connection transparently only sees that site's data."""
-    site_code = get_current_site()
+def _new_site_connection(site_code):
+    """Opens a genuinely new connection to one site's data. This is the
+    original, unpooled-at-the-request-level get_db() body — every
+    caller now goes through get_db() below, which reuses one of these
+    for the whole request instead of opening one per call."""
     if USE_POSTGRES:
         conn = _get_pg_pool().getconn()
         # autocommit must be set before running anything on this
@@ -291,19 +290,14 @@ def get_db():
     return conn
 
 
-def get_global_db():
-    """Connection to the small, site-independent registry: the list of
-    sites themselves, and who has cross-site (regional) access — this
-    is what the site switcher and Weekly Business Review read, and it
-    must be reachable no matter which site is 'current', so it's never
-    routed through get_db()/set_current_site. Postgres: always the
-    'public' schema explicitly, regardless of the current site's
-    search_path. SQLite: a dedicated file, separate from any site's
-    per-site database file."""
+def _new_global_connection():
+    """Opens a genuinely new connection to the site-independent registry
+    — the original get_global_db() body, same relationship to
+    get_global_db() as _new_site_connection has to get_db()."""
     if USE_POSTGRES:
         conn = _get_pg_pool().getconn()
-        # See the matching comment in get_db() — autocommit must be set
-        # before the SET search_path query runs, not after.
+        # See the matching comment in _new_site_connection() — autocommit
+        # must be set before the SET search_path query runs, not after.
         conn.autocommit = True
         cur = conn.cursor()
         cur.execute('SET search_path TO "public"')
@@ -317,6 +311,229 @@ def get_global_db():
     conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
+
+# Statements that only read. Anything else invalidates the per-request
+# lookup memo below — see _RequestConnection.execute.
+_READ_ONLY_SQL_RE = re.compile(r"^\s*(SELECT|PRAGMA|WITH|EXPLAIN)\b", re.IGNORECASE)
+
+
+class _RequestCursor:
+    """Wraps a cursor taken from a request-scoped connection purely so
+    writes issued through it (the CSV importers take one cursor and
+    reuse it across a row loop) invalidate the lookup memo the same way
+    writes issued through conn.execute() do."""
+
+    def __init__(self, cursor):
+        self._cur = cursor
+
+    def execute(self, query, params=()):
+        if not _READ_ONLY_SQL_RE.match(query):
+            _invalidate_request_memo()
+        return self._cur.execute(query, params)
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+
+class _RequestConnection:
+    """One real connection, shared by every get_db() call in a single
+    request.
+
+    The app's ~120 data-access helpers are each written as a
+    self-contained `conn = get_db() ... conn.close()` block, which is
+    clear to read but meant one real connection open (and, on Postgres,
+    one `SET search_path` network round-trip) per helper call — and the
+    scorecard/ranking pages call those helpers thousands of times to
+    render a single page. This wrapper keeps that call style working
+    untouched while making close() a no-op: the connection is opened
+    once per request and genuinely released in end_request_scope(),
+    which Flask's teardown_request guarantees runs even when the view
+    raises.
+
+    Holding a connection for a whole request is only safe because
+    PGConnection forces autocommit: an autocommit connection sitting
+    idle between statements holds no open transaction, so it pins no
+    MVCC snapshot, holds no row locks, and never shows up as 'idle in
+    transaction'. Were this app using default (transactional) psycopg2
+    connections, this change would trade a connection-churn problem for
+    a much worse long-transaction one.
+    """
+
+    def __init__(self, conn, site_code):
+        self._conn = conn
+        self.site_code = site_code
+
+    def execute(self, query, params=()):
+        if not _READ_ONLY_SQL_RE.match(query):
+            _invalidate_request_memo()
+        return self._conn.execute(query, params)
+
+    def cursor(self):
+        return _RequestCursor(self._conn.cursor())
+
+    def executescript(self, script):
+        _invalidate_request_memo()
+        return self._conn.executescript(script)
+
+    def commit(self):
+        # Still a real commit: SQLite needs it for durability, and
+        # PGConnection.commit() is already a no-op under autocommit.
+        return self._conn.commit()
+
+    def close(self):
+        # Deliberately does nothing. end_request_scope() owns the real
+        # close for the connection's whole request-long lifetime.
+        return None
+
+    def _really_close(self):
+        try:
+            self._conn.close()
+        except Exception:
+            # A connection already broken by an earlier error must not
+            # stop the rest of teardown from releasing everything else —
+            # a leak here is exactly what exhausted the pool before.
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+# Per-request connection reuse and lookup memoization. Thread-local for
+# the same reason the site context is (see _site_context): two requests
+# handled concurrently on different threads must never share either.
+_request_state = threading.local()
+
+
+def _scope():
+    return getattr(_request_state, "scope", None)
+
+
+def begin_request_scope():
+    """Starts a request's connection scope — called from application.py's
+    before_request. Until this is called (a script, a test, a background
+    job), get_db() behaves exactly as it always did and opens a fresh
+    connection per call, so nothing outside a request context changes."""
+    _request_state.scope = {"site": None, "global": None, "memo": {}}
+
+
+def end_request_scope():
+    """Releases whatever this request opened — called from
+    teardown_request, which Flask runs even when the view raised, so a
+    failing request can never leak a pooled connection."""
+    scope = _scope()
+    _request_state.scope = None
+    if not scope:
+        return
+    for key in ("site", "global"):
+        conn = scope.get(key)
+        if conn is not None:
+            conn._really_close()
+
+
+def _invalidate_request_memo():
+    """Any write through a request-scoped connection drops the whole
+    lookup memo. Coarse on purpose: a route that changes a role and then
+    re-reads it in the same request must see the new value, and dropping
+    everything is the version of that rule with no per-function
+    exceptions to get wrong."""
+    scope = _scope()
+    if scope is not None:
+        scope["memo"].clear()
+
+
+def request_memoize(fn):
+    """Memoizes one read-only lookup for the duration of a single
+    request, keyed by the current site plus the call's arguments.
+
+    Only for functions that read slowly-changing org/profile data and
+    whose return value callers don't mutate. Outside a request scope
+    this is a straight pass-through, and any write through a
+    request-scoped connection clears the memo (see
+    _invalidate_request_memo), so a cached value can't outlive a change
+    to the rows behind it.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        scope = _scope()
+        if scope is None:
+            return fn(*args, **kwargs)
+        try:
+            key = (fn.__name__, get_current_site(), args,
+                   tuple(sorted(kwargs.items())) if kwargs else ())
+            hash(key)
+        except TypeError:
+            # Unhashable argument (a list scope, say) — just don't cache.
+            return fn(*args, **kwargs)
+        memo = scope["memo"]
+        if key in memo:
+            return memo[key]
+        value = fn(*args, **kwargs)
+        memo[key] = value
+        return value
+
+    wrapper.__wrapped__ = fn
+    return wrapper
+
+
+def get_db():
+    """Connection scoped to the current site (see set_current_site) —
+    Postgres via a schema-scoped search_path, SQLite via a per-site
+    file. Every one of this file's ~120 existing call sites keeps
+    working unchanged: whichever site was set for this request, every
+    query on this connection transparently only sees that site's data.
+
+    Inside a request (see begin_request_scope) the same connection is
+    handed back to every caller and close() on it is a no-op, so a page
+    that calls a hundred helpers opens one connection rather than a
+    hundred. The scope holds a single site connection at a time: when
+    the site context changes mid-request — which only Regional
+    Overview's per-site loop does — the previous site's connection is
+    released before the new one is opened, so that loop costs one
+    connection per site in sequence rather than holding all of them at
+    once against a pool that maxes out at 10.
+    """
+    site_code = get_current_site()
+    scope = _scope()
+    if scope is None:
+        return _new_site_connection(site_code)
+    existing = scope["site"]
+    if existing is not None:
+        if existing.site_code == site_code:
+            return existing
+        existing._really_close()
+        # Connections are per-site; anything memoized for the old site
+        # must not be read back under the new one. (The memo key includes
+        # the site too — this is the belt to that braces.)
+        scope["memo"].clear()
+        scope["site"] = None
+    conn = _RequestConnection(_new_site_connection(site_code), site_code)
+    scope["site"] = conn
+    return conn
+
+
+def get_global_db():
+    """Connection to the small, site-independent registry: the list of
+    sites themselves, and who has cross-site (regional) access — this
+    is what the site switcher and Weekly Business Review read, and it
+    must be reachable no matter which site is 'current', so it's never
+    routed through get_db()/set_current_site. Postgres: always the
+    'public' schema explicitly, regardless of the current site's
+    search_path. SQLite: a dedicated file, separate from any site's
+    per-site database file.
+
+    Request-scoped in the same way as get_db(), in its own slot — it
+    stays valid across a site switch, since it doesn't depend on which
+    site is current.
+    """
+    scope = _scope()
+    if scope is None:
+        return _new_global_connection()
+    existing = scope["global"]
+    if existing is not None:
+        return existing
+    conn = _RequestConnection(_new_global_connection(), None)
+    scope["global"] = conn
+    return conn
 
 def get_storage_diagnostics():
     """Self-check for the exact 'data disappears on refresh' failure mode
@@ -541,6 +758,7 @@ def compute_xt_expiry(last_date_on_process, proficiency_status=None, threshold_d
     return expiry.isoformat(), days_until
 
 
+@request_memoize
 def get_assigned_departments(login):
     """Departments explicitly assigned to this login — used for Senior
     Operations Managers, who don't have one personal department the way
@@ -1247,6 +1465,7 @@ IR_HELPER_SHIFT_PATTERNS = {'D05A5CBY': 'F', 'D06A5CJG': 'F', 'D08A5CPY': 'F', '
 IR_HELPER_AREA_BY_ID = {1: ('Receive', 'IB'), 2: ('Receive', 'IB'), 3: ('RSP', 'IB'), 4: (None, None), 5: ('IB TL', 'IB TL'), 6: ('IB Problem Solve', 'ICQA'), 7: ('Ship Dock', 'POST-SLAM'), 8: ('RSP', 'IB'), 9: (None, None), 10: (None, 'POST-SLAM'), 11: (None, None), 12: ('OBPS', 'PRE-SLAM'), 13: ('RSP', 'IB'), 14: ('Chutings', 'PRE-SLAM'), 15: ('Chutings', 'PRE-SLAM'), 16: ('Chutings', 'PRE-SLAM'), 17: ('Pack Multis', 'PRE-SLAM'), 18: ('Pack Singles', 'PRE-SLAM'), 19: ('OB TL', 'OB TL'), 20: ('OBPS', 'PRE-SLAM'), 21: ('Ship Dock', 'POST-SLAM'), 22: (None, None), 23: (None, None), 24: ('Vendor Returns', 'PRE-SLAM'), 25: (None, None), 26: ('Manager', 'Manager'), 27: ('ICQA', 'ICQA'), 28: (None, None), 29: ('TOM', 'POST-SLAM'), 30: ('TOM', 'POST-SLAM'), 31: ('TOM', 'POST-SLAM'), 32: (None, None), 33: ('L&D', 'L&D'), 34: ('Safety', 'Safety'), 35: (None, None), 36: (None, None), 37: (None, None), 38: (None, None), 39: (None, None), 40: (None, None), 41: (None, None), 42: (None, None), 43: (None, None), 44: (None, None)}
 
 
+@request_memoize
 def get_ir_role_config_rows():
     """The live, editable role catalog from the DB — same shape as
     IR_ROLE_CONFIG plus each row's id, for the Definitions tab and for
@@ -1535,6 +1754,13 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_ti_section ON tracked_items(section);
         CREATE INDEX IF NOT EXISTS idx_ti_am ON tracked_items(am_login);
         CREATE INDEX IF NOT EXISTS idx_ti_fc ON tracked_items(fc);
+        -- get_items() almost always filters on am_login and section
+        -- together (every scorecard tile is one such query, and a
+        -- ranking page runs one per manager per metric). The two
+        -- single-column indexes above can only serve one of those
+        -- halves, leaving the other as a filter over everything that
+        -- matched; this composite serves both at once.
+        CREATE INDEX IF NOT EXISTS idx_ti_am_section ON tracked_items(am_login, section);
 
         CREATE TABLE IF NOT EXISTS weekly_plan (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1707,6 +1933,12 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_ir_learn_login ON ir_learn(login);
         CREATE INDEX IF NOT EXISTS idx_xt_hours_lookup ON xt_hours(fclm_mapped, merged_function, shift, employee_login);
+        -- get_xt_proficiency_counts() matches on lower(supervisor_login),
+        -- and a plain index on the column can't serve a call wrapped
+        -- around it — the scorecard's Cross-Training tile would scan
+        -- the whole hours table once per manager. Indexing the same
+        -- expression the query uses is what makes it an index lookup.
+        CREATE INDEX IF NOT EXISTS idx_xt_hours_supervisor_lower ON xt_hours(lower(supervisor_login));
 
         CREATE TABLE IF NOT EXISTS ir_role_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2723,6 +2955,7 @@ INTERNAL_XT_TARGETS_SEED = [
 ]
 
 
+@request_memoize
 def get_internal_xt_targets():
     """The live, editable row list for the Internal Cross-Training
     Overview table — same shape as INTERNAL_XT_TARGETS_SEED plus each
@@ -2842,6 +3075,7 @@ def get_internal_xt_trained_employees(target_id, shift=None):
     return out
 
 
+@request_memoize
 def get_xt_standard_defs(scenario="general"):
     """The live, editable standards catalog for one scenario (General or
     a specific quarter) — same shape XT_STANDARDS_SEED used to be, plus
@@ -3385,11 +3619,53 @@ def status_bucket(status):
 
 
 def scorecard(section_list, am_login=None, fc=None):
-    """Roll counts of ok/risk/gap up for a set of sections."""
-    items = get_items(section=section_list, am_login=am_login, fc=fc)
-    out = {"ok": 0, "risk": 0, "gap": 0, "total": len(items)}
-    for it in items:
-        out[status_bucket(it["status"])] += 1
+    """Roll counts of ok/risk/gap up for a set of sections.
+
+    Counts in SQL rather than pulling the rows back and counting them in
+    Python: only `status` is ever looked at here, so a grouped count
+    returns a handful of rows where SELECT * returned one per tracked
+    item. That matters because this is the single hottest query in the
+    app — every scorecard tile is one call, and a ranking page makes one
+    per manager per metric, so the old version shipped tens of thousands
+    of full rows across the wire to render one page.
+    """
+    # Same "scoped to nobody" short-circuits as get_items — an empty
+    # scope list must mean no rows, never "IN ()" and never everything.
+    if isinstance(section_list, (list, tuple)) and len(section_list) == 0:
+        return {"ok": 0, "risk": 0, "gap": 0, "total": 0, "pct_ok": None}
+    if isinstance(am_login, (list, tuple)) and len(am_login) == 0:
+        return {"ok": 0, "risk": 0, "gap": 0, "total": 0, "pct_ok": None}
+
+    q = "SELECT status, COUNT(*) AS n FROM tracked_items WHERE 1=1"
+    params = []
+    if section_list:
+        if isinstance(section_list, (list, tuple)):
+            q += f" AND section IN ({','.join('?' * len(section_list))})"
+            params.extend(section_list)
+        else:
+            q += " AND section = ?"
+            params.append(section_list)
+    if am_login:
+        if isinstance(am_login, (list, tuple)):
+            q += f" AND am_login IN ({','.join('?' * len(am_login))})"
+            params.extend(am_login)
+        else:
+            q += " AND am_login = ?"
+            params.append(am_login)
+    if fc:
+        q += " AND fc = ?"
+        params.append(fc)
+    q += " GROUP BY status"
+
+    conn = get_db()
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+
+    out = {"ok": 0, "risk": 0, "gap": 0, "total": 0}
+    for r in rows:
+        n = r["n"]
+        out[status_bucket(r["status"])] += n
+        out["total"] += n
     out["pct_ok"] = round(100 * out["ok"] / out["total"], 1) if out["total"] else None
     return out
 
@@ -3708,6 +3984,7 @@ def _ir_enrich_rows(rows, area_id_by_login):
     return rows
 
 
+@request_memoize
 def compute_ir_overview(include_members=False):
     """Runs the whole Indirect Role coverage computation over whatever's
     currently in ir_dashboard/ir_umbrella/ir_learn/ir_roster, and returns
@@ -5947,6 +6224,7 @@ def bulk_set_ambassador_targets(rows):
     conn.close()
 
 
+@request_memoize
 def get_ambassador_gap_summary(shift):
     """Every department's current active Process-Ambassador headcount
     vs its target for this shift, plus the gap (current - target;
@@ -6674,6 +6952,7 @@ def get_ambassador_meeting_shift_grid():
 XT_PROFICIENCY_WEIGHTS = {"Proficient": 100, "Practice": 60, "Refresh": 30, "Lapsed": 0}
 
 
+@request_memoize
 def get_xt_proficiency_counts(am_login=None, fc=None):
     """Count of xt_hours records (one per employee+process, not per
     employee) by proficiency_status, scoped to an AM (or list of AMs via
@@ -6866,6 +7145,7 @@ def ingest_olr_weekly_csv(file_bytes, filename, uploaded_by):
     return n
 
 
+@request_memoize
 def get_olr_weekly_series(login, since=None):
     """Every weekly metric row for this person, since a given ISO date
     (defaults to 12 months back) — shaped {week_start: {metric_key: value}},
@@ -7000,6 +7280,7 @@ def get_roster_by_roles(roles):
     return [dict(r) for r in rows]
 
 
+@request_memoize
 def get_ams_for_trainer(trainer_login):
     conn = get_db()
     rows = conn.execute(
@@ -7058,6 +7339,7 @@ def unassign_am_from_trainer(trainer_login, am_login):
 # Role is assigned per-login by an admin-tier user (or requested by the
 # user and approved). Unassigned logins get None ("pending").
 
+@request_memoize
 def get_user_role(login):
     if not login:
         return None
@@ -7067,6 +7349,7 @@ def get_user_role(login):
     return row["role"] if row else None
 
 
+@request_memoize
 def get_user_shift_and_department(login):
     if not login:
         return None, None
@@ -7242,6 +7525,7 @@ def suggest_am_profile(login):
     return {"full_name": full_name, "shift": shift, "department": department}
 
 
+@request_memoize
 def get_descendant_ams(login):
     """Every login (direct or indirect) that reports up to this manager
     via the reports_to chain — {login: is_direct}. Empty dict for a leaf
