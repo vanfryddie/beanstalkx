@@ -242,11 +242,29 @@ class PGConnection:
         # translate the SQLite schema syntax to Postgres equivalents, then
         # run each statement in turn (psycopg2 doesn't support executing
         # several ;-separated statements in one call the way sqlite3 does).
+        #
+        # NEVER put a "--" comment inside a script passed to this method.
+        # Splitting on ";" is naive about what a semicolon means: sqlite3's
+        # own executescript() parses the whole script and handles comments
+        # properly, so a comment here works locally and then breaks against
+        # Postgres only. A comment holding a semicolon is split in half —
+        # the front becomes a comment-only statement ("can't execute an
+        # empty query") and the tail becomes prose in front of real SQL (a
+        # syntax error). Either one aborts init_db(), which runs from
+        # before_request, so every request 500s. This has cost a
+        # production outage once; keep schema comments in Python, above
+        # the call. test_schema_scripts.py enforces it.
         script = re.sub(r"\bINTEGER PRIMARY KEY AUTOINCREMENT\b", "SERIAL PRIMARY KEY", script, flags=re.IGNORECASE)
         cur = self._conn.cursor()
         for statement in script.split(";"):
             statement = statement.strip()
             if not statement or statement.upper().startswith("PRAGMA"):
+                continue
+            # Defense in depth for the first half of the failure above: a
+            # chunk with nothing executable left in it is skipped rather
+            # than sent to psycopg2 as an empty query.
+            if all(not line.strip() or line.strip().startswith("--")
+                   for line in statement.split("\n")):
                 continue
             cur.execute(statement)
 
@@ -1754,12 +1772,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_ti_section ON tracked_items(section);
         CREATE INDEX IF NOT EXISTS idx_ti_am ON tracked_items(am_login);
         CREATE INDEX IF NOT EXISTS idx_ti_fc ON tracked_items(fc);
-        -- get_items() almost always filters on am_login and section
-        -- together (every scorecard tile is one such query, and a
-        -- ranking page runs one per manager per metric). The two
-        -- single-column indexes above can only serve one of those
-        -- halves, leaving the other as a filter over everything that
-        -- matched; this composite serves both at once.
         CREATE INDEX IF NOT EXISTS idx_ti_am_section ON tracked_items(am_login, section);
 
         CREATE TABLE IF NOT EXISTS weekly_plan (
@@ -1933,11 +1945,6 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_ir_learn_login ON ir_learn(login);
         CREATE INDEX IF NOT EXISTS idx_xt_hours_lookup ON xt_hours(fclm_mapped, merged_function, shift, employee_login);
-        -- get_xt_proficiency_counts() matches on lower(supervisor_login),
-        -- and a plain index on the column can't serve a call wrapped
-        -- around it — the scorecard's Cross-Training tile would scan
-        -- the whole hours table once per manager. Indexing the same
-        -- expression the query uses is what makes it an index lookup.
         CREATE INDEX IF NOT EXISTS idx_xt_hours_supervisor_lower ON xt_hours(lower(supervisor_login));
 
         CREATE TABLE IF NOT EXISTS ir_role_config (
@@ -3628,6 +3635,11 @@ def scorecard(section_list, am_login=None, fc=None):
     app — every scorecard tile is one call, and a ranking page makes one
     per manager per metric, so the old version shipped tens of thousands
     of full rows across the wire to render one page.
+
+    Served by idx_ti_am_section (am_login, section), which exists
+    because this filters on both together — the separate
+    single-column indexes can each serve only one half, leaving the
+    other as a filter over everything that matched.
     """
     # Same "scoped to nobody" short-circuits as get_items — an empty
     # scope list must mean no rows, never "IN ()" and never everything.
@@ -6957,7 +6969,14 @@ def get_xt_proficiency_counts(am_login=None, fc=None):
     """Count of xt_hours records (one per employee+process, not per
     employee) by proficiency_status, scoped to an AM (or list of AMs via
     supervisor_login — the hours file's own reporting-line field) and/or
-    FC."""
+    FC.
+
+    The supervisor match is on lower(supervisor_login), which no
+    plain column index can serve; idx_xt_hours_supervisor_lower
+    indexes that same expression, so the Cross-Training tile does a
+    lookup instead of scanning the whole hours table once per
+    manager.
+    """
     conn = get_db()
     q = "SELECT proficiency_status, COUNT(*) as n FROM xt_hours WHERE proficiency_status IS NOT NULL"
     params = []
