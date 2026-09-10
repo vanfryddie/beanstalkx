@@ -54,7 +54,7 @@
 
 <div class="panel-row" style="flex-wrap:wrap;">
   {% for b in escalation_org_summary %}
-  <button type="button" class="panel" style="text-align:left; cursor:pointer; min-width:240px; flex:1 1 260px; border:1px solid var(--line); {% if b.senior_login=='other' %}border-color:var(--gold-deep); background:#fff8ec;{% endif %}" onclick="ldocOpenEscalationSenior('{{ b.senior_login }}')">
+  <button type="button" class="panel" style="text-align:left; cursor:pointer; min-width:240px; flex:1 1 260px; border:1px solid var(--line); {% if b.senior_login=='other' %}border-color:var(--gold-deep); background:rgba(255,159,10,.10);{% endif %}" onclick="ldocOpenEscalationSenior('{{ b.senior_login }}')">
     <h2 class="panel-title" style="margin-bottom:2px;">{{ 'Other' if b.senior_login == 'other' else (b.senior_name or b.senior_login) }}</h2>
     <p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">
       {% if b.senior_login == 'other' %}Escalations whose chain doesn't resolve up to a configured senior
@@ -261,7 +261,7 @@ function ldocOpenEscalationSenior(login) {
           </small>
         </header>
         {% if department.no_processes_defined %}
-        <div style="grid-column: 2 / -1; padding: 16px 18px; background: #fef4f2; border-left: 3px solid var(--red); font-size: 12.5px; color: var(--ink); display:flex; align-items:center;">
+        <div style="grid-column: 2 / -1; padding: 16px 18px; background: rgba(255,69,58,.10); border-left: 3px solid var(--red); font-size: 12.5px; color: var(--ink); display:flex; align-items:center;">
           No process list is configured for {{ department.department }} yet, so Ambassadors here can't be tracked for Practice Health — this isn't the same as 0 hours, it means nothing is being measured at all. Tell L&D Settings which processes should count for this department to fix this.
         </div>
         {% else %}
@@ -1030,7 +1030,7 @@ function ldocOpenEscalationSenior(login) {
     ctx.fillText('Safety Training Compliance Ranking', padX, titleHeight / 2 + 6);
 
     var y = titleHeight;
-    ctx.fillStyle = '#f5f6f8';
+    ctx.fillStyle = 'rgba(255,255,255,.05)';
     ctx.fillRect(0, y, totalWidth, headerHeight);
     ctx.fillStyle = '#6e6e73';
     ctx.font = '600 11px -apple-system, Segoe UI, Roboto, Arial, sans-serif';
@@ -1047,7 +1047,7 @@ function ldocOpenEscalationSenior(login) {
 
     filteredRows.forEach(function (row, i) {
       if (i % 2 === 1) { ctx.fillStyle = '#fafafa'; ctx.fillRect(0, y, totalWidth, rowHeight); }
-      ctx.strokeStyle = '#e5e5ea';
+      ctx.strokeStyle = 'rgba(255,255,255,.07)';
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, y + rowHeight); ctx.lineTo(totalWidth, y + rowHeight); ctx.stroke();
 
@@ -1082,7 +1082,7 @@ function ldocOpenEscalationSenior(login) {
         ctx.fillStyle = '#101828';
         ctx.fillText(score + '%', x, midY - 8);
         var barW = 100, barH = 4, barY = midY + 3;
-        ctx.fillStyle = '#e5e5ea';
+        ctx.fillStyle = 'rgba(255,255,255,.07)';
         ctx.fillRect(x, barY, barW, barH);
         ctx.fillStyle = score >= 95 ? '#248a3d' : '#d70015';
         ctx.fillRect(x, barY, Math.min(barW, barW * score / 100), barH);
@@ -1185,14 +1185,14 @@ function ldocOpenEscalationSenior(login) {
   </thead>
   <tbody>
     {% for m in ranking.rows %}
-    <tr style="{{ 'background:#fef4f2;' if m.status == 'needs_attention' }}">
+    <tr style="{{ 'background:rgba(255,69,58,.10);' if m.status == 'needs_attention' }}">
       <td style="padding:8px 12px; border-bottom:1px solid var(--line); font-weight:700;">{{ m.rank or '—' }}</td>
       <td style="padding:8px 12px; border-bottom:1px solid var(--line);"><strong>{{ m.full_name }}</strong><br><span class="mono" style="font-size:11px; color:var(--text-lo);">{{ m.login }}</span></td>
       <td style="padding:8px 12px; border-bottom:1px solid var(--line); font-size:12.5px; color:var(--text-lo);">{{ m.role_label }} · {{ m.department }}</td>
       <td style="padding:8px 12px; border-bottom:1px solid var(--line);">
         {% if m.score is not none %}
         <strong>{{ m.score }}%</strong>
-        <span style="display:block; width:100px; height:6px; background:#e5e5ea; border-radius:1px; overflow:hidden; margin-top:4px;"><i style="display:block; height:100%; width:{{ [m.score, 100]|min }}%; background:{{ 'var(--green)' if m.score >= 95 else ('#d9a406' if m.score >= 90 else 'var(--red)') }};"></i></span>
+        <span style="display:block; width:100px; height:6px; background:rgba(255,255,255,.07); border-radius:1px; overflow:hidden; margin-top:4px;"><i style="display:block; height:100%; width:{{ [m.score, 100]|min }}%; background:{{ 'var(--green)' if m.score >= 95 else ('#d9a406' if m.score >= 90 else 'var(--red)') }};"></i></span>
         {% else %}<span style="color:var(--text-lo);">No data</span>{% endif %}
       </td>
       <td style="padding:8px 12px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ m.gap }}</td>

@@ -1,20 +1,15 @@
-<div class="panel" style="border-color:{{ 'var(--red)' if card.ambassador_gap < 0 else 'var(--line)' }}; {{ 'background:#fef4f2;' if card.ambassador_gap < 0 }}">
-  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
-    <h2 class="panel-title" style="margin-bottom:2px;">
-      {% if card.department %}{{ card.department }} · {{ card.shift|capitalize }} Shift{% else %}{{ card.departments|length }} departments{% endif %}
-    </h2>
-    {% if card.ambassador_gap < 0 %}
-    <span class="pill pill-gap">{{ card.current }}/{{ card.target }} Ambassadors — {{ card.ambassador_gap }} gap</span>
-    {% elif card.target > 0 %}
-    <span class="pill pill-ok">{{ card.current }}/{{ card.target }} Ambassadors — On target ✓</span>
-    {% else %}
-    <span style="color:var(--text-lo); font-size:12.5px;">{{ card.current }} ambassador{{ 's' if card.current != 1 }} — no target set</span>
-    {% endif %}
-  </div>
-  {% if not card.department %}
-  <p style="font-size:11.5px; color:var(--text-lo); margin:4px 0 0;">{{ card.departments|join(', ') }}</p>
-  {% endif %}
-</div>
+{% import "_dashboard.html" as dash %}
+{{ dash.detail_header(
+     'Ambassador Availability', card.pct_ok, metric_target,
+     counts=[
+       {'value': card.current, 'label': 'Ambassadors in post', 'tone': 'good'},
+       {'value': card.target,  'label': 'Target',              'tone': 'neutral'},
+       {'value': (0 - card.ambassador_gap) if card.ambassador_gap < 0 else 0,
+        'label': 'Short of target', 'tone': 'serious'},
+     ],
+     note=((card.department ~ ' · ' ~ card.shift|capitalize ~ ' Shift') if card.department
+           else card.departments|join(', '))
+          ~ ('' if card.target > 0 else ' · no target set')) }}
 
 {% if card.breakdown and card.breakdown|length > 1 %}
 <div class="panel" style="margin-top:12px; padding:0;">
@@ -32,7 +27,7 @@
     </thead>
     <tbody>
       {% for b in card.breakdown %}
-      <tr style="{{ 'background:#fef4f2;' if b.gap < 0 }}">
+      <tr style="{{ 'background:rgba(255,69,58,.10);' if b.gap < 0 }}">
         <td style="padding:6px 16px; border-bottom:1px solid var(--line); font-weight:600;">{{ b.department }}</td>
         <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ b.shift|capitalize }}</td>
         <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right;" class="mono">{{ b.current }}</td>

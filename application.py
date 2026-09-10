@@ -1523,6 +1523,116 @@ def overview():
     )
 
 
+def _xt_flagged_groups(xt_records):
+    """The Cross-Training equivalent of _flagged_groups.
+
+    Cross-Training is scored from xt_hours proficiency, not from
+    tracked_items, so the generic grouper sees nothing for it and would
+    report "all clear" on a failing metric. This groups the records that
+    are actually dragging the score down — Lapsed first, then the ones
+    projected to lapse — by process, so a manager sees which process is
+    losing coverage and who to re-staff on it.
+    """
+    groups = {}
+    for record in xt_records or []:
+        status = record.get("proficiency_status")
+        if status == "Proficient":
+            continue
+        process = record.get("merged_function") or "Unspecified process"
+        entry = groups.setdefault(process, {
+            "topic": process, "gap": 0, "risk": 0, "people": [], "worst_overdue": None,
+        })
+        bucket = "gap" if status == "Lapsed" else "risk"
+        entry[bucket] += 1
+        days_until = record.get("days_until_expiry")
+        overdue = -days_until if isinstance(days_until, int) and days_until <= 0 else None
+        if overdue is not None and (entry["worst_overdue"] is None or overdue > entry["worst_overdue"]):
+            entry["worst_overdue"] = overdue
+        entry["people"].append({
+            "full_name": record.get("full_name") or record.get("employee_login"),
+            "employee_login": record.get("employee_login"),
+            "am_login": record.get("fclm_mapped"),
+            "status": status,
+            "bucket": bucket,
+            "due_date": record.get("expiry_date"),
+            "days_overdue": overdue,
+            "notes": None,
+        })
+
+    for entry in groups.values():
+        entry["people"].sort(key=lambda p: (
+            0 if p["bucket"] == "gap" else 1,
+            -(p["days_overdue"] if p["days_overdue"] is not None else -10**6),
+            (p["full_name"] or "").lower(),
+        ))
+        entry["total"] = entry["gap"] + entry["risk"]
+    return sorted(groups.values(), key=lambda g: (-g["gap"], -g["total"], g["topic"].lower()))
+
+
+def _flagged_groups(items, target_len=None):
+    """The non-compliant records, grouped by what they are failing.
+
+    A drill-down whose first screen is every record — mostly compliant —
+    makes a manager scan hundreds of rows to find the handful that
+    matter. Grouping by subcategory answers the actual question ("nine
+    people are overdue on Fire Safety") before the list does, and
+    ordering by how far past due they are puts the worst first.
+
+    Returns [] when nothing is flagged, which the caller renders as a
+    genuine all-clear rather than an empty table.
+    """
+    today = date.today()
+
+    def days_overdue(record):
+        raw = record.get("due_date")
+        if not raw:
+            return None
+        try:
+            due = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return None
+        return (today - due).days
+
+    groups = {}
+    for record in items:
+        bucket = db.status_bucket(record.get("status"))
+        if bucket == "ok":
+            continue
+        topic = record.get("subcategory") or "Unspecified"
+        entry = groups.setdefault(topic, {
+            "topic": topic, "gap": 0, "risk": 0, "people": [],
+            "worst_overdue": None,
+        })
+        entry["gap" if bucket == "gap" else "risk"] += 1
+        overdue = days_overdue(record)
+        if overdue is not None and overdue > 0:
+            if entry["worst_overdue"] is None or overdue > entry["worst_overdue"]:
+                entry["worst_overdue"] = overdue
+        entry["people"].append({
+            "full_name": record.get("full_name") or record.get("employee_login"),
+            "employee_login": record.get("employee_login"),
+            "am_login": record.get("am_login"),
+            "status": record.get("status"),
+            "bucket": bucket,
+            "due_date": record.get("due_date"),
+            "days_overdue": overdue,
+            "notes": record.get("notes"),
+        })
+
+    for entry in groups.values():
+        # Worst first inside a group too: a gap outranks a risk, then
+        # whoever is furthest past due.
+        entry["people"].sort(key=lambda p: (
+            0 if p["bucket"] == "gap" else 1,
+            -(p["days_overdue"] if p["days_overdue"] is not None else -10**6),
+            (p["full_name"] or "").lower(),
+        ))
+        entry["total"] = entry["gap"] + entry["risk"]
+
+    ordered = sorted(groups.values(), key=lambda g: (-g["gap"], -g["total"], g["topic"].lower()))
+    return ordered
+
+
 @application.route("/api/category-detail/<key>")
 def api_category_detail(key):
     login_id = _require_login()
@@ -1553,7 +1663,7 @@ def api_category_detail(key):
     if key == "indirect_roles" and single_am:
         ir_card = _indirect_roles_card_for_am(single_am)
         if ir_card:
-            return render_template("indirect_roles_readiness_fragment.html", card=ir_card)
+            return render_template("indirect_roles_readiness_fragment.html", metric_target=SAFETY_COMPLIANCE_TARGET, card=ir_card)
 
     if key == "instructor_mgmt" and single_am:
         amb_card = _ambassador_scorecard_for_am(single_am)
@@ -1567,7 +1677,7 @@ def api_category_detail(key):
                     roster.append(a)
             return render_template(
                 "ambassador_availability_fragment.html",
-                card=amb_card, ambassadors=roster,
+                metric_target=SAFETY_COMPLIANCE_TARGET, card=amb_card, ambassadors=roster,
             )
 
     if key == "ambassador_readiness" and single_am:
@@ -1584,7 +1694,7 @@ def api_category_detail(key):
                 not_ready.extend(summary["not_ready"])
             return render_template(
                 "ambassador_readiness_fragment.html",
-                card=readiness_card, ready=ready, not_ready=not_ready,
+                metric_target=SAFETY_COMPLIANCE_TARGET, card=readiness_card, ready=ready, not_ready=not_ready,
             )
 
     label, sections = db.SCORECARD_CATEGORY_MAP[key]
@@ -1641,6 +1751,9 @@ def api_category_detail(key):
         "category_detail_fragment.html",
         category_label=label,
         am_breakdown=am_breakdown,
+        flagged_groups=_flagged_groups(items),
+        xt_flagged_groups=_xt_flagged_groups(xt_records) if key == "cross_training" else None,
+        metric_target=SAFETY_COMPLIANCE_TARGET,
         category_key=key,
         items=items,
         card=card,

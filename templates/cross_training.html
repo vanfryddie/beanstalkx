@@ -136,7 +136,7 @@
         <td><strong>{{ dept }}</strong></td>
         {% for proc in matrix.procs %}
         {% set n = matrix.grid.get((dept, proc)) %}
-        <td class="mono" style="text-align:center; {% if n %}background:#eef5fc;{% endif %}">{{ n or '—' }}</td>
+        <td class="mono" style="text-align:center; {% if n %}background:rgba(41,151,255,.10);{% endif %}">{{ n or '—' }}</td>
         {% endfor %}
       </tr>
       {% endfor %}
@@ -446,7 +446,7 @@
 
   <h3 style="font-size:13px; margin:0 0 4px;">Proficiency status (Proficient / Practice / Refresh / Lapsed)</h3>
   <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 6px;">Imported directly from the "Proficiency Status" column — this app doesn't decide which tier someone is in, that determination is made upstream. The actual upstream logic, a cascading check from the most recent window down:</p>
-  <pre style="font-size:12px; background:#f5f6f8; border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:0 0 10px; overflow-x:auto;">ifelse(
+  <pre style="font-size:12px; background:rgba(255,255,255,.05); border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:0 0 10px; overflow-x:auto;">ifelse(
     {Total_Hours_60} &gt;= 20, "Proficient",
     {Total_Hours_90} &gt;= 20, "Practice",
     {Total_Hours_180} &gt;= 20, "Refresh",

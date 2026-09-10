@@ -22,7 +22,7 @@
     <thead><tr><th>Ticket</th><th>Type</th><th>Comment</th><th>Posted by</th><th>When</th><th></th></tr></thead>
     <tbody>
       {% for u in updates %}
-      <tr style="{% if u.comment_type == 'system' %}background:#fef4f2;{% elif not u.reviewed %}background:rgba(255,159,10,0.08);{% endif %}">
+      <tr style="{% if u.comment_type == 'system' %}background:rgba(255,69,58,.10);{% elif not u.reviewed %}background:rgba(255,159,10,0.08);{% endif %}">
         <td class="mono"><a href="{{ url_for('escalations') }}">{{ u.ticket_number }}</a></td>
         <td>
           {% if u.comment_type == 'system' %}<span class="enterprise-status enterprise-update enterprise-update-system"><span aria-hidden="true"></span>LDOC</span>

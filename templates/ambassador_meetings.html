@@ -23,7 +23,7 @@
 
 <div class="panel-row" style="flex-wrap:wrap;">
   {% for g in groups %}
-  <div class="panel" style="min-width:340px; flex:1 1 380px; {% if g.status == 'cancelled' %}border-color:var(--red); background:#fef4f2;{% elif g.status == 'biweekly_skip' %}border-color:var(--gold-deep); background:#fff8ec;{% endif %}">
+  <div class="panel" style="min-width:340px; flex:1 1 380px; {% if g.status == 'cancelled' %}border-color:var(--red); background:rgba(255,69,58,.10);{% elif g.status == 'biweekly_skip' %}border-color:var(--gold-deep); background:rgba(255,159,10,.10);{% endif %}">
     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
       <div>
         <h2 class="panel-title" style="margin-bottom:2px; cursor:pointer;" onclick="Ldoc.openMeetingHost('{{ url_for('ambassador_meeting_host', group_key=g.key, shift=shift, week=week_start) }}')" title="Open host view">{{ g.label }} <span aria-hidden="true" style="font-size:12px; color:var(--text-lo);">⤢</span></h2>

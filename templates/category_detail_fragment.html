@@ -1,10 +1,19 @@
 {% from "_xt_cards_macro.html" import xt_cards %}
-<div class="kpi-row">
-  <div class="kpi-card"><div class="kpi-value">{{ card.pct_ok if card.pct_ok is not none else '—' }}{% if card.pct_ok is not none %}<span style="font-size:16px;">%</span>{% endif %}</div><div class="kpi-label">Score</div></div>
-  <div class="kpi-card k-ok"><div class="kpi-value">{{ card.ok }}</div><div class="kpi-label">Compliant</div></div>
-  <div class="kpi-card k-risk"><div class="kpi-value">{{ card.risk }}</div><div class="kpi-label">At risk</div></div>
-  <div class="kpi-card k-gap"><div class="kpi-value">{{ card.gap }}</div><div class="kpi-label">Not compliant</div></div>
-</div>
+{% import "_dashboard.html" as dash %}
+{% if category_key == 'cross_training' %}
+{{ dash.detail_header(
+     category_label, card.pct_ok, metric_target,
+     counts=[
+       {'value': card.proficient, 'label': 'Proficient',        'tone': 'good'},
+       {'value': card.refresh,    'label': 'Refresh due soon',  'tone': 'watch'},
+       {'value': card.practice,   'label': 'Practice',          'tone': 'watch'},
+       {'value': card.lapsed,     'label': 'Lapsed',            'tone': 'serious'},
+     ],
+     note='Proficiency is derived from hours on process over rolling 60/90/180-day windows') }}
+
+{{ dash.flagging(xt_flagged_groups,
+     empty_message='Every associate in scope is Proficient on every tracked process.') }}
+{% endif %}
 
 {% if xt_am_standards is not none %}
 <div class="panel">
@@ -24,7 +33,7 @@
 {% endif %}
 
 {% if am_breakdown %}
-<div class="panel" style="border-color:var(--red); background:#fef4f2;">
+<div class="panel dd-panel-alert">
   <h2 class="panel-title" style="margin-bottom:2px;">Which manager is driving this down</h2>
   <p style="font-size:12px; color:var(--text-lo); margin:0 0 10px;">Your team's records broken down by manager (direct + everyone reporting up through your org), worst first.</p>
   <div style="overflow-x:auto;">
@@ -82,20 +91,30 @@
 </div>
 {% endif %}
 
+{% if category_key != 'cross_training' %}
+{{ dash.detail_header(
+     category_label, card.pct_ok, metric_target,
+     counts=[
+       {'value': card.ok,   'label': 'Compliant',     'tone': 'good'},
+       {'value': card.risk, 'label': 'At risk',       'tone': 'watch'},
+       {'value': card.gap,  'label': 'Not compliant', 'tone': 'serious'},
+       {'value': card.total,'label': 'Records',       'tone': 'neutral'},
+     ]) }}
+
+{{ dash.flagging(flagged_groups,
+     empty_message='Every record in scope is compliant.',
+     show_manager=(am_breakdown|length > 0) if am_breakdown else false) }}
+{% endif %}
+
 {% if category_key == 'cross_training' %}
 <div class="panel">
   <h2 class="panel-title" style="margin-bottom:2px;">How this score works</h2>
   <p style="font-size:12.5px; color:var(--text-lo); margin:0;">Every cross-training record (one per associate + process) earns points toward 100 based on its proficiency state: <strong>Proficient</strong> = 100 (the goal — fully qualified), <strong>Practice</strong> = 60 (at least 20 hours within the last 90 days, actively current), <strong>Refresh</strong> = 30 (at least 20 hours somewhere in the last 180 days, but coming due for renewal), <strong>Lapsed</strong> = 0 (fewer than 20 hours anywhere in the last 180 days). The score is the average points per record.</p>
 </div>
 
-<div class="kpi-row">
-  <div class="kpi-card k-ok"><div class="kpi-value">{{ card.proficient }}</div><div class="kpi-label">Proficient</div></div>
-  <div class="kpi-card k-risk"><div class="kpi-value">{{ card.refresh }}</div><div class="kpi-label">Refresh (due soon)</div></div>
-  <div class="kpi-card k-risk"><div class="kpi-value">{{ card.practice }}</div><div class="kpi-label">Practice</div></div>
-  <div class="kpi-card k-gap"><div class="kpi-value">{{ card.lapsed }}</div><div class="kpi-label">Lapsed</div></div>
-</div>
 
-<div class="panel" style="{{ 'border-color:var(--red); background:#fef4f2;' if xt_refresh_at_risk }}">
+
+<div class="panel {{ 'dd-panel-alert' if xt_refresh_at_risk }}">
   <h2 class="panel-title" style="margin-bottom:2px;">Refresh → dropping to Lapsed within 2 months</h2>
   <p style="font-size:12px; color:var(--text-lo); margin:4px 0 10px;">Projected from last date on process, using the {{ xt_proficiency_expiry_days }}-day expiry window set on Cross-Training Definitions — <a href="{{ url_for('cross_training', tab='definitions') }}">verify that number is correct</a> before acting on this.</p>
   <p style="font-size:28px; font-weight:700; margin:0 0 10px;">{{ xt_refresh_at_risk|length }}</p>
@@ -131,7 +150,11 @@
   {% endif %}
 </div>
 
-<div class="panel" style="padding:0;">
+<details class="dash-table-wrap dd-records" open>
+  <summary>
+    <span>Every cross-training record in scope</span>
+    <span class="dash-summary-hint">Search and filter the full list</span>
+  </summary>
   {% if xt_records %}
   {% set fcs = xt_records|map(attribute='fc')|reject('none')|unique|sort|list %}
   {% set depts = xt_records|map(attribute='fclm_mapped')|reject('none')|unique|sort|list %}
@@ -219,13 +242,17 @@
   <div class="empty-state" id="xtFilterEmpty" style="display:none; padding:24px;">No records match the current filters.</div>
   </div>
   {% else %}
-  <div class="empty-state" style="padding:24px;">No cross-training proficiency records in scope.</div>
+  <div class="dash-empty">No cross-training proficiency records in scope.</div>
   {% endif %}
-</div>
+</details>
 
 {% else %}
 
-<div class="panel" style="padding:0;">
+<details class="dash-table-wrap dd-records" open>
+  <summary>
+    <span>Every record in scope</span>
+    <span class="dash-summary-hint">{{ card.total }} record{{ 's' if card.total != 1 }}, compliant ones included</span>
+  </summary>
   {% if items %}
   {% if category_key == 'safety_compliance' %}
   <div style="padding:14px 18px 6px; display:flex; justify-content:space-between; align-items:baseline;">
@@ -295,9 +322,7 @@
   </table>
   {% endif %}
   {% else %}
-  <div class="empty-state">
-    <h3>No records in this category yet</h3>
-  </div>
+  <div class="dash-empty">No records in this category yet.</div>
   {% endif %}
-</div>
+</details>
 {% endif %}

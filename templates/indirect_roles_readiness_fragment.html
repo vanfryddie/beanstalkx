@@ -1,20 +1,19 @@
-<div class="panel" style="border-color:{{ 'var(--red)' if card.gap else ('var(--gold-deep)' if card.risk else 'var(--line)') }};">
-  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
-    <h2 class="panel-title" style="margin-bottom:2px;">
-      {% if card.department %}{{ card.department }} · {{ card.shift|capitalize }} Shift{% else %}{{ card.departments|length }} departments across {{ card.pairs|map(attribute=1)|unique|list|length }} shift{{ 's' if card.pairs|map(attribute=1)|unique|list|length != 1 }}{% endif %}
-    </h2>
-    <span class="pill {{ 'pill-ok' if card.pct_ok is not none and card.pct_ok >= 95 else ('pill-risk' if card.pct_ok is not none and card.pct_ok >= 80 else 'pill-gap') }}">{{ card.pct_ok }}% compliant</span>
-  </div>
-  {% if not card.department %}
-  <p style="font-size:11.5px; color:var(--text-lo); margin:4px 0 0;">{{ card.departments|join(', ') }}</p>
-  {% endif %}
-  <p style="font-size:12px; color:var(--text-lo); margin:8px 0 0;">Trained with practice counts toward compliance. Trained but no practice, and not trained but with practice, both count against it — a headcount target being met doesn't mean everyone behind it is actually ready.</p>
-  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-    <span class="pill pill-ok">{{ card.ok }} w/ practice</span>
-    <span class="pill pill-risk">{{ card.risk }} no practice</span>
-    <span class="pill pill-gap">{{ card.gap }} not trained</span>
-  </div>
-</div>
+{% import "_dashboard.html" as dash %}
+{{ dash.detail_header(
+     'Indirect Roles', card.pct_ok, metric_target,
+     counts=[
+       {'value': card.ok,   'label': 'Trained with practice', 'tone': 'good'},
+       {'value': card.risk, 'label': 'No practice',           'tone': 'watch'},
+       {'value': card.gap,  'label': 'Not trained',           'tone': 'serious'},
+     ],
+     note=(card.department ~ ' · ' ~ card.shift|capitalize ~ ' Shift') if card.department
+          else (card.departments|join(', '))) }}
+
+<p class="dd-explainer">
+  Trained with practice counts toward compliance. Trained but no practice, and
+  not trained but with practice, both count against it — a headcount target
+  being met doesn't mean everyone behind it is actually ready.
+</p>
 
 {% if card.breakdown and card.breakdown|length > 1 %}
 <div class="panel" style="margin-top:12px; padding:0;">
@@ -33,7 +32,7 @@
     </thead>
     <tbody>
       {% for b in card.breakdown %}
-      <tr style="{{ 'background:#fef4f2;' if b.gap else ('background:#fffbe8;' if b.risk) }}">
+      <tr style="{{ 'background:rgba(255,69,58,.10);' if b.gap else ('background:rgba(255,159,10,.10);' if b.risk) }}">
         <td style="padding:6px 16px; border-bottom:1px solid var(--line); font-weight:600;">{{ b.department }}</td>
         <td style="padding:6px 8px; border-bottom:1px solid var(--line);">{{ b.shift|capitalize }}</td>
         <td style="padding:6px 8px; border-bottom:1px solid var(--line); text-align:right; color:var(--text-lo);">{{ b.role_count }}</td>

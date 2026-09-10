@@ -116,3 +116,101 @@
   {% endfor %}
 </div>
 {%- endmacro %}
+
+{#- ---------------------------------------------------------------
+    Drill-down components.
+
+    Opening a metric should answer "who is flagging, for what, and why"
+    before it shows a table. These give all seven drill-downs the same
+    header and the same flagging list, in the same language as the
+    dashboards they were opened from.
+    --------------------------------------------------------------- -#}
+
+{% macro detail_header(label, score, target, counts=[], note=None) -%}
+{#- The one header every drill-down opens with: the score against its
+    target, then the counts behind it. Replaces the four bordered KPI
+    boxes, which used a different idiom (a coloured top rule) from the
+    metric cards you clicked to get here. -#}
+<header class="dd-head">
+  <div class="dd-head-score">
+    <p class="dd-eyebrow">{{ label }}</p>
+    <div class="dd-score-row">
+      <strong class="dash-figure dash-figure-lg">{{ score if score is not none else '—' }}{% if score is not none %}<i>%</i>{% endif %}</strong>
+      {{ status_pill(tone(score, target)) }}
+    </div>
+    {% if score is not none %}
+    {{ meter(score, target, label) }}
+    <p class="dd-target-note">Target {{ target }}%{% if note %} · {{ note }}{% endif %}</p>
+    {% elif note %}
+    <p class="dd-target-note">{{ note }}</p>
+    {% endif %}
+  </div>
+  {% if counts %}
+  <div class="dd-counts">
+    {% for c in counts %}
+    <div class="dd-count dd-count-{{ c.tone or 'neutral' }}">
+      <strong>{{ c.value }}</strong>
+      <span>{{ c.label }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</header>
+{%- endmacro %}
+
+{% macro flagging(groups, empty_message='Nothing is flagging here.', show_manager=false) -%}
+{#- The answer, before the table: what is failing, how badly, and who.
+    Groups arrive already ordered worst-first from _flagged_groups; the
+    first two open by default so the worst problem is readable without
+    a click, and the rest stay collapsed so the page does not become the
+    record dump this replaced. -#}
+{% if groups %}
+<section class="dd-flagging">
+  <h3 class="dash-section-label">What's flagging</h3>
+  {% for g in groups %}
+  <details class="dd-group" {{ 'open' if loop.index <= 2 }}>
+    <summary>
+      <span class="dd-group-title">
+        <i class="dash-dot dash-dot-{{ 'serious' if g.gap else 'watch' }}"></i>
+        {{ g.topic }}
+      </span>
+      <span class="dd-group-facts">
+        {% if g.gap %}<span class="dd-tag dd-tag-serious">{{ g.gap }} not compliant</span>{% endif %}
+        {% if g.risk %}<span class="dd-tag dd-tag-watch">{{ g.risk }} at risk</span>{% endif %}
+        {% if g.worst_overdue %}<span class="dd-tag">worst {{ g.worst_overdue }}d overdue</span>{% endif %}
+      </span>
+    </summary>
+    <ul class="dd-people">
+      {% for p in g.people %}
+      <li>
+        <i class="dash-dot dash-dot-{{ 'serious' if p.bucket == 'gap' else 'watch' }}"></i>
+        <div class="dd-person">
+          <strong>{{ p.full_name }}</strong>
+          <span class="mono">{{ p.employee_login }}{% if show_manager and p.am_login %} · {{ p.am_login }}{% endif %}</span>
+        </div>
+        <div class="dd-person-why">
+          <span class="dd-status dd-status-{{ 'serious' if p.bucket == 'gap' else 'watch' }}">{{ p.status }}</span>
+          {% if p.days_overdue is not none and p.days_overdue > 0 %}
+            <span class="dd-overdue mono">{{ p.days_overdue }}d overdue</span>
+          {% elif p.due_date %}
+            <span class="dd-due mono">due {{ p.due_date }}</span>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+</section>
+{% else %}
+<section class="dd-flagging">
+  <div class="dd-allclear">
+    <i class="dash-dot dash-dot-good"></i>
+    <div>
+      <strong>All clear</strong>
+      <span>{{ empty_message }}</span>
+    </div>
+  </div>
+</section>
+{% endif %}
+{%- endmacro %}

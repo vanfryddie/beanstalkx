@@ -83,7 +83,7 @@
     {% if ticket.comments %}
     <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
       {% for c in ticket.comments %}
-      <div style="border:1px solid var(--line); border-radius:8px; padding:8px 10px; {% if c.comment_type == 'system' %}background:#f6f7fb;{% endif %}">
+      <div style="border:1px solid var(--line); border-radius:8px; padding:8px 10px; {% if c.comment_type == 'system' %}background:rgba(255,255,255,.05);{% endif %}">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
           <span style="font-size:12px; {% if c.comment_type == 'system' %}font-weight:700; color:var(--aws-blue);{% else %}font-family:monospace;{% endif %}">
             {% if c.comment_type == 'system' %}🤖 {{ c.posted_by }}{% else %}{{ c.posted_by or '—' }}{% endif %}

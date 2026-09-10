@@ -67,7 +67,7 @@
 <p class="page-sub">Who has access, what trainings can be scheduled, and where the data comes from.</p>
 
 {% if storage_diagnostics.db_backend == 'sqlite' or storage_diagnostics.storage_backend == 'local' %}
-<div class="panel" style="border-color:var(--red); background:#fef4f2; padding:14px 18px;">
+<div class="panel" style="border-color:var(--red); background:rgba(255,69,58,.10); padding:14px 18px;">
   <strong style="color:var(--red);">⚠ Storage isn't fully shared across instances yet</strong>
   <p style="font-size:12.5px; margin:6px 0 0;">
     {% if storage_diagnostics.db_backend == 'sqlite' %}Database is running on <strong>local SQLite</strong> — if this environment ever runs more than one instance, each has its own separate copy, and data written on one instance won't show up on requests served by another (the "disappears, comes back on refresh" symptom). Set <span class="mono">DATABASE_URL</span> or attach an RDS instance and set the <span class="mono">RDS_*</span> environment variables to fix this.<br>{% endif %}
@@ -75,7 +75,7 @@
   </p>
 </div>
 {% else %}
-<div class="panel" style="border-color:var(--green); background:#f0fbf6; padding:14px 18px;">
+<div class="panel" style="border-color:var(--green); background:rgba(48,209,88,.10); padding:14px 18px;">
   <strong style="color:var(--green);">✓ Storage is shared across instances</strong>
   <p style="font-size:12.5px; margin:6px 0 0; color:var(--text-lo);">Database: PostgreSQL{% if storage_diagnostics.db_detail %} (<span class="mono">{{ storage_diagnostics.db_detail }}</span>){% endif %} · Files: S3{% if storage_diagnostics.storage_detail %} (<span class="mono">{{ storage_diagnostics.storage_detail }}</span>){% endif %}</p>
 </div>
@@ -671,7 +671,7 @@
       <p style="font-size:12.5px; color:var(--text-lo); margin:4px 0 10px;">OLR needs a fresh upload every week to track WoW accurately — anything not refreshed in over {{ data_stale_after_days }} days is flagged below.</p>
       <div style="display:flex; flex-direction:column; gap:8px;">
         {% for s in upload_status %}
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; border:1px solid {{ 'var(--red)' if s.stale else 'var(--line)' }}; {{ 'background:#fef4f2;' if s.stale }}">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; border:1px solid {{ 'var(--red)' if s.stale else 'var(--line)' }}; {{ 'background:rgba(255,69,58,.10);' if s.stale }}">
           <div>
             <div style="font-size:13px; font-weight:600;">{{ s.label }}</div>
             {% if s.last_uploaded_at %}

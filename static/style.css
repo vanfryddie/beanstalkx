@@ -3632,3 +3632,127 @@ a.dash-metric-link:focus-visible { outline: 3px solid rgba(41,151,255,.38); outl
 html[data-theme="light"] .dash-links a { color: #1d1d1f; }
 html[data-theme="light"] .dash-links a:hover { background: rgba(0,0,0,.045); color: #1d1d1f; }
 html[data-theme="light"] a.dash-metric-link:hover { background: rgba(0,0,0,.03); }
+
+/* ============================================================
+   Drill-down (dd-) — opening a metric from any scorecard.
+   Same tokens and same status language as the dashboards, so the
+   panel you open looks like the card you clicked.
+   ============================================================ */
+
+.dd-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 28px; flex-wrap: wrap;
+  padding: 22px 24px; margin-bottom: 22px;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); box-shadow: var(--shadow-soft);
+}
+.dd-head-score { flex: 1 1 300px; min-width: 0; }
+.dd-eyebrow {
+  margin: 0 0 8px; font-size: 12px; font-weight: 620; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-lo);
+}
+.dd-score-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.dd-target-note { margin: 9px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--text-lo); }
+
+.dd-counts { display: flex; gap: 26px; flex-wrap: wrap; }
+.dd-count { display: flex; flex-direction: column; gap: 3px; }
+.dd-count strong {
+  font-size: 26px; font-weight: 660; letter-spacing: -.03em; line-height: 1;
+  color: #f5f5f7; font-variant-numeric: proportional-nums;
+}
+.dd-count span { font-size: 11.5px; font-weight: 550; color: var(--text-lo); }
+.dd-count-good strong { color: var(--green); }
+.dd-count-watch strong { color: var(--amber); }
+.dd-count-serious strong { color: var(--red); }
+
+/* --- What's flagging ---------------------------------------- */
+.dd-flagging { margin-bottom: 24px; }
+.dd-group {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 15px; margin-bottom: 9px; overflow: hidden;
+}
+.dd-group > summary {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; padding: 14px 18px; cursor: pointer; list-style: none;
+}
+.dd-group > summary::-webkit-details-marker { display: none; }
+.dd-group > summary:hover { background: rgba(255,255,255,.03); }
+.dd-group-title {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14.5px; font-weight: 640; letter-spacing: -.01em; color: #f5f5f7;
+}
+.dd-group-facts { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.dd-tag {
+  padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: rgba(255,255,255,.05); border: 1px solid var(--hairline); color: var(--text-lo);
+  white-space: nowrap;
+}
+.dd-tag-serious { color: var(--red); background: rgba(255,69,58,.10); border-color: rgba(255,69,58,.26); }
+.dd-tag-watch { color: var(--amber); background: rgba(255,159,10,.10); border-color: rgba(255,159,10,.26); }
+
+.dd-people { list-style: none; margin: 0; padding: 0 18px 8px; }
+.dd-people li {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 0; border-top: 1px solid var(--hairline);
+}
+.dd-person { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dd-person strong { font-size: 13.5px; font-weight: 600; color: #f5f5f7; }
+.dd-person span { font-size: 11px; color: var(--text-lo); }
+.dd-person-why { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.dd-status {
+  padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.dd-status-serious { color: var(--red); background: rgba(255,69,58,.12); }
+.dd-status-watch { color: var(--amber); background: rgba(255,159,10,.12); }
+.dd-overdue { font-size: 11.5px; font-weight: 600; color: var(--red); white-space: nowrap; }
+.dd-due { font-size: 11.5px; color: var(--text-lo); white-space: nowrap; }
+
+.dd-allclear {
+  display: flex; align-items: center; gap: 13px;
+  padding: 18px 20px; border-radius: 15px;
+  background: rgba(48,209,88,.06); border: 1px solid rgba(48,209,88,.20);
+}
+.dd-allclear div { display: flex; flex-direction: column; gap: 2px; }
+.dd-allclear strong { font-size: 14px; font-weight: 640; color: var(--green); }
+.dd-allclear span { font-size: 12.5px; color: var(--text-lo); }
+
+/* --- Evidence, not the answer -------------------------------- */
+.dd-records { margin-bottom: 18px; }
+.dd-records .record-list-table { font-size: 13px; }
+.dd-records .record-list-table th {
+  border-bottom: 1px solid var(--hairline); background: var(--surface-solid);
+  letter-spacing: .03em;
+}
+.dd-panel-alert { border-color: rgba(255,69,58,.34); background: rgba(255,69,58,.06); }
+
+/* Sentence case reads calmer than shouting, and matches the pills the
+   dashboards use. */
+.pill { text-transform: none; letter-spacing: 0; font-weight: 600; }
+
+@media (max-width: 700px) {
+  .dd-head { gap: 18px; padding: 18px; }
+  .dd-counts { gap: 18px; }
+  .dd-people li { flex-wrap: wrap; }
+  .dd-person-why { width: 100%; justify-content: flex-start; padding-left: 20px; }
+}
+
+html[data-theme="light"] .dd-count strong,
+html[data-theme="light"] .dd-group-title,
+html[data-theme="light"] .dd-person strong { color: #1d1d1f; }
+html[data-theme="light"] .dd-count-good strong { color: var(--green); }
+html[data-theme="light"] .dd-count-watch strong { color: var(--amber); }
+html[data-theme="light"] .dd-count-serious strong { color: var(--red); }
+html[data-theme="light"] .dd-group > summary:hover { background: rgba(0,0,0,.025); }
+html[data-theme="light"] .dd-tag { background: rgba(0,0,0,.04); }
+
+/* The drill-down fragment now names itself in its own header, so the
+   container's heading would print the metric twice. Kept in the DOM as
+   the section's real heading for assistive tech, just not shown twice. */
+#ldoc-detail-title, #ldoc-detail-title-trainer {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.dd-explainer {
+  margin: -8px 0 20px; padding: 0 2px; max-width: 74ch;
+  font-size: 12.5px; line-height: 1.55; color: var(--text-lo);
+}
