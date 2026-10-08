@@ -14,6 +14,8 @@
 })();
 </script>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260904stc95merge') }}">
+{% if request.endpoint == 'shift_pulse' %}<link rel="stylesheet" href="{{ url_for('static', filename='shift_pulse.css', v='20261008a') }}">
+{% endif %}
 </head>
 <body>
 <div id="ldocNavProgress"></div>
@@ -47,6 +49,7 @@
       <a href="{{ url_for('overview') }}" class="{{ 'active' if request.endpoint=='overview' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.75l8.5 6.75v9.25a.75.75 0 0 1-.75.75h-5.5v-6.25h-4.5v6.25h-5.5a.75.75 0 0 1-.75-.75Z"/></svg></span><span>AM Overview</span></a>
       <a href="{{ url_for('scorecards') }}" class="{{ 'active' if request.endpoint=='scorecards' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V10m5.3 9.5V4.5m5.4 15v-7m5.3 7V7.5"/></svg></span><span>Reporting</span></a>
       <a href="{{ url_for('ld_shift', shift='early') }}" class="{{ 'active' if request.endpoint=='ld_shift' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7.5 3.5v4m9-4v4m-13 3h17M8 14h3m2 0h3m-8 3h3"/></svg></span><span>Weekly training plan</span></a>
+      <a href="{{ url_for('shift_pulse') }}" class="{{ 'active' if request.endpoint=='shift_pulse' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2.5-6 4 13 2.5-7h5"/></svg></span><span>Shift Pulse</span></a>
       <a href="{{ url_for('escalations') }}" class="{{ 'active' if request.endpoint=='escalations' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 4.35 3.2 17.15A1.9 1.9 0 0 0 4.85 20h14.3a1.9 1.9 0 0 0 1.65-2.85L13.4 4.35a1.62 1.62 0 0 0-2.8 0Z"/><path d="M12 9v4.5m0 3v.1"/></svg></span><span>Escalations</span></a>
       <a href="{{ url_for('cross_training') }}" class="{{ 'active' if request.endpoint=='cross_training' else '' }}"><span class="nav-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13.5m-3-3 3 3-3 3M20 16H6.5m3 3-3-3 3-3"/></svg></span><span>Cross Training</span></a>
       {% if effective_role in ('admin', 'trainer') %}

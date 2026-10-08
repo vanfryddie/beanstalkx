@@ -79,6 +79,7 @@ routes = [
     ("Trainer Overview", "/ld-management/trainer-overview"),
     ("L&D Settings", "/ld-management/settings"),
     ("Regional Overview", "/regional-overview"),
+    ("Shift Pulse", "/shift-pulse"),
     ("Weekly plan", "/weekly-plan"),
 ]
 for name, url in routes:

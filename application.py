@@ -3463,6 +3463,80 @@ def site_global_admin_remove(login):
     return redirect(url_for("site_create"))
 
 
+# ------------------------------------------------------- shift pulse ----
+
+# Shift Pulse is the EU PE NET network standard (B2B Action #3.5) for
+# real-time shift performance. It reads FCLM through the manager's own
+# browser session via a Tampermonkey provider — this server has no Midway
+# session and should never hold one — so hosting it here changes the
+# packaging, not the data path: no local HTML file to keep up to date,
+# everyone on the current version, and the configuration shared from the
+# site's database instead of each manager's localStorage.
+SHIFT_PULSE_SETTINGS_ROLES = ADMIN_TIER_ROLES | OPS_MANAGER_ROLES
+
+
+def _can_edit_shift_pulse_settings(login_id, role):
+    """Who owns a site's Shift Pulse configuration. The rollout deck puts
+    Operations Managers in charge of distributing correct shift settings,
+    so OM/SOM edit alongside the admin tier; everyone else reads."""
+    return login_id in BOOTSTRAP_ADMIN_LOGINS or role in SHIFT_PULSE_SETTINGS_ROLES
+
+
+@application.route("/shift-pulse")
+def shift_pulse():
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    role = _effective_role()
+    site_code = db.get_current_site()
+    settings = db.get_shift_pulse_settings()
+    # The FC the dashboard opens on defaults to the site you are already
+    # looking at, rather than the LEJ5 the standalone file shipped with.
+    settings.setdefault("warehouseId", site_code)
+    return render_template(
+        "shift_pulse.html",
+        **_login_context(),
+        site_code=site_code,
+        shared_settings_json=json.dumps(settings),
+        shared_keys_json=json.dumps(list(db.SHIFT_PULSE_SHARED_KEYS)),
+        can_edit_settings=_can_edit_shift_pulse_settings(login_id, role),
+    )
+
+
+@application.route("/shift-pulse/settings", methods=["POST"])
+def shift_pulse_save_setting():
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    if not _can_edit_shift_pulse_settings(login_id, _effective_role()):
+        return jsonify({"error": "Only Operations Managers and admins can change Shift Pulse settings."}), 403
+    payload = request.get_json(silent=True) or {}
+    key = (payload.get("key") or "").strip()
+    if not db.is_shift_pulse_shared_key(key):
+        # Personal view state never reaches here; a request for it is a
+        # bug or a probe, and either way is not something to store.
+        return jsonify({"error": "not a shared setting"}), 400
+    db.set_shift_pulse_setting(key, payload.get("value") or "", login_id)
+    return jsonify({"ok": True})
+
+
+@application.route("/shift-pulse/provider.user.js")
+def shift_pulse_userscript():
+    """The standard Shift Pulse data provider, served with its @match
+    pointed at this console instead of a local file, and its version
+    suffixed so Tampermonkey offers the update. Nothing else is changed:
+    it is the same script the policy page ships, and the FCLM calls it
+    makes still run as the manager, under their own Midway session."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "static", "shift_pulse_provider.user.js")
+    with open(path, encoding="utf-8") as handle:
+        script = handle.read()
+    base = request.url_root.rstrip("/")
+    script = script.replace("__LDIS_MATCH__", base + "/shift-pulse*")
+    script = script.replace("__LDIS_UPDATE__", base + url_for("shift_pulse_userscript"))
+    return Response(script, mimetype="text/javascript; charset=utf-8")
+
+
 @application.route("/regional-overview")
 def regional_overview():
     login_id = _require_login()

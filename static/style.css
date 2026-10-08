@@ -3756,3 +3756,67 @@ html[data-theme="light"] .dd-tag { background: rgba(0,0,0,.04); }
   margin: -8px 0 20px; padding: 0 2px; max-width: 74ch;
   font-size: 12.5px; line-height: 1.55; color: var(--text-lo);
 }
+
+/* ============================================================
+   Hosting Shift Pulse inside the console.
+
+   static/shift_pulse.css is generated from the standalone tool by
+   perf/port_shift_pulse.py and is overwritten whenever a new Shift Pulse
+   version is ported — so anything about how the console *hosts* it lives
+   here instead, where regeneration cannot wipe it. The generated file
+   handles the tool's own surfaces in dark mode; this handles the seam
+   between it and the console.
+   ============================================================ */
+
+.sp-root { background: transparent; padding: 0; font-family: var(--font); }
+.sp-root .dashboard-container { max-width: none; border-radius: var(--radius); }
+html[data-theme="dark"] .sp-root .dashboard-container {
+  border: 1px solid var(--hairline); box-shadow: var(--shadow-soft);
+}
+html[data-theme="dark"] .sp-root .dashboard-header { background: var(--surface-solid); }
+
+/* One primary action in the console's accent — the tool's orange refresh
+   button is otherwise the loudest thing on any page in the app. */
+html[data-theme="dark"] .sp-root .refresh-btn,
+html[data-theme="dark"] .sp-root .discover-btn,
+html[data-theme="dark"] .sp-root .add-bucket-btn {
+  background: var(--aws-blue); color: #fff; border: 0; border-radius: 11px;
+  font-weight: 620; box-shadow: 0 5px 14px rgba(0,113,227,.18);
+}
+html[data-theme="dark"] .sp-root .refresh-btn:hover { background: #3ca0ff; }
+html[data-theme="dark"] .sp-root .target-btn {
+  background: var(--surface-raised); color: #f1f1f3; border: 1px solid var(--hairline);
+  border-radius: 11px; box-shadow: none;
+}
+html[data-theme="dark"] .sp-root input,
+html[data-theme="dark"] .sp-root select {
+  background: var(--surface-raised); color: #f1f1f3;
+  border: 1px solid var(--hairline); border-radius: 10px;
+}
+
+/* The console owns the theme and the site switcher, so the tool's own
+   dark-mode switch and feedback link would duplicate controls that
+   already exist a few pixels away. The guided tour stays: it explains
+   this dashboard, which nothing else in the console does. */
+.sp-root .dark-mode-toggle,
+.sp-root #feedbackBtn { display: none !important; }
+
+/* Provider state and the help panel shown when it isn't running. */
+.sp-provider-state { display: flex; align-items: center; }
+.sp-help {
+  margin: 0 0 22px; padding: 20px 22px; border-radius: var(--radius);
+  background: rgba(255,159,10,.07); border: 1px solid rgba(255,159,10,.24);
+}
+.sp-help h2 { margin: 0 0 8px; font-size: 16px; font-weight: 650; color: var(--amber); }
+.sp-help p { margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: var(--text-lo); max-width: 78ch; }
+.sp-help ol { margin: 0 0 10px; padding-left: 20px; }
+.sp-help li { font-size: 13px; line-height: 1.75; color: var(--text-lo); }
+.sp-help code { padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.07); font-size: 12px; }
+.sp-help-foot { font-size: 12px; opacity: .85; }
+.sp-save-state {
+  position: fixed; bottom: 18px; right: 18px; z-index: 900;
+  padding: 10px 14px; border-radius: 11px; font-size: 12.5px; font-weight: 600;
+  background: rgba(255,69,58,.14); border: 1px solid rgba(255,69,58,.3); color: var(--red);
+}
+html[data-theme="light"] .sp-help { background: rgba(255,159,10,.10); }
+html[data-theme="light"] .sp-help code { background: rgba(0,0,0,.05); }

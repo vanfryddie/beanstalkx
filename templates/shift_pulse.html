@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Shift Pulse — L&D Operations Console{% endblock %}
+
+{% block content %}
+<section class="dash-hero dash-hero-tight">
+  <div class="dash-hero-text">
+    <p class="dash-eyebrow">Shift Pulse · {{ site_code }}</p>
+    <h1 class="dash-headline">Real-time shift <span class="dim">performance.</span></h1>
+    <p class="dash-meta">
+      Hourly performance across the whole FC — direct and indirect processes, support
+      hours and time off task. Data comes live from FCLM through the Shift Pulse data
+      provider running in your browser.
+    </p>
+  </div>
+  <div class="sp-provider-state">
+    <span class="dash-chip" id="spProviderChip">
+      <i class="dash-dot dash-dot-none" id="spProviderDot"></i>
+      <span id="spProviderLabel">Checking for the data provider…</span>
+    </span>
+  </div>
+</section>
+
+{% if not can_edit_settings %}
+<p class="dd-explainer">
+  You can read this site's Shift Pulse settings but not change them — shift times,
+  support buckets and targets are owned by Operations Managers and admins, so one
+  configuration serves everyone looking at {{ site_code }}.
+</p>
+{% endif %}
+
+{# The dashboard markup is generated from the standalone Shift-Pulse.html by
+   perf/port_shift_pulse.py. Its element ids are the contract with the
+   Tampermonkey data provider, which writes into them directly. #}
+<div class="sp-root" id="spRoot">
+  {% include "_shift_pulse_body.html" %}
+</div>
+
+<div id="spProviderHelp" class="sp-help" hidden>
+  <h2>The data provider isn't running</h2>
+  <p>
+    Shift Pulse reads FCLM through your own browser session, so this page stays empty
+    until the provider userscript is installed and running on it. The server cannot
+    fetch FCLM on your behalf — it has no Midway session, and it shouldn't have one.
+  </p>
+  <ol>
+    <li>Install the <strong>Tampermonkey</strong> extension (Chrome, Edge or Firefox).</li>
+    <li>Install <a href="{{ url_for('shift_pulse_userscript') }}">Shift Pulse — Data Provider</a>
+        from this console. It is the standard provider with its <code>@match</code> pointed here
+        instead of at a local file.</li>
+    <li>Make sure your Midway session is current, then reload this page.</li>
+  </ol>
+  <p class="sp-help-foot">
+    Questions, problems or ideas go to your Site Process Engineer, same as the
+    standalone tool — this is the same dashboard, hosted.
+  </p>
+</div>
+
+<script>
+/* Shift Pulse keeps its configuration in localStorage, which gives every
+   manager a private copy and leaves an OM with no way to actually
+   distribute "the correct settings for their shift". The shared keys are
+   served with the page and proxied through to the site's database here,
+   so one configuration serves everyone on {{ site_code }}; personal view
+   state (collapsed panels, the tour) still goes to real localStorage.
+
+   The values are rendered inline rather than fetched, because the
+   dashboard's own script reads them synchronously as it boots — a fetch
+   would not have resolved in time. */
+(function () {
+  var shared = {{ shared_settings_json | safe }};
+  var sharedKeys = {{ shared_keys_json | safe }};
+  var canEdit = {{ 'true' if can_edit_settings else 'false' }};
+  var saveUrl = {{ url_for('shift_pulse_save_setting') | tojson }};
+
+  function isShared(key) {
+    return sharedKeys.some(function (k) {
+      return key === k || (k.charAt(k.length - 1) === '_' && key.indexOf(k) === 0);
+    });
+  }
+
+  var realGet = Storage.prototype.getItem;
+  var realSet = Storage.prototype.setItem;
+  var realRemove = Storage.prototype.removeItem;
+
+  Storage.prototype.getItem = function (key) {
+    if (this === window.localStorage && isShared(key)) {
+      return Object.prototype.hasOwnProperty.call(shared, key) ? shared[key] : null;
+    }
+    return realGet.call(this, key);
+  };
+
+  var pending = {};
+  var timer = null;
+  function flush() {
+    timer = null;
+    var batch = pending;
+    pending = {};
+    Object.keys(batch).forEach(function (key) {
+      fetch(saveUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: key, value: batch[key] })
+      }).catch(function () {
+        /* A failed save must not take the dashboard down with it: the
+           value stays applied in this tab and the banner says it did not
+           reach the server, so nobody believes a setting was shared when
+           it wasn't. */
+        var chip = document.getElementById('spSaveState');
+        if (chip) { chip.textContent = 'Settings change not saved — check your connection'; chip.hidden = false; }
+      });
+    });
+  }
+
+  Storage.prototype.setItem = function (key, value) {
+    if (this === window.localStorage && isShared(key)) {
+      shared[key] = String(value);
+      if (canEdit) {
+        pending[key] = String(value);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(flush, 400);
+      }
+      return;
+    }
+    return realSet.call(this, key, value);
+  };
+
+  Storage.prototype.removeItem = function (key) {
+    if (this === window.localStorage && isShared(key)) {
+      delete shared[key];
+      if (canEdit) {
+        pending[key] = '';
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(flush, 400);
+      }
+      return;
+    }
+    return realRemove.call(this, key);
+  };
+})();
+</script>
+
+<span id="spSaveState" class="sp-save-state" hidden></span>
+
+<script src="{{ url_for('static', filename='shift_pulse.js', v='20261008a') }}"></script>
+
+<script>
+/* The provider writes into this page's tables; it never announces
+   itself. Watching for the first thing it fills is the only honest way
+   to tell a manager whether it is actually running, rather than leaving
+   them in front of an empty dashboard wondering. */
+(function () {
+  var dot = document.getElementById('spProviderDot');
+  var label = document.getElementById('spProviderLabel');
+  var help = document.getElementById('spProviderHelp');
+  var started = Date.now();
+
+  function seen() {
+    /* The provider is only "connected" once it has actually produced
+       something. The placeholder timestamp the page ships with reads
+       "--:--:--", and the overview body ships with a prompt row in it, so
+       neither existing is evidence — claiming connected on those would
+       leave a manager trusting an empty dashboard. */
+    if (typeof GM_xmlhttpRequest !== 'undefined') return true;
+    var stamp = document.getElementById('lastUpdateTime');
+    if (stamp) {
+      var text = (stamp.textContent || '').trim();
+      if (text && /[0-9]/.test(text)) return true;
+    }
+    var body = document.getElementById('deptOverviewTableBody');
+    if (body && body.querySelector('td') &&
+        !/Enter FC code/i.test(body.textContent || '')) return true;
+    return false;
+  }
+
+  var poll = setInterval(function () {
+    if (seen()) {
+      clearInterval(poll);
+      dot.className = 'dash-dot dash-dot-good';
+      label.textContent = 'Data provider connected';
+      if (help) help.hidden = true;
+    } else if (Date.now() - started > 6000) {
+      clearInterval(poll);
+      dot.className = 'dash-dot dash-dot-watch';
+      label.textContent = 'Data provider not detected';
+      if (help) help.hidden = false;
+    }
+  }, 500);
+})();
+</script>
+{% endblock %}

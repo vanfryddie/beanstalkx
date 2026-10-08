@@ -2125,6 +2125,13 @@ def init_db():
             UNIQUE(department, shift)
         );
 
+        CREATE TABLE IF NOT EXISTS shift_pulse_settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value TEXT,
+            updated_by TEXT,
+            updated_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS olr_weekly_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             login TEXT NOT NULL,
@@ -7226,6 +7233,75 @@ def get_site_weekly_composite_series(weeks=8):
         if composites:
             series.append((week_start, round(sum(composites) / len(composites), 1)))
     return series
+
+
+# The Shift Pulse dashboard keeps its configuration in the browser's
+# localStorage, which means every manager carries their own copy and an
+# OM distributing "the correct settings for their shift" (the rollout
+# deck's own words) has no way to actually do it. These keys move to the
+# site's database instead, so one configuration serves everyone looking
+# at that site. Anything genuinely personal — which panels you collapsed,
+# whether you have dismissed the tour — stays in localStorage.
+SHIFT_PULSE_SHARED_KEYS = (
+    "warehouseId",
+    "shiftSettings_",
+    "bucketConfig_",
+    "indirektHourlyIndirectTargets",
+    "indirektHourlyProcessPathTargets",
+    "indirektSummaryTargets",
+)
+
+
+def is_shift_pulse_shared_key(key):
+    """Whether this localStorage key is shared site configuration rather
+    than one person's view state. Prefix keys (shiftSettings_<FC>) match
+    on their prefix."""
+    if not key:
+        return False
+    return any(key == k or (k.endswith("_") and key.startswith(k))
+               for k in SHIFT_PULSE_SHARED_KEYS)
+
+
+def get_shift_pulse_settings():
+    """Every shared Shift Pulse setting for the current site, as the flat
+    {key: value} map the dashboard's own storage calls expect."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT setting_key, setting_value FROM shift_pulse_settings"
+    ).fetchall()
+    conn.close()
+    return {r["setting_key"]: r["setting_value"] for r in rows}
+
+
+def set_shift_pulse_setting(key, value, updated_by):
+    """Upsert one shared setting. Values are stored exactly as the
+    dashboard serialised them (JSON strings, mostly) so this layer never
+    has to understand Shift Pulse's own shapes — it just has to hand back
+    what was put in."""
+    if not is_shift_pulse_shared_key(key):
+        raise ValueError(f"{key!r} is not a shared Shift Pulse setting")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO shift_pulse_settings (setting_key, setting_value, updated_by, updated_at) "
+        "VALUES (?,?,?,?) ON CONFLICT(setting_key) DO UPDATE SET "
+        "setting_value=excluded.setting_value, updated_by=excluded.updated_by, "
+        "updated_at=excluded.updated_at",
+        (key, value, updated_by, _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_shift_pulse_settings_meta():
+    """Who last changed each setting and when — so the configuration page
+    can show that these are shared values somebody owns, not local ones."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT setting_key, updated_by, updated_at FROM shift_pulse_settings "
+        "ORDER BY updated_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_site_weekly_metric_series(weeks=8):
