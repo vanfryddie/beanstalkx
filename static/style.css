@@ -3820,3 +3820,139 @@ html[data-theme="dark"] .sp-root select {
 }
 html[data-theme="light"] .sp-help { background: rgba(255,159,10,.10); }
 html[data-theme="light"] .sp-help code { background: rgba(0,0,0,.05); }
+
+/* ============================================================
+   Indirect Roles coverage report — brought into the dashboard
+   language. The report had grown its own idioms (icon chips, a floating
+   ring, an underline for a meter) and read as a different product from
+   the pages that link to it. Structure and every data-/js- hook are
+   unchanged; this is surface only.
+   ============================================================ */
+
+/* --- Summary strip: the same figures the dashboards use ------- */
+.ir-summary-card {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 15px; padding: 16px 18px; box-shadow: none;
+  display: flex; align-items: center; gap: 14px;
+}
+.ir-summary-copy { display: flex; flex-direction: column; gap: 3px; }
+.ir-summary-copy span {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .01em; color: var(--text-lo);
+}
+.ir-summary-copy strong {
+  font-size: 28px; font-weight: 660; letter-spacing: -.03em; line-height: 1;
+  color: #f5f5f7; font-variant-numeric: proportional-nums;
+}
+/* Status belongs on the number, not on a tinted card and a coloured
+   icon as well — three signals for one fact. */
+.ir-summary-positive, .ir-summary-attention, .ir-summary-critical { background: var(--surface); }
+.ir-summary-positive .ir-summary-copy strong { color: var(--green); }
+.ir-summary-attention .ir-summary-copy strong { color: var(--amber); }
+.ir-summary-critical .ir-summary-copy strong { color: var(--red); }
+.ir-summary-icon {
+  width: 34px; height: 34px; border-radius: 10px; flex: 0 0 34px;
+  display: grid; place-items: center;
+  background: rgba(255,255,255,.05); border: 1px solid var(--hairline);
+}
+.ir-summary-icon svg { width: 17px; height: 17px; fill: none; stroke: var(--text-lo); stroke-width: 1.7; }
+.ir-health-ring { margin-left: auto; }
+
+.ir-priority-insight {
+  background: rgba(255,159,10,.07); border: 1px solid rgba(255,159,10,.24);
+  border-radius: 15px;
+}
+.ir-priority-copy strong { color: var(--amber); }
+
+/* --- Coverage cells ------------------------------------------- */
+.ir-coverage-table tbody th.ir-role-cell strong {
+  /* Shouting every role name made a 54-row table loud and no easier to
+     scan; weight does the same job quietly. */
+  text-transform: none; letter-spacing: -.01em;
+  font-size: 13.5px; font-weight: 620; color: #f5f5f7;
+}
+.ir-coverage-table tbody th.ir-role-cell small {
+  text-transform: none; letter-spacing: 0; color: var(--text-lo);
+}
+
+.ir-coverage-top { align-items: baseline; }
+.ir-ratio strong {
+  font-size: 23px; font-weight: 660; letter-spacing: -.03em;
+  font-variant-numeric: proportional-nums; color: #f5f5f7;
+}
+.ir-ratio span { font-size: 12px; color: var(--text-lo); }
+/* An earlier rule stacks this column; the shortfall badge belongs beside
+   the percentage, not under it — stacked, it pushed the meter down and
+   left rows in the same band at different heights. */
+.ir-coverage-state {
+  display: flex; flex-direction: row; align-items: baseline;
+  gap: 8px; white-space: nowrap;
+}
+.ir-coverage-top { flex-wrap: nowrap; gap: 12px; }
+
+/* A ring around a single percentage is a two-slice donut: it adds no
+   information the coloured figure beside it does not already carry, and
+   it was the one element on the page with no counterpart anywhere else
+   in the console. */
+.ir-health-ring { display: none; }
+.ir-percent { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.ir-state-ok .ir-percent { color: var(--green); }
+.ir-state-risk .ir-percent { color: var(--amber); }
+.ir-state-gap .ir-percent { color: var(--red); }
+.ir-state-muted .ir-percent { color: var(--text-lo); }
+
+/* The shortfall a percentage alone used to hide. */
+.ir-short {
+  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  font-size: 10.5px; font-weight: 650;
+  color: var(--red); background: rgba(255,69,58,.11); border: 1px solid rgba(255,69,58,.24);
+}
+
+/* A real meter with a track and a target mark, rather than an underline
+   that only existed where the fill did. */
+.ir-meter {
+  position: relative; height: 5px; border-radius: 999px; overflow: visible;
+  background: rgba(255,255,255,.09); margin: 9px 0 0;
+}
+.ir-meter > i { display: block; height: 100%; border-radius: 999px; }
+.ir-state-ok .ir-meter > i { background: var(--green); }
+.ir-state-risk .ir-meter > i { background: var(--amber); }
+.ir-state-gap .ir-meter > i { background: var(--red); }
+.ir-state-muted .ir-meter > i { background: #5a5a60; }
+.ir-meter-target {
+  position: absolute; top: -2px; bottom: -2px; left: 95%; width: 2px;
+  border-radius: 1px; background: rgba(255,255,255,.42); text-decoration: none;
+}
+
+/* --- Readiness chips ------------------------------------------ */
+.ir-readiness-grid { gap: 6px; margin-top: 11px; }
+.ir-readiness-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border-radius: 999px; cursor: pointer;
+  background: rgba(255,255,255,.04); border: 1px solid var(--hairline);
+  font-size: 11px; color: var(--text-lo);
+  transition: background .16s var(--ease-smooth, ease), border-color .16s var(--ease-smooth, ease);
+}
+.ir-readiness-item:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.2); }
+.ir-readiness-item strong { font-size: 11.5px; font-weight: 680; color: #f5f5f7; }
+.ir-readiness-item span { display: inline-flex; align-items: center; gap: 5px; }
+.ir-readiness-item i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.ir-readiness-ready i { background: var(--green); }
+.ir-readiness-practice i { background: var(--amber); }
+.ir-readiness-untrained i { background: var(--red); }
+/* A zero is not a problem to look at — keep it present but recessive, so
+   the eye lands on the counts that are not zero. */
+.ir-readiness-item[data-zero="1"] { opacity: .45; }
+
+.ir-no-target-note { font-size: 11px; color: var(--text-lo); }
+
+html[data-theme="light"] .ir-summary-copy strong,
+html[data-theme="light"] .ir-ratio strong,
+html[data-theme="light"] .ir-readiness-item strong,
+html[data-theme="light"] .ir-coverage-table tbody th.ir-role-cell strong { color: #1d1d1f; }
+html[data-theme="light"] .ir-summary-positive .ir-summary-copy strong { color: var(--green); }
+html[data-theme="light"] .ir-summary-attention .ir-summary-copy strong { color: var(--amber); }
+html[data-theme="light"] .ir-summary-critical .ir-summary-copy strong { color: var(--red); }
+html[data-theme="light"] .ir-meter { background: rgba(0,0,0,.09); }
+html[data-theme="light"] .ir-meter-target { background: rgba(0,0,0,.45); }
+html[data-theme="light"] .ir-readiness-item { background: rgba(0,0,0,.035); }
+html[data-theme="light"] .ir-readiness-item:hover { background: rgba(0,0,0,.07); }

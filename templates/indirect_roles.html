@@ -228,7 +228,7 @@
                 {% if role.special %}<small>{{ role.special|replace('_', ' ')|title }}</small>{% endif %}
               </th>
               {% for s in role.shifts %}
-              {% set state = 'muted' if s.target <= 0 else ('ok' if s.pct >= 95 else ('risk' if s.pct >= 80 else 'gap')) %}
+              {% set state = 'muted' if s.target <= 0 else ('ok' if s.pct >= 95 else ('risk' if s.pct >= 75 else 'gap')) %}
               <td class="ir-shift-col" data-shift="{{ s.shift }}">
                 <div class="ir-coverage-cell ir-state-{{ state }}" data-ir-shift-cell data-shift-label="{{ s.shift|capitalize }}" data-state="{{ state }}" data-actual="{{ s.total_trained }}" data-target="{{ s.target }}" data-pct="{{ s.pct if s.pct is not none else '' }}" data-ready="{{ s.trained }}" data-no-practice="{{ s.no_practice }}" data-not-trained="{{ s.not_trained }}">
                   {% if s.target > 0 %}
@@ -238,9 +238,15 @@
                     </button>
                     <div class="ir-coverage-state">
                       <span class="ir-percent">{{ s.pct }}%</span>
+                      {% if s.gap_to_target %}
+                      <span class="ir-short" title="{{ s.gap_to_target }} more associate{{ '' if s.gap_to_target == 1 else 's' }} needed to reach the target of {{ s.target }}">{{ s.gap_to_target }} short</span>
+                      {% endif %}
                     </div>
                   </div>
-                  <div class="ir-meter" aria-hidden="true"><i style="width:{{ [s.pct, 100]|min }}%"></i></div>
+                  <div class="ir-meter" role="img" aria-label="{{ s.pct }} percent ready against a target of {{ s.target }}">
+                    <i style="width:{{ [s.pct, 100]|min }}%"></i>
+                    <u class="ir-meter-target" aria-hidden="true"></u>
+                  </div>
                   {% else %}
                   <div class="ir-coverage-top">
                     <button type="button" class="ir-ratio js-ir-members" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="trained" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" aria-label="View {{ s.total_trained }} trained associates for {{ role.role }} on {{ s.shift }} shift">
@@ -250,13 +256,13 @@
                   </div>
                   {% endif %}
                   <div class="ir-readiness-grid" aria-label="Associate readiness status">
-                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-ready" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="trained" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View associates trained with practice">
+                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-ready" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="trained" data-zero="{{ '1' if s.trained == 0 else '0' }}" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View associates trained with practice">
                       <span><i aria-hidden="true"></i>Ready</span><strong>{{ s.trained }}</strong>
                     </button>
-                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-practice" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="no_practice" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View trained associates with no practice logged">
+                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-practice" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="no_practice" data-zero="{{ '1' if s.no_practice == 0 else '0' }}" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View trained associates with no practice logged">
                       <span><i aria-hidden="true"></i>No practice</span><strong>{{ s.no_practice }}</strong>
                     </button>
-                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-untrained" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="not_trained" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View associates with practice but no training record">
+                    <button type="button" class="js-ir-members ir-readiness-item ir-readiness-untrained" data-role-id="{{ role.id }}" data-shift="{{ s.shift }}" data-bucket="not_trained" data-zero="{{ '1' if s.not_trained == 0 else '0' }}" data-role-name="{{ role.role|e }}" data-shift-label="{{ s.shift|capitalize }}" title="View associates with practice but no training record">
                       <span><i aria-hidden="true"></i>Not trained</span><strong>{{ s.not_trained }}</strong>
                     </button>
                   </div>

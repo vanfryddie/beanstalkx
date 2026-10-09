@@ -4301,19 +4301,21 @@ def compute_ir_overview(include_members=False):
             # actually fully ready" — pct below, unaffected by this).
             total_trained = trained + no_practice
             gap_to_target = max(0, target - total_trained) if target > 0 else 0
-            # Compliance is about READINESS quality, not raw headcount:
-            # trained-with-practice is the only thing that counts toward
-            # it. No-practice and not-trained-with-practice both count
-            # against it even if the with-practice headcount alone would
-            # already clear target — so this can never exceed 100%, and
-            # can never read 100% while either of those is non-zero.
+            # Compliance answers "is this role+shift actually covered by
+            # ready people", which is two failures at once: people who
+            # are known but not ready, and people the target asks for who
+            # do not exist yet. Only trained-with-practice counts toward
+            # it, and the denominator is the larger of who we know about
+            # and what the target asks for — so a role with 11 ready
+            # against a target of 12 reads 92%, not 100%. Scoring it on
+            # known people alone made an unmet target invisible and put
+            # "11 / 12" next to "100%".
             total_people = trained + no_practice + gap
-            if total_people > 0:
-                pct = round(100 * trained / total_people)
-            elif target > 0:
-                pct = 0  # a target exists but literally nobody's tracked against this role/shift yet
+            denominator = max(total_people, target or 0)
+            if denominator > 0:
+                pct = round(100 * trained / denominator)
             else:
-                pct = None  # no target, no one tracked -- nothing to report
+                pct = None  # no target, nobody tracked — nothing to report
             entry = {
                 "shift": shift_name, "target": target, "trained": trained, "total_trained": total_trained,
                 "gap_to_target": gap_to_target, "no_practice": no_practice, "not_trained": gap, "pct": pct,
@@ -4356,7 +4358,12 @@ def summarize_ir_overview(overview):
                 section_on_target += 1
             for s in role["shifts"]:
                 total_trained_wp += s["trained"]
-                total_people += s["trained"] + s["no_practice"] + s["not_trained"]
+                # Pooled the same way as the per-shift percentage, and
+                # per row rather than on the totals: summing people and
+                # targets separately would let one over-staffed role hide
+                # another's shortfall.
+                total_people += max(s["trained"] + s["no_practice"] + s["not_trained"],
+                                    s["target"] or 0)
                 action_count = s["no_practice"] + s["not_trained"]
                 people_needing_action += action_count
                 if s["target"] > 0 and action_count > 0:

@@ -371,7 +371,16 @@ def _site_department_shift_pairs():
         if row.get("department"):
             departments.add(db.normalize_department(row["department"]))
 
-    return {(department, shift) for department in departments if department
+    # Some Indirect Role config rows carry no home process at all, so no
+    # department can claim them. A manager's card is right to leave them
+    # out — you cannot hold someone responsible for a role that names no
+    # department — but the site total must include them, or the site
+    # figure quietly reports on fewer roles than the report does. The
+    # empty department is its own group, so pairing it here is what picks
+    # them up.
+    departments.add("")
+
+    return {(department, shift) for department in departments
             for shift in db.SHIFTS}
 
 
@@ -396,7 +405,7 @@ def _indirect_roles_card_for_pairs(pairs):
     if not pairs:
         return None
     overview = db.compute_ir_overview()
-    ok = risk = gap = target_sum = 0
+    ok = risk = gap = target_sum = denominator_sum = 0
     matched_roles = []
     for department, shift in pairs:
         # The role's home_process might be stored under an informal
@@ -417,18 +426,22 @@ def _indirect_roles_card_for_pairs(pairs):
                 risk += s["no_practice"]
                 gap += s["not_trained"]
                 target_sum += max(s["target"], 0)
+                # Accumulated per role+shift, not from the totals, so an
+                # over-staffed role cannot absorb another's shortfall.
+                denominator_sum += max(s["trained"] + s["no_practice"] + s["not_trained"],
+                                       s["target"] or 0)
                 matched_roles.append({"role_id": role["id"], "role": role["role"], "section": sec["section"],
                                        "shift": s, "department": department})
     if not matched_roles:
         return None
     total_people = ok + risk + gap
-    # Same rule as the per-role pct above: only trained-with-practice
-    # counts toward compliance, so this is naturally capped at 100% and
-    # can't read 100% while risk or gap is non-zero.
-    if total_people > 0:
-        pct_ok = round(100 * ok / total_people)
-    elif target_sum > 0:
-        pct_ok = 0
+    # Same rule as the per-role pct in compute_ir_overview: only
+    # trained-with-practice counts toward compliance, and a target the
+    # headcount does not reach counts against it. The two must agree —
+    # this tile and the report drill-down are the same number at
+    # different altitudes.
+    if denominator_sum > 0:
+        pct_ok = round(100 * ok / denominator_sum)
     else:
         pct_ok = None
     departments = sorted({p[0] for p in pairs})
