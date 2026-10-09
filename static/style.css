@@ -3769,6 +3769,17 @@ html[data-theme="light"] .dd-tag { background: rgba(0,0,0,.04); }
    ============================================================ */
 
 .sp-root { background: transparent; padding: 0; font-family: var(--font); }
+
+/* The console's entry animation translates every direct child of .content,
+   and an element with a filled transform animation becomes the containing
+   block for position:fixed descendants. Shift Pulse brings four of those
+   with it — the function rollup modal and the guided tour's overlay,
+   backdrop and highlight — which were landing 280px off and giving the
+   whole page a horizontal scrollbar. The panel fades in without moving
+   instead, so "fixed" means the viewport again. */
+.content > .sp-root { animation: spRootReveal .48s cubic-bezier(.22,.75,.25,1) both; }
+@keyframes spRootReveal { from { opacity: 0; } to { opacity: 1; } }
+
 .sp-root .dashboard-container { max-width: none; border-radius: var(--radius); }
 html[data-theme="dark"] .sp-root .dashboard-container {
   border: 1px solid var(--hairline); box-shadow: var(--shadow-soft);
@@ -3956,3 +3967,153 @@ html[data-theme="light"] .ir-meter { background: rgba(0,0,0,.09); }
 html[data-theme="light"] .ir-meter-target { background: rgba(0,0,0,.45); }
 html[data-theme="light"] .ir-readiness-item { background: rgba(0,0,0,.035); }
 html[data-theme="light"] .ir-readiness-item:hover { background: rgba(0,0,0,.07); }
+
+/* ============================================================
+   My Associates — the directory and the training-request bar.
+   Person-shaped rather than record-shaped: everything else in the app
+   starts from something already overdue, so there was nowhere to ask
+   for training somebody does not have yet.
+   ============================================================ */
+
+.ad-summary { margin-bottom: 18px; }
+
+.ad-controls { display: flex; gap: 9px; flex-wrap: wrap; margin: 0 0 16px; align-items: center; }
+/* The app's inputs are full-width by default, which turns a filter row
+   into a stack. These sit side by side. */
+.ad-controls input[type=search] { flex: 1 1 280px; width: auto; min-width: 0; min-height: 41px; }
+.ad-controls select { flex: 0 0 auto; width: auto; min-height: 41px; min-width: 190px; }
+
+.ad-list { display: flex; flex-direction: column; gap: 9px; margin-bottom: 18px; }
+.ad-card {
+  display: grid; align-items: center; gap: 14px;
+  grid-template-columns: 26px minmax(170px, 1.1fr) minmax(150px, 1fr) minmax(0, 1.8fr) auto;
+  padding: 13px 16px; border-radius: 14px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-left: 2px solid #5a5a60;
+  transition: background .16s var(--ease-smooth, ease), border-color .16s var(--ease-smooth, ease);
+}
+.ad-card:hover { background: var(--surface-hover); }
+.ad-card.is-picked { border-color: rgba(41,151,255,.5); background: rgba(41,151,255,.07); }
+.ad-card-good { border-left-color: var(--green); }
+.ad-card-watch { border-left-color: var(--amber); }
+.ad-card-serious { border-left-color: var(--red); }
+.ad-card-none { border-left-color: #5a5a60; }
+
+.ad-pick { display: grid; place-items: center; }
+.ad-pick input { width: 17px; height: 17px; cursor: pointer; }
+
+.ad-identity { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ad-identity strong { font-size: 13.5px; font-weight: 620; color: #f5f5f7; }
+.ad-identity span { font-size: 11px; color: var(--text-lo); }
+
+.ad-compliance { min-width: 0; }
+.ad-compliance-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; }
+.ad-pct { font-size: 16px; font-weight: 660; color: #f5f5f7; font-variant-numeric: tabular-nums; }
+.ad-compliance-head span { font-size: 11px; color: var(--text-lo); }
+.ad-nodata { font-size: 11.5px; color: var(--text-lo); }
+
+.ad-tags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.ad-tag {
+  padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  font-size: 11px; font-weight: 550; color: var(--text-lo);
+  background: rgba(255,255,255,.05); border: 1px solid var(--hairline);
+}
+/* A role someone holds is a fact about them, so it reads as identity
+   rather than as a status — only the things that need attention get a
+   status colour. */
+.ad-tag-role { color: #d6d6da; }
+.ad-tag-role-weak { opacity: .62; }
+.ad-tag-amb { color: var(--aws-blue); background: rgba(41,151,255,.10); border-color: rgba(41,151,255,.26); }
+.ad-tag-lapsed { color: var(--red); background: rgba(255,69,58,.10); border-color: rgba(255,69,58,.24); }
+.ad-tag-none { opacity: .55; }
+
+.ad-open { font-size: 11.5px; }
+.ad-open > summary {
+  cursor: pointer; list-style: none; white-space: nowrap;
+  padding: 4px 10px; border-radius: 999px; color: var(--amber);
+  background: rgba(255,159,10,.10); border: 1px solid rgba(255,159,10,.24);
+  font-weight: 600;
+}
+.ad-open > summary::-webkit-details-marker { display: none; }
+.ad-open ul { list-style: none; margin: 9px 0 0; padding: 0; }
+.ad-open li { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.ad-open li span { color: #e9e9eb; }
+.ad-open li em { font-style: normal; color: var(--text-lo); margin-left: auto; white-space: nowrap; }
+.ad-allclear { font-size: 11.5px; font-weight: 600; color: var(--green); white-space: nowrap; }
+
+/* Appears only once something is selected — until then this is a
+   directory, not a form. */
+/* display:flex would otherwise beat the hidden attribute, and the bar
+   would sit there reading "0 selected". */
+.ad-request-bar[hidden] { display: none !important; }
+.ad-request-bar {
+  position: sticky; bottom: 14px; z-index: 50;
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 13px 16px; border-radius: var(--radius);
+  background: var(--surface-solid); border: 1px solid rgba(41,151,255,.32);
+  box-shadow: var(--shadow-float);
+}
+.ad-request-count { font-size: 12.5px; color: var(--text-lo); white-space: nowrap; }
+.ad-request-count strong { font-size: 16px; font-weight: 660; color: #f5f5f7; margin-right: 3px; }
+.ad-request-bar input[name=topic] { flex: 1 1 260px; width: auto; min-width: 0; min-height: 41px; }
+.ad-request-bar input[name=reason] { flex: 1 1 200px; width: auto; min-width: 0; min-height: 41px; }
+.ad-request-bar input[type=date] { width: auto; min-height: 41px; }
+
+.ad-requests { margin-bottom: 20px; }
+.ad-requests .dash-table td { white-space: normal; }
+.ad-note { display: block; margin-top: 3px; font-size: 11px; color: var(--text-lo); }
+
+/* Shift Pulse as a tab rather than a page. */
+.sp-panel-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.sp-readonly-note { font-size: 11.5px; color: var(--text-lo); }
+
+@media (max-width: 1100px) {
+  .ad-card { grid-template-columns: 26px minmax(150px, 1fr) minmax(130px, 1fr); }
+  .ad-tags, .ad-open, .ad-allclear { grid-column: 2 / -1; }
+}
+@media (max-width: 620px) {
+  .ad-card { grid-template-columns: 26px 1fr; }
+  .ad-compliance, .ad-tags, .ad-open, .ad-allclear { grid-column: 2 / -1; }
+  .ad-request-bar { position: static; }
+}
+
+html[data-theme="light"] .ad-identity strong,
+html[data-theme="light"] .ad-pct,
+html[data-theme="light"] .ad-request-count strong,
+html[data-theme="light"] .ad-open li span { color: #1d1d1f; }
+html[data-theme="light"] .ad-tag { background: rgba(0,0,0,.04); }
+html[data-theme="light"] .ad-tag-role { color: #3a3a3c; }
+html[data-theme="light"] .ad-card:hover { background: rgba(0,0,0,.025); }
+html[data-theme="light"] .ad-card.is-picked { background: rgba(41,151,255,.08); }
+html[data-theme="light"] .ad-request-bar { background: #fff; }
+
+/* --- Training requests review queue -------------------------- */
+.tr-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+.tr-card {
+  padding: 18px 20px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-soft); border-left: 2px solid var(--aws-blue);
+}
+.tr-scheduled { border-left-color: var(--green); }
+.tr-declined { border-left-color: var(--red); opacity: .78; }
+.tr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.tr-head h3 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -.015em; color: #f5f5f7; }
+.tr-head p { margin: 3px 0 0; font-size: 12px; color: var(--text-lo); }
+.tr-reason { margin: 11px 0 0; font-size: 13px; line-height: 1.55; color: #e9e9eb; max-width: 80ch; }
+.tr-nominees { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 13px; }
+.tr-nominees-label { font-size: 11.5px; font-weight: 600; color: var(--text-lo); margin-right: 3px; }
+.tr-note {
+  margin: 12px 0 0; padding: 9px 12px; border-radius: 10px;
+  background: rgba(255,255,255,.04); font-size: 12.5px; color: var(--text-lo);
+}
+.tr-note em { font-style: normal; opacity: .8; }
+.tr-actions {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  margin-top: 15px; padding-top: 14px; border-top: 1px solid var(--hairline);
+}
+.tr-actions form { display: flex; gap: 7px; align-items: center; margin: 0; flex: 1 1 280px; }
+.tr-actions input { flex: 1 1 auto; width: auto; min-width: 0; min-height: 34px; font-size: 12.5px; }
+
+html[data-theme="light"] .tr-head h3 { color: #1d1d1f; }
+html[data-theme="light"] .tr-reason { color: #1d1d1f; }
+html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }

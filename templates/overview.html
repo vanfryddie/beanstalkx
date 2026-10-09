@@ -46,6 +46,8 @@
   <a href="{{ url_for('overview', tab='myscorecard', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='myscorecard' }}">My L&D Scorecard</a>
   <a href="{{ url_for('overview', tab='planning', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='planning' }}">Planning</a>
   <a href="{{ url_for('overview', tab='training', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='training' }}">My Trainings</a>
+  <a href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='directory' }}">My Associates</a>
+  <a href="{{ url_for('overview', tab='shiftpulse', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='shiftpulse' }}">Shift Pulse</a>
   <a href="{{ url_for('overview', tab='olr', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='olr' }}">OLR</a>
 </div>
 
@@ -246,6 +248,16 @@
     {% endif %}
   </div>
   {% endif %}
+{% elif tab == 'shiftpulse' %}
+{# The same dashboard as /shift-pulse, in the tab an Area Manager already
+   lives in. Its element ids are the contract with the Tampermonkey data
+   provider, so the markup is included rather than reimplemented — and the
+   provider's @match covers this URL too. #}
+{% include "_shift_pulse_panel.html" %}
+
+{% elif tab == 'directory' %}
+{% include "_associate_directory.html" %}
+
 {% elif tab == 'olr' %}
   {% if not olr_data %}
   <div class="empty-state">Pick an Area Manager, Operations Manager, or Senior Operations Manager above to see their OLR trend.</div>

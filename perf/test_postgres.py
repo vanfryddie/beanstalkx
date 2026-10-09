@@ -80,6 +80,11 @@ routes = [
     ("L&D Settings", "/ld-management/settings"),
     ("Regional Overview", "/regional-overview"),
     ("Shift Pulse", "/shift-pulse"),
+    ("Shift Pulse tab in AM Overview", f"/overview?tab=shiftpulse&am={ams[0]}"),
+    ("My Associates tab", f"/overview?tab=directory&am={ams[0]}"),
+    ("My Associates (search)", f"/overview?tab=directory&am={ams[0]}&q=a"),
+    ("My Associates (role filter)", f"/overview?tab=directory&am={ams[0]}&holds=gaps"),
+    ("Training request review queue", "/scorecards?tab=requests"),
     ("Weekly plan", "/weekly-plan"),
 ]
 for name, url in routes:
@@ -100,6 +105,41 @@ check("role assignment POST", r.status_code == 200, f"got {r.status_code}")
 check("the write is readable afterwards", db.get_user_role(probe) == "am",
       f"got {db.get_user_role(probe)!r}")
 conn = db.get_db(); conn.execute("DELETE FROM user_roles WHERE login=?", (probe,)); conn.commit(); conn.close()
+
+print("\n4b. Training requests round-trip on Postgres")
+# The directory and the request tables are new, and a request is the one
+# place in this feature that writes: creating one as an AM, then having
+# L&D decide it, is what proves the schema works outside SQLite.
+directory = db.get_associate_directory(am_logins=[ams[0]])
+check("the directory returns the AM's associates", len(directory) > 0,
+      f"got {len(directory)} people")
+if directory:
+    nominees = [p["employee_login"] for p in directory[:2]]
+    with c.session_transaction() as s:
+        s["login"], s["role"], s["auth_source"], s["site"] = ams[0], "am", "manual", "SCN2"
+    r = c.post("/training-requests",
+               data={"topic": "Powered Industrial Truck", "reason": "new starters",
+                     "needed_by": "2026-12-01", "nominee": nominees, "am": ams[0]},
+               follow_redirects=True)
+    check("an AM can submit a request", r.status_code == 200, f"got {r.status_code}")
+    mine = db.get_training_requests(requested_by=ams[0])
+    check("the request is stored with its nominees",
+          len(mine) == 1 and len(mine[0]["nominees"]) == len(nominees),
+          f"got {len(mine)} request(s)")
+    if mine:
+        rid = mine[0]["id"]
+        with c.session_transaction() as s:
+            s["login"], s["role"], s["auth_source"], s["site"] = "admin", "admin", "manual", "SCN2"
+        r = c.post(f"/training-requests/{rid}/decide",
+                   data={"status": "scheduled", "note": "booked wk49"},
+                   follow_redirects=True)
+        check("L&D can decide it", r.status_code == 200, f"got {r.status_code}")
+        after = db.get_training_requests(requested_by=ams[0])
+        check("the decision is readable in a later request",
+              after and after[0]["status"] == "scheduled",
+              f"got {after[0]['status'] if after else 'nothing'}")
+with c.session_transaction() as s:
+    s["login"], s["role"], s["auth_source"], s["site"] = "admin", "admin", "manual", "SCN2"
 
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()

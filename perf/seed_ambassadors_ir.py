@@ -96,6 +96,32 @@ def seed(site="SCN2", seed_value=7):
     conn.commit()
     conn.close()
 
+    # Give some of the managers' own associates real Indirect Roles, so
+    # the Associate Directory has roles to show. The engine rows above
+    # use synthetic logins on purpose (they exercise the coverage
+    # maths); these are the people an Area Manager actually sees.
+    roles_for_associates = ["Indoor Marshall", "Jambuster", "Powered Industrial Truck (PIT)",
+                            "Amnesty Floor Monitor", "Water spider Pack", "Sweeper"]
+    conn = db.get_db()
+    cur = conn.cursor()
+    n_assoc_roles = 0
+    for row in db.get_roster_by_roles(["am"]):
+        am_login = row["login"]
+        shift = row.get("shift") or "early"
+        pattern = shift_pattern_for.get(shift)
+        for i in range(0, 26, 3):
+            login = f"{am_login}e{i:03d}"
+            role = roles_for_associates[(i // 3) % len(roles_for_associates)]
+            cur.execute(
+                "INSERT INTO ir_dashboard (login, full_name, shift_pattern, manager_login, "
+                "indirect_role, indirect_role_status, updated_at) VALUES (?,?,?,?,?,?,?)",
+                (login, login.upper(), pattern, am_login, role,
+                 random.choice(["Trained with practice", "Trained with practice",
+                                "Trained but no practice"]), now))
+            n_assoc_roles += 1
+    conn.commit(); conn.close()
+    print(f"{site}: {n_assoc_roles} indirect-role records attached to managers' own associates")
+
     print(f"{site}: {n_amb} ambassadors, {n_ir} ir_dashboard rows, "
           f"{n_roster} ir_roster rows, targets on {len(db.AMBASSADOR_DEPARTMENTS)} departments")
 

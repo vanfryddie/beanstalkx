@@ -121,6 +121,93 @@ with reader.session_transaction() as s:
 check("an Operations Manager is allowed",
       reader.post("/shift-pulse/settings", json={"key": "bucketConfig_SCN2", "value": '{"SEV":[]}'}).status_code == 200)
 
+print("\n6. A malformed shared value does not take the dashboard down")
+# The standalone tool kept this configuration in one manager's browser, so
+# a bad value broke only that manager. Shared from the database it would
+# break Shift Pulse for the whole FC, which is what made the loaders
+# validate. The value left in the database by the sections above — a
+# bucketConfig with no `buckets` at all — is exactly that case.
+stored_now = db.get_shift_pulse_settings().get("bucketConfig_SCN2", "")
+check("the stored value really is malformed (no buckets key)",
+      "buckets" not in stored_now, stored_now[:80])
+
+srv = make_server("127.0.0.1", 5631, application.application, threaded=True)
+threading.Thread(target=srv.serve_forever, daemon=True).start(); time.sleep(1.0)
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args=["--no-sandbox"])
+    ctx = b.new_context(viewport={"width": 1500, "height": 950})
+    pg = ctx.new_page()
+    page_errors = []
+    pg.on("pageerror", lambda e: page_errors.append(str(e)))
+    pg.goto("http://127.0.0.1:5631/", wait_until="domcontentloaded")
+    pg.fill("input[name=login_id]", "admin"); pg.click("button[type=submit]"); pg.wait_for_timeout(500)
+    pg.goto("http://127.0.0.1:5631/shift-pulse", wait_until="networkidle")
+    pg.wait_for_timeout(900)
+    check("no uncaught JavaScript error on the page", not page_errors, "; ".join(page_errors[:3]))
+    buckets = pg.eval_on_selector_all("#bucketsContainer .bucket-card, #bucketsContainer .bucket-header",
+                                      "els => els.length")
+    check("the default buckets rendered instead", buckets > 0, f"{buckets} rendered")
+    # And the same page served as the AM Overview tab, which runs the
+    # identical script through the same shim.
+    pg2 = ctx.new_page()
+    tab_errors = []
+    pg2.on("pageerror", lambda e: tab_errors.append(str(e)))
+    pg2.goto("http://127.0.0.1:5631/overview?tab=shiftpulse", wait_until="networkidle")
+    pg2.wait_for_timeout(900)
+    check("nor on the AM Overview tab", not tab_errors, "; ".join(tab_errors[:3]))
+
+    # Shift Pulse brings four position:fixed elements with it — the
+    # function rollup modal and the tour's overlay, backdrop and
+    # highlight. The console's entry animation translates every direct
+    # child of .content, and an element with a filled transform animation
+    # becomes the containing block for its fixed descendants, which put
+    # all four 280px off and gave the page a horizontal scrollbar. Nothing
+    # in the markup says "fixed" out loud, so this is checked rather than
+    # read.
+    CONTAINING_BLOCK = """(() => {
+      const bad = [];
+      let el = document.getElementById('tourOverlay');
+      while (el) {
+        const cs = getComputedStyle(el);
+        const reasons = [];
+        if (cs.transform && cs.transform !== 'none') reasons.push('transform ' + cs.transform);
+        if (cs.filter && cs.filter !== 'none') reasons.push('filter');
+        if (cs.perspective && cs.perspective !== 'none') reasons.push('perspective');
+        if (cs.backdropFilter && cs.backdropFilter !== 'none') reasons.push('backdrop-filter');
+        if (cs.willChange && /transform|filter|perspective/.test(cs.willChange)) reasons.push('will-change');
+        if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) reasons.push('contain ' + cs.contain);
+        if (reasons.length) bad.push((el.id || el.tagName) + ': ' + reasons.join(', '));
+        el = el.parentElement;
+      }
+      return bad;
+    })()"""
+    for label, page in (("the hosted page", pg), ("the AM Overview tab", pg2)):
+        offenders = page.evaluate(CONTAINING_BLOCK)
+        check(f"nothing above the fixed overlays creates a containing block on {label}",
+              not offenders, "; ".join(offenders[:3]))
+        over = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+        check(f"no horizontal page scroll on {label}", over <= 1, f"overflows {over}px")
+
+    # And the consequence that matters to a manager: the orange ring the
+    # tour draws has to sit on the thing the tour is talking about.
+    landed = pg.evaluate("""(() => {
+      const h = document.getElementById('tourHighlight');
+      if (!h || getComputedStyle(h).display === 'none') return 'highlight not shown';
+      const r = h.getBoundingClientRect();
+      const mid = document.elementFromPoint(
+        Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 1),
+        Math.min(Math.max(r.top + r.height / 2, 1), window.innerHeight - 1));
+      return mid && mid.closest('.sp-root') ? 'ok' : 'points outside the dashboard';
+    })()""")
+    check("the tour's highlight lands inside the dashboard", landed == "ok", str(landed))
+    ctx.close(); b.close()
+srv.shutdown()
+
+# Leave no corrupt shared value behind: this test deliberately writes one,
+# and a dev database that keeps it makes every later page load look broken.
+conn = db.get_db(); conn.execute("DELETE FROM shift_pulse_settings"); conn.commit(); conn.close()
+check("the test cleans up the settings it wrote", not db.get_shift_pulse_settings())
+
 print("\n" + "=" * 62)
 print("ALL SHIFT PULSE CHECKS PASSED" if not fails else f"{len(fails)} FAILURE(S): {fails}")
 sys.exit(1 if fails else 0)

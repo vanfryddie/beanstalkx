@@ -44,6 +44,7 @@
   {% if can_admin %}
   <a href="{{ url_for('scorecards', tab='ambassador_attendance') }}" class="{{ 'active' if tab=='ambassador_attendance' }}">Ambassador Attendance</a>
   <a href="{{ url_for('scorecards', tab='ambassador_hours') }}" class="{{ 'active' if tab=='ambassador_hours' }}">Ambassador Practice</a>
+  <a href="{{ url_for('scorecards', tab='requests') }}" class="{{ 'active' if tab=='requests' }}">Training Requests</a>
   <a href="{{ url_for('scorecards', tab='escalations') }}" class="{{ 'active' if tab=='escalations' }}">Escalations</a>
   {% endif %}
 </div>
@@ -606,6 +607,85 @@ function ldocOpenEscalationSenior(login) {
   applyFilters();
 })();
 </script>
+{% endif %}
+
+{% elif tab == 'requests' %}
+<section class="dash-hero dash-hero-tight">
+  <div class="dash-hero-text">
+    <p class="dash-eyebrow">Training Requests</p>
+    {% set open_reqs = training_requests | selectattr('status', 'equalto', 'open') | list %}
+    {% if open_reqs %}
+      <h1 class="dash-headline">{{ open_reqs | length }}
+        request{{ 's' if open_reqs|length != 1 }} <span class="dim">waiting on L&amp;D.</span></h1>
+    {% else %}
+      <h1 class="dash-headline">Nothing <span class="dim">waiting on L&amp;D.</span></h1>
+    {% endif %}
+    <p class="dash-meta">
+      Training Area Managers have asked for, for people who have no overdue record —
+      somebody new on PIT, a Jambuster for the shift. These never appear in the
+      generator, because nothing is late.
+    </p>
+  </div>
+</section>
+
+{% if training_requests %}
+<div class="tr-list">
+  {% for req in training_requests %}
+  <article class="tr-card tr-{{ req.status }}">
+    <header class="tr-head">
+      <div>
+        <h3>{{ req.topic }}</h3>
+        <p>
+          Requested by <strong>{{ req.requested_by }}</strong>
+          {%- if req.shift %} · {{ shifts.get(req.shift, req.shift) }}{% endif -%}
+          {%- if req.needed_by %} · needed by {{ req.needed_by }}{% endif %}
+        </p>
+      </div>
+      <span class="dash-status-pill dash-status-{{ 'good' if req.status == 'scheduled' else ('serious' if req.status == 'declined' else 'none') }}">
+        {{ 'Scheduled' if req.status == 'scheduled' else ('Declined' if req.status == 'declined' else 'Open') }}
+      </span>
+    </header>
+
+    {% if req.reason %}<p class="tr-reason">{{ req.reason }}</p>{% endif %}
+
+    <div class="tr-nominees">
+      <span class="tr-nominees-label">{{ req.nominees | length }} nominated</span>
+      {% for n in req.nominees %}
+      <span class="ad-tag" title="{{ n.employee_login }}">{{ n.full_name }}</span>
+      {% endfor %}
+    </div>
+
+    {% if req.decision_note %}
+    <p class="tr-note">{{ req.decision_note }} <em>— {{ req.decided_by }}</em></p>
+    {% endif %}
+
+    <footer class="tr-actions">
+      {% if req.status == 'open' %}
+      <form method="post" action="{{ url_for('training_request_decide', request_id=req.id) }}">
+        <input type="hidden" name="status" value="scheduled">
+        <input name="note" placeholder="Where it's been scheduled (optional)">
+        <button class="btn btn-gold btn-sm" type="submit">Mark scheduled</button>
+      </form>
+      <form method="post" action="{{ url_for('training_request_decide', request_id=req.id) }}">
+        <input type="hidden" name="status" value="declined">
+        <input name="note" placeholder="Why not — the requester sees this" required>
+        <button class="btn btn-ghost btn-sm" type="submit">Decline</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ url_for('training_request_decide', request_id=req.id) }}">
+        <input type="hidden" name="status" value="open">
+        <button class="btn btn-ghost btn-sm" type="submit">Reopen</button>
+      </form>
+      {% endif %}
+    </footer>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<div class="dash-empty dash-empty-page">
+  No training has been requested yet. Area Managers raise these from
+  <strong>My Associates</strong> on their own overview.
+</div>
 {% endif %}
 
 {% elif tab == 'som_om' %}

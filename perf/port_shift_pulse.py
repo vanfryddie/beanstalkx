@@ -152,14 +152,121 @@ io.open(os.path.join(out_static, "shift_pulse.css"), "w", encoding="utf-8").writ
     + "\n\n/* ---- dark theme, generated from the rules above ---- */\n"
     + dark_layer(scoped) + "\n")
 
+# ---------------------------------------------------------------- patches
+# Hosting changes one thing the standalone tool could assume: its saved
+# configuration lived in one manager's browser, so a malformed value
+# broke only that manager. Here the same keys are shared across the site
+# from the database, and an uncaught TypeError while reading one would
+# take Shift Pulse down for everyone on the FC. These two loaders are
+# therefore made to validate what they read. Each patch asserts, so a
+# regeneration against a changed upstream file fails loudly instead of
+# silently dropping the hardening.
+JS_PATCHES = [
+    (
+        """            if (saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    return parsed;
+                } catch (e) {
+                    console.warn('Failed to parse saved bucket config:', e);""",
+        """            if (saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    /* The stored value is now shared across the site rather
+                       than private to one browser, so a single bad write
+                       would otherwise take Shift Pulse down for everybody on
+                       the FC. Anything that is not a usable bucket list is
+                       ignored in favour of the defaults. */
+                    if (parsed && Array.isArray(parsed.buckets)) {
+                        parsed.buckets = parsed.buckets.filter(function (b) {
+                            return b && typeof b === 'object';
+                        }).map(function (b) {
+                            return {
+                                id: b.id || ('bucket_' + Math.random().toString(36).slice(2, 8)),
+                                name: b.name || 'Unnamed',
+                                functions: Array.isArray(b.functions) ? b.functions.filter(function (f) {
+                                    return f && f.name;
+                                }) : []
+                            };
+                        });
+                        return parsed;
+                    }
+                    console.warn('Saved bucket config has no buckets; using defaults:', parsed);
+                } catch (e) {
+                    console.warn('Failed to parse saved bucket config:', e);""",
+    ),
+    (
+        """                // Position highlight
+                highlight.style.display = 'block';
+                highlight.style.left = (rect.left - pad) + 'px';
+                highlight.style.top = (rect.top - pad) + 'px';
+                highlight.style.width = (rect.width + pad * 2) + 'px';
+                highlight.style.height = (rect.height + pad * 2) + 'px';""",
+        """                // Position highlight. Clamped to the viewport: the
+                // highlight is position:fixed, and standing alone the
+                // dashboard filled the window so its target rect never
+                // reached past the edge. Inside the console shell it can,
+                // and a fixed box hanging over the right edge gives the
+                // whole page a horizontal scrollbar — nav and all — for
+                // the length of the tour.
+                const hlLeft = Math.max(0, rect.left - pad);
+                const hlTop = Math.max(0, rect.top - pad);
+                highlight.style.display = 'block';
+                highlight.style.left = hlLeft + 'px';
+                highlight.style.top = hlTop + 'px';
+                highlight.style.width = Math.max(0, Math.min(rect.width + pad * 2,
+                    document.documentElement.clientWidth - hlLeft)) + 'px';
+                highlight.style.height = Math.max(0, Math.min(rect.height + pad * 2,
+                    document.documentElement.clientHeight - hlTop)) + 'px';""",
+    ),
+    (
+        """            if (saved) {
+                try {
+                    return JSON.parse(saved);
+                } catch (e) {
+                    console.warn('Failed to parse saved shift settings:', e);""",
+        """            if (saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    /* Same reasoning as loadBucketConfig: a shared value that
+                       is missing a shift would break the page for the whole
+                       site, so each shift falls back to its default
+                       individually rather than all-or-nothing. */
+                    if (parsed && typeof parsed === 'object') {
+                        const merged = JSON.parse(JSON.stringify(DEFAULT_SHIFTS));
+                        ['night', 'early', 'late'].forEach(function (shift) {
+                            if (parsed[shift] && typeof parsed[shift] === 'object') {
+                                merged[shift] = parsed[shift];
+                            }
+                        });
+                        return merged;
+                    }
+                    console.warn('Saved shift settings are not usable; using defaults:', parsed);
+                } catch (e) {
+                    console.warn('Failed to parse saved shift settings:', e);""",
+    ),
+]
+
+js_body = "\n".join(f"\n/* ---- block {i + 1} ---- */\n{s}" for i, s in enumerate(scripts))
+for _before, _after in JS_PATCHES:
+    assert js_body.count(_before) == 1, (
+        "the upstream Shift-Pulse.html changed around a hosting patch; "
+        "re-check it before regenerating:\n" + _before[:120]
+    )
+    js_body = js_body.replace(_before, _after)
+
 io.open(os.path.join(out_static, "shift_pulse.js"), "w", encoding="utf-8").write(
     "// Shift Pulse dashboard script, generated by perf/port_shift_pulse.py\n"
-    "// from the standalone Shift-Pulse.html, carried over unchanged. The\n"
-    "// Tampermonkey data provider writes into the element ids this file and\n"
-    "// the template define, and calls getWarehouseId()/getBucketConfig() on\n"
-    "// the page — that is a contract with the provider, so do not rename\n"
-    "// them. Regenerate rather than hand-editing.\n"
-    + "\n".join(f"\n/* ---- block {i + 1} ---- */\n{s}" for i, s in enumerate(scripts)) + "\n")
+    "// from the standalone Shift-Pulse.html. Carried over unchanged apart\n"
+    "// from the JS_PATCHES in that script, which make the two loaders of\n"
+    "// shared configuration validate what they read — the values are now\n"
+    "// shared site-wide, so one bad write would otherwise break the\n"
+    "// dashboard for everyone. The Tampermonkey data provider writes into\n"
+    "// the element ids this file and the template define, and calls\n"
+    "// getWarehouseId()/getBucketConfig() on the page — that is a contract\n"
+    "// with the provider, so do not rename them. Regenerate rather than\n"
+    "// hand-editing.\n"
+    + js_body + "\n")
 
 # A couple of inline style attributes in the markup carry the same solid
 # light tints the stylesheet did, and inline styles are beyond the reach

@@ -164,6 +164,7 @@ _TABLES_WITH_ID_PK = {
     "escalation_ticket_comments", "ir_roster", "ir_dashboard", "ir_umbrella", "ir_learn",
     "ir_role_config", "xt_standards", "ambassador_targets", "olr_weekly_metrics", "internal_xt_targets",
     "user_department_assignments", "ambassador_indirect_roles", "de_tech_role_mapping",
+    "training_requests", "training_request_nominees",
     "xt_exclusions", "ambassador_process_definitions", "ambassador_training_sessions",
 }
 _INSERT_TABLE_RE = re.compile(r"INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
@@ -2124,6 +2125,34 @@ def init_db():
             target INTEGER NOT NULL DEFAULT 0,
             UNIQUE(department, shift)
         );
+
+        CREATE TABLE IF NOT EXISTS training_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic TEXT NOT NULL,
+            metric_key TEXT,
+            shift TEXT,
+            department TEXT,
+            reason TEXT,
+            needed_by TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            requested_by TEXT,
+            requested_at TEXT,
+            decided_by TEXT,
+            decided_at TEXT,
+            decision_note TEXT,
+            slot_id INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_training_requests_status ON training_requests(status, requested_at);
+        CREATE INDEX IF NOT EXISTS idx_training_requests_by ON training_requests(requested_by);
+
+        CREATE TABLE IF NOT EXISTS training_request_nominees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            employee_login TEXT NOT NULL,
+            full_name TEXT,
+            UNIQUE(request_id, employee_login)
+        );
+        CREATE INDEX IF NOT EXISTS idx_training_request_nominees ON training_request_nominees(request_id);
 
         CREATE TABLE IF NOT EXISTS shift_pulse_settings (
             setting_key TEXT PRIMARY KEY,
@@ -7309,6 +7338,279 @@ def get_shift_pulse_settings_meta():
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# A training request is the other half of the planning loop. Everything
+# else in the app starts from a record that already exists — somebody is
+# overdue, so they get scheduled. This starts from a manager deciding
+# somebody should learn something new (PIT, Jambuster, a role they want
+# covered), where no overdue record exists to trigger it.
+TRAINING_REQUEST_STATUSES = ("open", "scheduled", "declined")
+
+
+def add_training_request(topic, nominees, requested_by, metric_key=None, shift=None,
+                         department=None, reason=None, needed_by=None):
+    """Raise a request for a training a manager wants, naming the people
+    it is for. Returns the new request id.
+
+    Nominees are stored by login with the name as it was at request
+    time, so a request still reads correctly later even if somebody
+    leaves the roster."""
+    topic = (topic or "").strip()
+    if not topic:
+        raise ValueError("A training request needs a topic")
+    if not nominees:
+        raise ValueError("A training request needs at least one nominee")
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO training_requests (topic, metric_key, shift, department, reason, "
+        "needed_by, status, requested_by, requested_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (topic, metric_key or None, shift or None, department or None,
+         (reason or "").strip() or None, needed_by or None, "open", requested_by, _now()),
+    )
+    request_id = cur.lastrowid
+    for nominee in nominees:
+        login = (nominee.get("employee_login") or "").strip()
+        if not login:
+            continue
+        cur.execute(
+            "INSERT INTO training_request_nominees (request_id, employee_login, full_name) "
+            "VALUES (?,?,?) ON CONFLICT (request_id, employee_login) DO NOTHING",
+            (request_id, login, (nominee.get("full_name") or login).strip()),
+        )
+    conn.commit()
+    conn.close()
+    return request_id
+
+
+def get_training_requests(status=None, requested_by=None):
+    """Requests with their nominees attached, newest first."""
+    conn = get_db()
+    q = "SELECT * FROM training_requests WHERE 1=1"
+    params = []
+    if status:
+        if isinstance(status, (list, tuple)):
+            if not status:
+                conn.close()
+                return []
+            q += f" AND status IN ({','.join('?' * len(status))})"
+            params.extend(status)
+        else:
+            q += " AND status = ?"
+            params.append(status)
+    if requested_by:
+        q += " AND lower(requested_by) = ?"
+        params.append(requested_by.lower())
+    rows = [dict(r) for r in conn.execute(q + " ORDER BY requested_at DESC", params).fetchall()]
+    if rows:
+        ids = [r["id"] for r in rows]
+        nominees = conn.execute(
+            f"SELECT * FROM training_request_nominees WHERE request_id IN "
+            f"({','.join('?' * len(ids))}) ORDER BY full_name", ids
+        ).fetchall()
+        by_request = {}
+        for n in nominees:
+            by_request.setdefault(n["request_id"], []).append(dict(n))
+        for row in rows:
+            row["nominees"] = by_request.get(row["id"], [])
+    conn.close()
+    return rows
+
+
+def decide_training_request(request_id, status, decided_by, note=None, slot_id=None):
+    """Mark a request scheduled or declined. A declined request keeps its
+    note: a manager who asked for training deserves to know why not,
+    and the request stays on the record rather than disappearing."""
+    if status not in TRAINING_REQUEST_STATUSES:
+        raise ValueError(f"{status!r} is not a training request status")
+    conn = get_db()
+    conn.execute(
+        "UPDATE training_requests SET status=?, decided_by=?, decided_at=?, "
+        "decision_note=?, slot_id=? WHERE id=?",
+        (status, decided_by, _now(), (note or "").strip() or None, slot_id, request_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_training_request_topics():
+    """Topics worth offering a manager, drawn from what the site already
+    trains on rather than a hardcoded menu: the training catalogue, the
+    requirements tracked_items carries, and the Indirect Roles config.
+    A manager can still type something new."""
+    conn = get_db()
+    topics = set()
+    for row in conn.execute("SELECT name FROM trainings WHERE active=1").fetchall():
+        if row["name"]:
+            topics.add(row["name"].strip())
+    for row in conn.execute(
+        "SELECT DISTINCT subcategory FROM tracked_items WHERE subcategory IS NOT NULL"
+    ).fetchall():
+        if row["subcategory"]:
+            topics.add(row["subcategory"].strip())
+    for row in conn.execute("SELECT DISTINCT role FROM ir_role_config").fetchall():
+        if row["role"]:
+            topics.add(row["role"].strip())
+    for row in conn.execute(
+        "SELECT DISTINCT indirect_role FROM ir_dashboard WHERE indirect_role IS NOT NULL"
+    ).fetchall():
+        if row["indirect_role"]:
+            topics.add(row["indirect_role"].strip())
+    conn.close()
+    return sorted(topics, key=str.lower)
+
+
+def get_associate_directory(am_logins=None, fc=None):
+    """Every associate in a manager's scope, with what the site actually
+    knows about each of them: their L&D compliance record by section,
+    the Indirect Roles they hold, the processes they are cross-trained
+    on, and whether they are an Ambassador.
+
+    Nothing here is a new source — it is the four existing ones joined on
+    the login, which is the only thing they share. An associate appears
+    if any of those sources has them, so somebody who is cross-trained
+    but carries no compliance record is still visible rather than
+    silently absent.
+
+    am_logins is the manager scope (a login, a list, or None for the
+    whole site); roles and processes come back as lists in the order the
+    site records them, not a fixed menu, because which roles exist is a
+    per-site fact.
+    """
+    if isinstance(am_logins, (list, tuple)) and not am_logins:
+        return []
+
+    def scope_clause(column, params):
+        if not am_logins:
+            return "", params
+        if isinstance(am_logins, (list, tuple)):
+            params.extend(am_logins)
+            return f" AND lower({column}) IN ({','.join('?' * len(am_logins))})", params
+        params.append(am_logins)
+        return f" AND lower({column}) = ?", params
+
+    lowered = ([a.lower() for a in am_logins] if isinstance(am_logins, (list, tuple))
+               else (am_logins.lower() if am_logins else None))
+
+    conn = get_db()
+    people = {}
+
+    def person(login, full_name=None):
+        key = (login or "").lower()
+        if not key:
+            return None
+        entry = people.setdefault(key, {
+            "employee_login": login, "full_name": full_name or login,
+            "sections": {}, "roles": [], "processes": [],
+            "is_ambassador": False, "ambassador_kinds": [],
+            "shift": None, "department": None, "manager": None,
+        })
+        if full_name and (not entry["full_name"] or entry["full_name"] == entry["employee_login"]):
+            entry["full_name"] = full_name
+        return entry
+
+    # 1. Compliance records — one row per person per requirement.
+    q = "SELECT employee_login, full_name, am_login, section, subcategory, status, due_date FROM tracked_items WHERE employee_login IS NOT NULL"
+    params = []
+    q2, params = scope_clause("am_login", params)
+    q += q2
+    if fc:
+        q += " AND fc = ?"
+        params.append(fc)
+    for r in conn.execute(q, params).fetchall():
+        entry = person(r["employee_login"], r["full_name"])
+        if entry is None:
+            continue
+        entry["manager"] = entry["manager"] or r["am_login"]
+        bucket = status_bucket(r["status"])
+        sec = entry["sections"].setdefault(r["section"], {"ok": 0, "risk": 0, "gap": 0, "items": []})
+        sec[bucket] += 1
+        if bucket != "ok":
+            sec["items"].append({"subcategory": r["subcategory"], "status": r["status"],
+                                 "due_date": r["due_date"], "bucket": bucket})
+
+    # 2. Cross-training processes and proficiency.
+    q = "SELECT employee_login, full_name, supervisor_login, merged_function, proficiency_status, shift, fclm_mapped FROM xt_hours WHERE employee_login IS NOT NULL"
+    params = []
+    q2, params = scope_clause("supervisor_login", params)
+    q += q2
+    if fc:
+        q += " AND fc = ?"
+        params.append(fc)
+    for r in conn.execute(q, params).fetchall():
+        entry = person(r["employee_login"], r["full_name"])
+        if entry is None:
+            continue
+        entry["manager"] = entry["manager"] or r["supervisor_login"]
+        entry["shift"] = entry["shift"] or r["shift"]
+        entry["department"] = entry["department"] or r["fclm_mapped"]
+        if r["merged_function"]:
+            entry["processes"].append({"process": r["merged_function"],
+                                       "proficiency": r["proficiency_status"]})
+
+    # 3. Indirect Roles held. ir_dashboard carries its own manager
+    #    column, so the same scope applies without going through a join.
+    q = "SELECT login, full_name, manager_login, indirect_role, indirect_role_status, shift FROM ir_dashboard WHERE login IS NOT NULL"
+    params = []
+    q2, params = scope_clause("manager_login", params)
+    q += q2
+    for r in conn.execute(q, params).fetchall():
+        # Only attach a role to somebody already in scope when the scope
+        # is a manager's: ir_dashboard's manager column is sparse, and
+        # inventing people from it would widen the team silently.
+        key = (r["login"] or "").lower()
+        if lowered is not None and key not in people and not r["manager_login"]:
+            continue
+        entry = person(r["login"], r["full_name"])
+        if entry is None:
+            continue
+        entry["shift"] = entry["shift"] or r["shift"]
+        if r["indirect_role"]:
+            entry["roles"].append({"role": r["indirect_role"],
+                                   "status": r["indirect_role_status"]})
+
+    # 4. Ambassadors — an instructor flag, not a role record.
+    for r in conn.execute(
+        "SELECT login, full_name, department, shift, is_process_ambassador, "
+        "is_indirect_roles_ambassador FROM ambassadors WHERE active=1"
+    ).fetchall():
+        key = (r["login"] or "").lower()
+        if key not in people:
+            continue
+        entry = people[key]
+        entry["is_ambassador"] = True
+        if r["is_process_ambassador"]:
+            entry["ambassador_kinds"].append("Process")
+        if r["is_indirect_roles_ambassador"]:
+            entry["ambassador_kinds"].append("Indirect Roles")
+        entry["department"] = entry["department"] or r["department"]
+    conn.close()
+
+    out = []
+    for entry in people.values():
+        totals = {"ok": 0, "risk": 0, "gap": 0}
+        for sec in entry["sections"].values():
+            for bucket in totals:
+                totals[bucket] += sec[bucket]
+        tracked = totals["ok"] + totals["risk"] + totals["gap"]
+        entry["totals"] = totals
+        entry["tracked_items"] = tracked
+        entry["compliance_pct"] = round(100 * totals["ok"] / tracked) if tracked else None
+        entry["open_items"] = [i for sec in entry["sections"].values() for i in sec["items"]]
+        entry["open_items"].sort(key=lambda i: (0 if i["bucket"] == "gap" else 1,
+                                                i["due_date"] or "9999"))
+        entry["roles"].sort(key=lambda r: r["role"].lower())
+        entry["processes"].sort(key=lambda p: p["process"].lower())
+        entry["ambassador_kinds"] = sorted(set(entry["ambassador_kinds"]))
+        entry["lapsed_processes"] = [p for p in entry["processes"]
+                                     if p["proficiency"] == "Lapsed"]
+        out.append(entry)
+
+    out.sort(key=lambda e: (e["compliance_pct"] if e["compliance_pct"] is not None else 101,
+                            (e["full_name"] or "").lower()))
+    return out
 
 
 def get_site_weekly_metric_series(weeks=8):

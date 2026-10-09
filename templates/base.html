@@ -13,8 +13,8 @@
   document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
 })();
 </script>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260904stc95merge') }}">
-{% if request.endpoint == 'shift_pulse' %}<link rel="stylesheet" href="{{ url_for('static', filename='shift_pulse.css', v='20261008a') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261009dash') }}">
+{% if request.endpoint == 'shift_pulse' or (request.endpoint == 'overview' and request.args.get('tab') == 'shiftpulse') %}<link rel="stylesheet" href="{{ url_for('static', filename='shift_pulse.css', v='20261008a') }}">
 {% endif %}
 </head>
 <body>

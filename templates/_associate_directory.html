@@ -1,0 +1,276 @@
+{% import "_dashboard.html" as dash %}
+{#- My Associates.
+
+    Everything else in the app starts from a record that is already
+    wrong — somebody is overdue, so they appear. This starts from the
+    person: who is on this team, what they are compliant on, which
+    Indirect Roles they hold, what they are cross-trained on. That is
+    also what makes a training request possible, because wanting to put
+    somebody new on PIT is not a compliance gap and nothing else in the
+    app would ever surface it. -#}
+
+{% set total = directory | length %}
+{#- Two different counts, because the cards show both: somebody overdue
+    is not compliant, somebody with a requirement coming due is at risk.
+    Collapsing them into one "with open items" number made the summary
+    disagree with the cards underneath it. -#}
+{% set not_compliant = directory | selectattr('totals.gap') | list | length %}
+{% set with_open = directory | selectattr('open_items') | list | length %}
+{% set at_risk_only = with_open - not_compliant %}
+{% set ambassadors = directory | selectattr('is_ambassador') | list | length %}
+
+<section class="dash-summary ad-summary">
+  <div class="dash-summary-story">
+    <h2>
+      {% if total %}{{ total }} associate{{ 's' if total != 1 }} in your team.
+      {% else %}No associates found for this scope.{% endif %}
+    </h2>
+    <p>
+      {% if total %}
+        {% if not_compliant %}{{ not_compliant }} {{ 'is' if not_compliant == 1 else 'are' }}
+        not compliant on something{% if at_risk_only > 0 %}, and {{ at_risk_only }} more
+        {{ 'has' if at_risk_only == 1 else 'have' }} a requirement coming due{% endif %}.
+        {% elif with_open %}{{ with_open }} {{ 'has' if with_open == 1 else 'have' }}
+        a requirement coming due, and nobody is overdue.
+        {% else %}Everybody is compliant on everything the site tracks.{% endif %}
+        {% if ambassadors %}{{ ambassadors }} {{ 'is an' if ambassadors == 1 else 'are' }}
+        Ambassador{{ '' if ambassadors == 1 else 's' }}.{% endif %}
+        Select anyone to nominate them for training they do not have yet.
+      {% else %}
+        Nobody is attributed to this scope in the compliance, cross-training or
+        Indirect Roles data. That is a data-loading question rather than a team of zero.
+      {% endif %}
+    </p>
+  </div>
+  <div class="dash-summary-stats">
+    <div class="dash-stat">
+      <span class="dash-stat-label">Associates</span>
+      {{ dash.figure(total, suffix='') }}
+      <span class="dash-stat-sub">In your scope</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Not compliant</span>
+      {{ dash.figure(not_compliant, suffix='') }}
+      <span class="dash-stat-sub">Overdue on something</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">With open items</span>
+      {{ dash.figure(with_open, suffix='') }}
+      <span class="dash-stat-sub">Overdue or coming due</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Ambassadors</span>
+      {{ dash.figure(ambassadors, suffix='') }}
+      <span class="dash-stat-sub">Can train others</span>
+    </div>
+  </div>
+</section>
+
+<form class="ad-controls" method="get" action="{{ url_for('overview') }}">
+  <input type="hidden" name="tab" value="directory">
+  {% if am_scope %}<input type="hidden" name="am" value="{{ am_scope if am_scope is string else '' }}">{% endif %}
+  {% if fc_scope %}<input type="hidden" name="fc" value="{{ fc_scope }}">{% endif %}
+  <label class="sr-only" for="adSearch">Search associates</label>
+  <input id="adSearch" type="search" name="q" value="{{ directory_q }}"
+         placeholder="Search name, login, role or process">
+  <label class="sr-only" for="adHolds">Filter</label>
+  <select id="adHolds" name="holds" onchange="this.form.submit()">
+    <option value="">Everyone</option>
+    <option value="gaps" {{ 'selected' if directory_filter == 'gaps' }}>Has open items</option>
+    <option value="ambassadors" {{ 'selected' if directory_filter == 'ambassadors' }}>Ambassadors</option>
+    {% if directory_roles %}
+    <optgroup label="Holds the role">
+      {% for role in directory_roles %}
+      <option value="{{ role }}" {{ 'selected' if directory_filter == role }}>{{ role }}</option>
+      {% endfor %}
+    </optgroup>
+    {% endif %}
+  </select>
+  <button class="btn btn-ghost" type="submit">Search</button>
+  {% if directory_q or directory_filter %}
+  <a class="btn btn-ghost" href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope) }}">Clear</a>
+  {% endif %}
+</form>
+
+{% if directory %}
+<form method="post" action="{{ url_for('training_request_create') }}" id="adRequestForm">
+  <input type="hidden" name="am" value="{{ am_scope if am_scope is string else '' }}">
+
+  <div class="ad-list">
+    {% for person in directory %}
+    {% set tone = dash.tone(person.compliance_pct, 95) %}
+    <article class="ad-card ad-card-{{ tone }}">
+      <label class="ad-pick">
+        <input type="checkbox" name="nominee" value="{{ person.employee_login }}"
+               aria-label="Nominate {{ person.full_name }} for training">
+      </label>
+
+      <div class="ad-identity">
+        <strong>{{ person.full_name }}</strong>
+        <span class="mono">{{ person.employee_login }}</span>
+        {% set bits = [] %}
+        {% if person.department %}{% set _ = bits.append(person.department) %}{% endif %}
+        {% if person.shift %}{% set _ = bits.append(db_shifts.get(person.shift, person.shift)) %}{% endif %}
+        {% if bits %}<span class="ad-meta">{{ bits | join(' · ') }}</span>{% endif %}
+      </div>
+
+      <div class="ad-compliance">
+        {% if person.compliance_pct is not none %}
+        <div class="ad-compliance-head">
+          <strong class="ad-pct">{{ person.compliance_pct }}%</strong>
+          <span>{{ person.totals.ok }} of {{ person.tracked_items }} compliant</span>
+        </div>
+        {{ dash.meter(person.compliance_pct, 95, person.full_name ~ ' compliance') }}
+        {% else %}
+        <span class="ad-nodata">No compliance records</span>
+        {% endif %}
+      </div>
+
+      <div class="ad-tags">
+        {% if person.is_ambassador %}
+        <span class="ad-tag ad-tag-amb" title="Ambassador — {{ person.ambassador_kinds|join(' and ') }}">
+          Ambassador{% if person.ambassador_kinds %} · {{ person.ambassador_kinds|join(', ') }}{% endif %}
+        </span>
+        {% endif %}
+        {% for r in person.roles %}
+        <span class="ad-tag ad-tag-role{{ ' ad-tag-role-weak' if r.status and 'no practice' in r.status|lower }}"
+              title="{{ r.role }}{% if r.status %} — {{ r.status }}{% endif %}">{{ r.role }}</span>
+        {% endfor %}
+        {% if person.lapsed_processes %}
+        <span class="ad-tag ad-tag-lapsed"
+              title="Lapsed on {{ person.lapsed_processes | map(attribute='process') | join(', ') }}">
+          {{ person.lapsed_processes | length }} process{{ 'es' if person.lapsed_processes|length != 1 }} lapsed
+        </span>
+        {% endif %}
+        {% if person.processes and not person.lapsed_processes %}
+        <span class="ad-tag" title="{{ person.processes | map(attribute='process') | join(', ') }}">
+          {{ person.processes | length }} cross-trained
+        </span>
+        {% endif %}
+        {% if not person.roles and not person.is_ambassador and not person.processes %}
+        <span class="ad-tag ad-tag-none">No roles recorded</span>
+        {% endif %}
+      </div>
+
+      {% if person.open_items %}
+      <details class="ad-open">
+        <summary>{{ person.open_items | length }} open item{{ 's' if person.open_items|length != 1 }}</summary>
+        <ul>
+          {% for item in person.open_items[:8] %}
+          <li>
+            <i class="dash-dot dash-dot-{{ 'serious' if item.bucket == 'gap' else 'watch' }}"></i>
+            <span>{{ item.subcategory or 'Unspecified' }}</span>
+            <em>{{ item.status }}{% if item.due_date %} · due {{ item.due_date }}{% endif %}</em>
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% else %}
+      <span class="ad-allclear">All compliant</span>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+
+  {#- The request bar is the point of the selection: it only appears
+      once somebody is picked, so the page is a directory until you
+      actually want something from it. -#}
+  <div class="ad-request-bar" id="adRequestBar" hidden>
+    <div class="ad-request-count"><strong id="adCount">0</strong> selected</div>
+    <label class="sr-only" for="adTopic">Training</label>
+    <input id="adTopic" name="topic" list="adTopics" required
+           placeholder="Training needed — e.g. Powered Industrial Truck">
+    <datalist id="adTopics">
+      {% for topic in request_topics or [] %}<option value="{{ topic }}"></option>{% endfor %}
+    </datalist>
+    <label class="sr-only" for="adNeededBy">Needed by</label>
+    <input id="adNeededBy" type="date" name="needed_by" title="Needed by (optional)">
+    <label class="sr-only" for="adReason">Why</label>
+    <input id="adReason" name="reason" placeholder="Why it's needed (optional)">
+    <button class="btn btn-gold" type="submit">Request training</button>
+  </div>
+</form>
+
+{% else %}
+<div class="dash-empty dash-empty-page">
+  {% if directory_q or directory_filter %}
+    Nobody matches that search.
+    <a href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope) }}">Show everyone</a>
+  {% else %}
+    No associates are attributed to this scope yet.
+  {% endif %}
+</div>
+{% endif %}
+
+{% if my_training_requests %}
+<h2 class="dash-section-label">Training you've requested</h2>
+<div class="dash-table-wrap ad-requests">
+  <table class="dash-table">
+    <thead>
+      <tr>
+        <th scope="col">Training</th>
+        <th scope="col">Who</th>
+        <th scope="col">Needed by</th>
+        <th scope="col">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for req in my_training_requests %}
+      <tr>
+        <th scope="row">
+          <strong>{{ req.topic }}</strong>
+          {% if req.reason %}<span>{{ req.reason }}</span>{% endif %}
+        </th>
+        <td>{{ req.nominees | map(attribute='full_name') | join(', ') }}</td>
+        <td class="mono">{{ req.needed_by or '—' }}</td>
+        <td>
+          <span class="dash-status-pill dash-status-{{ 'good' if req.status == 'scheduled' else ('serious' if req.status == 'declined' else 'none') }}">
+            {{ 'Scheduled' if req.status == 'scheduled' else ('Declined' if req.status == 'declined' else 'With L&D') }}
+          </span>
+          {% if req.decision_note %}<span class="ad-note">{{ req.decision_note }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<script>
+/* The request bar stays out of the way until a selection exists — a
+   directory you are browsing should not be wearing a form. */
+(function () {
+  var form = document.getElementById('adRequestForm');
+  if (!form) return;
+  var bar = document.getElementById('adRequestBar');
+  var count = document.getElementById('adCount');
+  var topic = document.getElementById('adTopic');
+
+  function sync() {
+    var picked = form.querySelectorAll('input[name="nominee"]:checked').length;
+    count.textContent = picked;
+    bar.hidden = picked === 0;
+    form.querySelectorAll('.ad-card').forEach(function (card) {
+      var box = card.querySelector('input[name="nominee"]');
+      card.classList.toggle('is-picked', !!(box && box.checked));
+    });
+  }
+
+  form.addEventListener('change', function (e) {
+    if (e.target.name === 'nominee') sync();
+  });
+  /* Clicking anywhere on a card picks it, except on the controls inside
+     it — the disclosure and its links still do their own job. */
+  form.addEventListener('click', function (e) {
+    var card = e.target.closest('.ad-card');
+    if (!card) return;
+    if (e.target.closest('summary, details, a, button, input, label')) return;
+    var box = card.querySelector('input[name="nominee"]');
+    if (box) { box.checked = !box.checked; sync(); }
+  });
+  form.addEventListener('submit', function (e) {
+    if (!topic.value.trim()) { e.preventDefault(); topic.focus(); }
+  });
+  sync();
+})();
+</script>

@@ -1462,6 +1462,36 @@ def overview():
 
     tab = request.args.get("tab", "myscorecard")
 
+    # "My Associates" and the request form both work from the same list:
+    # everyone this manager is responsible for, with what the site knows
+    # about each. Built only for the tabs that show it — it joins four
+    # tables and the scorecard tabs have no use for it.
+    directory = None
+    directory_roles = None
+    directory_q = (request.args.get("q") or "").strip()
+    directory_filter = request.args.get("holds") or ""
+    if tab in ("directory", "requests"):
+        directory = db.get_associate_directory(am_logins=query_am_scope, fc=fc_scope)
+        directory_roles = sorted(
+            {r["role"] for person in directory for r in person["roles"]},
+            key=str.lower)
+        if directory_q:
+            needle = directory_q.lower()
+            directory = [
+                person for person in directory
+                if needle in (person["full_name"] or "").lower()
+                or needle in (person["employee_login"] or "").lower()
+                or any(needle in r["role"].lower() for r in person["roles"])
+                or any(needle in p["process"].lower() for p in person["processes"])
+            ]
+        if directory_filter == "gaps":
+            directory = [p for p in directory if p["totals"]["gap"] or p["totals"]["risk"]]
+        elif directory_filter == "ambassadors":
+            directory = [p for p in directory if p["is_ambassador"]]
+        elif directory_filter:
+            directory = [p for p in directory
+                         if any(r["role"] == directory_filter for r in p["roles"])]
+
     # Compliance gaps + this week's training plan, for the drag-to-plan panel.
     current_week = db.week_start_for()
     week_dates = db.week_dates(current_week)
@@ -1532,6 +1562,19 @@ def overview():
         shifts=db.SHIFTS,
         shift_slots=shift_slots,
         scorecard_categories=scorecard_categories,
+        directory=directory,
+        db_shifts=db.SHIFTS,
+        directory_roles=directory_roles,
+        directory_q=directory_q,
+        directory_filter=directory_filter,
+        request_topics=db.get_training_request_topics() if tab in ("directory", "requests") else None,
+        my_training_requests=(db.get_training_requests(requested_by=base_login)
+                              if tab in ("directory", "requests") and base_login else None),
+        shift_pulse_site=db.get_current_site(),
+        shared_settings_json=json.dumps(_shift_pulse_settings_with_default()) if tab == "shiftpulse" else "{}",
+        shared_keys_json=json.dumps(list(db.SHIFT_PULSE_SHARED_KEYS)),
+        can_edit_settings=_can_edit_shift_pulse_settings(login_id, role),
+        site_code=db.get_current_site(),
         overall_score=overall_score,
     )
 
@@ -3062,7 +3105,7 @@ def scorecards():
     tab = request.args.get("tab", "reporting")
     if tab == "som_om" and not can_see_som_om:
         tab = "reporting"
-    if tab in ("ambassador_attendance", "ambassador_hours", "escalations") and not can_admin:
+    if tab in ("ambassador_attendance", "ambassador_hours", "escalations", "requests") and not can_admin:
         tab = "reporting"
     if tab == "manager_rankings" and not can_see_som_om:
         tab = "reporting"
@@ -3107,6 +3150,7 @@ def scorecards():
         ld_overall=ld_overall,
         leadership=leadership,
         site=get_site_ld_dashboard() if tab == "reporting" else None,
+        training_requests=db.get_training_requests() if tab == "requests" else None,
         org=get_org_ld_dashboard(login_id, role) if tab == "som_om" else None,
         today=date.today(),
         tab=tab,
@@ -3495,6 +3539,99 @@ def _can_edit_shift_pulse_settings(login_id, role):
     return login_id in BOOTSTRAP_ADMIN_LOGINS or role in SHIFT_PULSE_SETTINGS_ROLES
 
 
+# ------------------------------------------------- training requests ----
+
+@application.route("/training-requests", methods=["POST"])
+def training_request_create():
+    """An Area Manager asking for training that no overdue record would
+    ever trigger — somebody new on PIT, a Jambuster for the shift. The
+    nominees are checked against the manager's own scope, so a request
+    cannot name people who are not theirs."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    role = _effective_role()
+    if role is None:
+        return _deny("Request a role before raising training requests.")
+
+    topic = (request.form.get("topic") or "").strip()
+    nominated = request.form.getlist("nominee")
+    if not topic:
+        flash("Pick or type the training you need.", "warning")
+        return redirect(request.referrer or url_for("overview", tab="directory"))
+    if not nominated:
+        flash("Select at least one associate to nominate.", "warning")
+        return redirect(request.referrer or url_for("overview", tab="directory"))
+
+    scope = _resolve_am_scope(login_id) if role in OPS_SELF_ROLES else _resolve_am_scope(
+        request.form.get("am") or login_id)
+    in_scope = {p["employee_login"].lower(): p
+                for p in db.get_associate_directory(am_logins=scope)}
+    nominees, rejected = [], []
+    for login in nominated:
+        person = in_scope.get((login or "").strip().lower())
+        if person:
+            nominees.append({"employee_login": person["employee_login"],
+                             "full_name": person["full_name"]})
+        else:
+            rejected.append(login)
+    if not nominees:
+        flash("None of those associates are in your team — nothing was requested.", "warning")
+        return redirect(request.referrer or url_for("overview", tab="directory"))
+
+    db.add_training_request(
+        topic=topic,
+        nominees=nominees,
+        requested_by=login_id,
+        metric_key=request.form.get("metric_key") or None,
+        shift=request.form.get("shift") or None,
+        department=request.form.get("department") or None,
+        reason=request.form.get("reason"),
+        needed_by=request.form.get("needed_by") or None,
+    )
+    if rejected:
+        flash(f"Requested {topic} for {len(nominees)} associate"
+              f"{'' if len(nominees) == 1 else 's'} — {len(rejected)} were not in your team "
+              f"and were left off.", "warning")
+    else:
+        flash(f"Requested {topic} for {len(nominees)} associate"
+              f"{'' if len(nominees) == 1 else 's'}. L&D will pick it up from the review queue.",
+              "success")
+    return redirect(request.referrer or url_for("overview", tab="directory"))
+
+
+@application.route("/training-requests/<int:request_id>/decide", methods=["POST"])
+def training_request_decide(request_id):
+    """L&D scheduling or declining a request. Declining keeps the note —
+    a manager who asked deserves to know why not, and the request stays
+    on the record rather than quietly vanishing."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if _effective_role() not in ADMIN_TIER_ROLES and login_id not in BOOTSTRAP_ADMIN_LOGINS:
+        return _deny("Only L&D can schedule or decline a training request.")
+    status = request.form.get("status")
+    if status not in ("scheduled", "declined", "open"):
+        flash("Unknown decision.", "warning")
+        return redirect(request.referrer or url_for("scorecards", tab="requests"))
+    db.decide_training_request(request_id, status, login_id,
+                               note=request.form.get("note"))
+    flash({"scheduled": "Marked as scheduled.",
+           "declined": "Declined, and the reason is on the request.",
+           "open": "Reopened."}[status], "success")
+    return redirect(request.referrer or url_for("scorecards", tab="requests"))
+
+
+def _shift_pulse_settings_with_default():
+    """This site's shared Shift Pulse settings, with the FC defaulting to
+    the site you are already looking at rather than the LEJ5 the
+    standalone file shipped with. Shared by the page and the AM Overview
+    tab so they cannot open on different warehouses."""
+    settings = db.get_shift_pulse_settings()
+    settings.setdefault("warehouseId", db.get_current_site())
+    return settings
+
+
 @application.route("/shift-pulse")
 def shift_pulse():
     login_id = _require_login()
@@ -3502,10 +3639,7 @@ def shift_pulse():
         return redirect(url_for("login"))
     role = _effective_role()
     site_code = db.get_current_site()
-    settings = db.get_shift_pulse_settings()
-    # The FC the dashboard opens on defaults to the site you are already
-    # looking at, rather than the LEJ5 the standalone file shipped with.
-    settings.setdefault("warehouseId", site_code)
+    settings = _shift_pulse_settings_with_default()
     return render_template(
         "shift_pulse.html",
         **_login_context(),
@@ -3545,7 +3679,13 @@ def shift_pulse_userscript():
     with open(path, encoding="utf-8") as handle:
         script = handle.read()
     base = request.url_root.rstrip("/")
-    script = script.replace("__LDIS_MATCH__", base + "/shift-pulse*")
+    # Two places show the dashboard — the standalone page and the AM
+    # Overview tab — so the provider has to recognise both. Tampermonkey
+    # takes one @match per line; the placeholder expands to both.
+    script = script.replace(
+        "// @match        __LDIS_MATCH__",
+        f"// @match        {base}/shift-pulse*\n"
+        f"// @match        {base}/overview?*tab=shiftpulse*")
     script = script.replace("__LDIS_UPDATE__", base + url_for("shift_pulse_userscript"))
     return Response(script, mimetype="text/javascript; charset=utf-8")
 
