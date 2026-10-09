@@ -4,6 +4,8 @@ import re
 import uuid
 import csv
 import io
+import hashlib
+from urllib.parse import urlsplit
 from datetime import date, datetime, timedelta
 
 from flask import (
@@ -204,6 +206,431 @@ OLR_METRIC_COLORS = {
 }
 
 
+# --------------------------------------------------------------- OLR ----
+#
+# The OLR tab used to be six charts and nothing else. An Operational
+# Leadership Review is a paper a manager writes about their own
+# performance, so charts alone leave them doing the actual work —
+# reading numbers off lines, working out what moved, and phrasing it.
+# What follows turns the same weekly snapshots into the things that
+# paper needs: a figure with its movement, the metrics ranked by how
+# much they need saying, the observations worth making, and a draft they
+# can edit rather than start from nothing.
+
+OLR_INSIGHT_LIMIT = 7
+
+
+def _olr_series_for(series, weeks_sorted, key):
+    """One metric's weekly points, weeks with no value dropped — an
+    absent snapshot is not a zero."""
+    return [(wk, series[wk][key]) for wk in weeks_sorted
+            if series[wk].get(key) is not None]
+
+
+def _olr_baseline(points, days_back):
+    """The value roughly days_back before the latest point: the newest
+    snapshot at or before that date, or the oldest one there is. Returns
+    (value, week) or (None, None)."""
+    if not points:
+        return None, None
+    try:
+        cutoff = (date.fromisoformat(points[-1][0]) - timedelta(days=days_back)).isoformat()
+    except ValueError:
+        return None, None
+    older = [p for p in points if p[0] <= cutoff]
+    chosen = older[-1] if older else points[0]
+    return chosen[1], chosen[0]
+
+
+def _olr_week_label(week_start):
+    """A week as a manager says it — 'wk 41' — with the date kept for
+    the title attribute, since an OLR paper cites weeks, not dates."""
+    try:
+        return f"wk {date.fromisoformat(week_start).isocalendar()[1]}"
+    except ValueError:
+        return week_start
+
+
+def _olr_round(value):
+    """One decimal, and none at all when the figure is whole — a review
+    reads "100%", not "100.0%", and "up 7 points", not "up 7.0 points"."""
+    if value is None:
+        return None
+    rounded = round(float(value), 1)
+    return int(rounded) if rounded == int(rounded) else rounded
+
+
+def _olr_ordinal(n):
+    if n is None:
+        return None
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
+def _olr_metric_row(key, label, series, weeks_sorted, target):
+    """Everything the review needs about one metric: where it is, how it
+    moved over the window and over four weeks, its best and worst weeks,
+    how long it has been under target, and where it ranks."""
+    points = _olr_series_for(series, weeks_sorted, key)
+    if not points:
+        return None
+    now = float(points[-1][1])
+    first_value, first_week = points[0][1], points[0][0]
+    four_value, four_week = _olr_baseline(points, 28)
+    values = [float(v) for _w, v in points]
+    best = max(values)
+    worst = min(values)
+    best_week = points[values.index(best)][0]
+    worst_week = points[values.index(worst)][0]
+
+    below = [p for p in points if float(p[1]) < target]
+    streak = 0
+    for _w, v in reversed(points):
+        if float(v) < target:
+            streak += 1
+        else:
+            break
+
+    rank_points = _olr_series_for(series, weeks_sorted, f"{key}_rank")
+    rank_now = int(rank_points[-1][1]) if rank_points else None
+    rank_then = int(rank_points[0][1]) if len(rank_points) > 1 else None
+
+    return {
+        "key": key,
+        "label": label,
+        "now": _olr_round(now),
+        "first": _olr_round(first_value),
+        "first_week": first_week,
+        "delta_window": _olr_round(now - float(first_value)) if first_value is not None else None,
+        "delta_4w": _olr_round(now - float(four_value)) if four_value is not None else None,
+        "four_week": four_week,
+        "best": _olr_round(best), "best_week": best_week,
+        "worst": _olr_round(worst), "worst_week": worst_week,
+        "weeks_below": len(below),
+        "weeks_total": len(points),
+        "streak_below": streak,
+        "shortfall": _olr_round(target - now) if now < target else None,
+        "rank_now": rank_now,
+        # Rank is a placing, so improving means the number falls. This is
+        # expressed as places gained, because that is how it gets written
+        # down: "up two places", never "minus two rank".
+        "rank_delta": (rank_then - rank_now) if (rank_now is not None and rank_then is not None) else None,
+        "at_target": now >= target,
+        "points": points,
+    }
+
+
+def _olr_support_figures(series, weeks_sorted):
+    """The non-percentage figures a review leans on: how late Safety's
+    overdue items are running, the two gap counts, and how many people
+    have let a cross-trained process lapse."""
+    out = {}
+    for name, key, lower_is_better in (
+        ("safety_days", "safety_avg_overdue_days", True),
+        ("ir_gap", "ir_gap", True),
+        ("ambassador_gap", "ambassador_gap", True),
+        ("xt_lapsed", "xt_lapsed", True),
+        ("xt_proficient", "xt_proficient", False),
+    ):
+        points = _olr_series_for(series, weeks_sorted, key)
+        if not points:
+            out[name] = None
+            continue
+        now = float(points[-1][1])
+        then, then_week = _olr_baseline(points, 28)
+        out[name] = {
+            "now": _olr_round(now),
+            "then": _olr_round(then),
+            "then_week": then_week,
+            "then_week_label": _olr_week_label(then_week) if then_week else None,
+            "change": _olr_round(now - float(then)) if then is not None else None,
+            "lower_is_better": lower_is_better,
+            "points": points,
+        }
+    return out
+
+
+def _olr_insights(total, rows, support, target, top_topics, open_requests):
+    """The observations worth putting in the paper, strongest first.
+
+    Each carries a weight only so they can be ordered; what reaches the
+    page is the sentence and the evidence behind it. Nothing is invented
+    — every number here is read straight off the weekly snapshots, which
+    is the whole point: a manager should be able to defend each line in
+    the review from the data the console already holds."""
+    out = []
+
+    def add(tone, weight, headline, detail):
+        out.append({"tone": tone, "weight": weight, "headline": headline, "detail": detail})
+
+    if total and total["delta_window"] is not None and abs(total["delta_window"]) >= 1:
+        up = total["delta_window"] > 0
+        add("win" if up else "risk", 90 + abs(total["delta_window"]),
+            f"Total L&D Score {'up' if up else 'down'} "
+            f"{abs(total['delta_window'])} points since {_olr_week_label(total['first_week'])}",
+            f"{total['first']}% then, {total['now']}% now, across "
+            f"{total['weeks_total']} weekly snapshots.")
+
+    if total and total.get("rank_delta"):
+        gained = total["rank_delta"]
+        add("win" if gained > 0 else "risk", 80 + abs(gained),
+            f"{'Up' if gained > 0 else 'Down'} {abs(gained)} "
+            f"place{'' if abs(gained) == 1 else 's'} overall, now "
+            f"{_olr_ordinal(total['rank_now'])}",
+            "Rank across every Area, Operations and Senior Operations Manager on site.")
+
+    # One card per metric. A metric that is below target AND fell to get
+    # there is one story, and splitting it made the list read as two
+    # separate problems with the same name.
+    spoken_for = set()
+    below = sorted([r for r in rows if r["shortfall"]], key=lambda r: -r["shortfall"])
+    for row in below[:3]:
+        spoken_for.add(row["key"])
+        detail = f"{row['now']}% against a {target}% target."
+        if row["delta_window"] is not None and abs(row["delta_window"]) >= 3:
+            detail += (f" {'Down' if row['delta_window'] < 0 else 'Up'} "
+                       f"{abs(row['delta_window'])} points from {row['first']}% in "
+                       f"{_olr_week_label(row['first_week'])}.")
+        if row["streak_below"] > 1:
+            detail += f" Under target {row['streak_below']} weeks running"
+            if row["weeks_below"] > row["streak_below"]:
+                detail += f", and {row['weeks_below']} of the last {row['weeks_total']}"
+            detail += "."
+        elif row["weeks_below"] > 1:
+            detail += (f" Below target in {row['weeks_below']} of the last "
+                       f"{row['weeks_total']} weeks.")
+        add("risk", 70 + row["shortfall"],
+            f"{row['label']} is {row['shortfall']} points short of target", detail)
+
+    movers = [r for r in rows if r["delta_window"] is not None and r["key"] not in spoken_for]
+    gains = sorted([r for r in movers if r["delta_window"] >= 3], key=lambda r: -r["delta_window"])
+    drops = sorted([r for r in movers if r["delta_window"] <= -3], key=lambda r: r["delta_window"])
+    for row in gains[:2]:
+        add("win", 55 + row["delta_window"],
+            f"{row['label']} up {row['delta_window']} points",
+            f"{row['first']}% in {_olr_week_label(row['first_week'])} to {row['now']}% now"
+            + (", and at target." if row["at_target"] else "."))
+    for row in drops[:2]:
+        add("risk", 60 + abs(row["delta_window"]),
+            f"{row['label']} down {abs(row['delta_window'])} points",
+            f"{row['first']}% in {_olr_week_label(row['first_week'])} to {row['now']}% now"
+            + (", still at target." if row["at_target"] else ", now under target."))
+
+    held = [r for r in rows if r["at_target"] and r["weeks_below"] == 0 and r["weeks_total"] >= 3]
+    if len(held) >= 1:
+        names = ", ".join(r["label"] for r in held[:3])
+        add("win", 40,
+            f"{len(held)} metric{'s' if len(held) != 1 else ''} held target every week",
+            f"{names}{' and others' if len(held) > 3 else ''} — "
+            f"no week below {target}% in the window.")
+
+    days = support.get("safety_days")
+    if days and days["change"] is not None and abs(days["change"]) >= 1:
+        better = days["change"] < 0
+        add("win" if better else "risk", 50 + abs(days["change"]),
+            f"Safety items are running {abs(days['change'])} days "
+            f"{'less' if better else 'more'} overdue",
+            f"Average {days['then']} days overdue in {_olr_week_label(days['then_week'])}, "
+            f"{days['now']} now.")
+    if top_topics:
+        worst = top_topics[0]
+        add("watch", 45,
+            f"{worst['topic']} is the biggest Safety backlog",
+            f"{worst['count']} overdue right now"
+            + (f", ahead of {top_topics[1]['topic']} at {top_topics[1]['count']}."
+               if len(top_topics) > 1 else "."))
+
+    lapsed = support.get("xt_lapsed")
+    if lapsed and lapsed["change"] is not None and lapsed["change"] >= 1:
+        add("risk", 48 + lapsed["change"],
+            f"{int(lapsed['change'])} more people have let a process lapse",
+            f"{int(lapsed['then'])} lapsed in {_olr_week_label(lapsed['then_week'])}, "
+            f"{int(lapsed['now'])} now.")
+    elif lapsed and lapsed["change"] is not None and lapsed["change"] <= -1:
+        add("win", 44,
+            f"{int(abs(lapsed['change']))} fewer lapsed cross-trained processes",
+            f"{int(lapsed['then'])} in {_olr_week_label(lapsed['then_week'])}, "
+            f"{int(lapsed['now'])} now.")
+
+    for name, label in (("ir_gap", "Indirect Roles"), ("ambassador_gap", "Ambassador")):
+        fig = support.get(name)
+        if fig and fig["change"] is not None and abs(fig["change"]) >= 1:
+            better = fig["change"] < 0
+            add("win" if better else "risk", 42 + abs(fig["change"]),
+                f"{label} gap {'closed by' if better else 'widened by'} "
+                f"{int(abs(fig['change']))}",
+                f"{int(fig['then'])} in {_olr_week_label(fig['then_week'])}, "
+                f"{int(fig['now'])} now.")
+
+    if open_requests:
+        add("watch", 35,
+            f"{open_requests} training request{'s' if open_requests != 1 else ''} "
+            f"still with L&D",
+            "Raised from My Associates and not yet scheduled or declined.")
+
+    out.sort(key=lambda i: -i["weight"])
+    return out[:OLR_INSIGHT_LIMIT]
+
+
+def _olr_draft(display_name, total, rows, support, insights, target, top_topics):
+    """A first draft of the review, in the order these papers are
+    written: where I am, what improved, what did not, and what I am
+    doing about it.
+
+    The last part is left as a prompt rather than written. The console
+    knows what moved; it does not know what a manager intends to do, and
+    inventing that would put words in their paper they never chose."""
+    if not total:
+        return ""
+    paras = []
+
+    opening = (f"Total L&D Score is {total['now']}% across "
+               f"{total['weeks_total']} week"
+               f"{'s' if total['weeks_total'] != 1 else ''} of data")
+    if total["rank_now"]:
+        opening += f", ranking {_olr_ordinal(total['rank_now'])}"
+        if total.get("field_size"):
+            opening += f" of {total['field_size']} managers on site"
+        else:
+            opening += " on site"
+        if total.get("rank_delta"):
+            gained = total["rank_delta"]
+            opening += (f" ({'up' if gained > 0 else 'down'} {abs(gained)} "
+                        f"place{'' if abs(gained) == 1 else 's'})")
+    if total["delta_window"] is not None:
+        direction = ("up" if total["delta_window"] > 0 else
+                     "down" if total["delta_window"] < 0 else "level")
+        if direction == "level":
+            opening += f". That is level with {_olr_week_label(total['first_week'])}."
+        else:
+            opening += (f". That is {direction} {abs(total['delta_window'])} points "
+                        f"from {total['first']}% in {_olr_week_label(total['first_week'])}.")
+    else:
+        opening += "."
+    paras.append(opening)
+
+    at_target = [r for r in rows if r["at_target"]]
+    short = sorted([r for r in rows if r["shortfall"]], key=lambda r: -r["shortfall"])
+    if short:
+        lead = short[0]
+        sentence = (f"{len(short)} of {len(rows)} metrics are below the {target}% target. "
+                    f"{lead['label']} is furthest off at {lead['now']}%, "
+                    f"{lead['shortfall']} points short")
+        if lead["streak_below"] > 1:
+            sentence += f", and has been under target {lead['streak_below']} weeks running"
+        sentence += "."
+        if len(short) > 1:
+            others = ", ".join(f"{r['label']} at {r['now']}%" for r in short[1:4])
+            sentence += f" Also below: {others}."
+        paras.append(sentence)
+    else:
+        paras.append(f"All {len(rows)} metrics are at or above the {target}% target.")
+
+    gains = sorted([r for r in rows if (r["delta_window"] or 0) >= 3],
+                   key=lambda r: -r["delta_window"])
+    if gains:
+        moved = "; ".join(f"{r['label']} up {r['delta_window']} points to {r['now']}%"
+                          for r in gains[:3])
+        paras.append(f"What improved over the period: {moved}.")
+    drops = sorted([r for r in rows if (r["delta_window"] or 0) <= -3],
+                   key=lambda r: r["delta_window"])
+    if drops:
+        moved = "; ".join(f"{r['label']} down {abs(r['delta_window'])} points to {r['now']}%"
+                          for r in drops[:3])
+        paras.append(f"What went the wrong way: {moved}.")
+    if at_target and not gains and not drops:
+        paras.append("No metric moved by more than 3 points over the period.")
+
+    detail = []
+    days = support.get("safety_days")
+    if days and days["now"] is not None:
+        line = f"Safety items are averaging {days['now']} days overdue"
+        if days["change"] is not None and abs(days["change"]) >= 1:
+            line += (f", {abs(days['change'])} days "
+                     f"{'better' if days['change'] < 0 else 'worse'} than four weeks ago")
+        detail.append(line)
+    if top_topics:
+        detail.append("the largest backlogs are "
+                      + ", ".join(f"{t['topic']} ({t['count']})" for t in top_topics[:3]))
+    lapsed = support.get("xt_lapsed")
+    if lapsed and lapsed["now"] is not None:
+        detail.append(f"{int(lapsed['now'])} cross-trained processes have lapsed")
+    if detail:
+        paras.append("Underneath the scores: " + "; ".join(detail) + ".")
+
+    paras.append("Actions — what I am doing about the above, by when, and "
+                 "what I need from L&D: [write this part yourself].")
+    return "\n\n".join(paras)
+
+
+def _olr_review_pack(login, series, weeks_sorted, top_topics, field_size=None):
+    """The review itself: the headline figure, every metric ranked by
+    how much it needs saying, the observations behind them, and a draft
+    paragraph set. Returns None when there is no history to review."""
+    if not weeks_sorted:
+        return None
+    target = SAFETY_COMPLIANCE_TARGET
+
+    rows = []
+    for key, label, _sections in LD_METRICS:
+        row = _olr_metric_row(key, label, series, weeks_sorted, target)
+        if row:
+            row["color"] = OLR_METRIC_COLORS.get(label, "#2997ff")
+            rows.append(row)
+    if not rows:
+        return None
+
+    composite_points = [(wk, db._olr_composite(series[wk])) for wk in weeks_sorted]
+    composite_points = [(wk, v) for wk, v in composite_points if v is not None]
+    total = None
+    if composite_points:
+        now = composite_points[-1][1]
+        first_value, first_week = composite_points[0][1], composite_points[0][0]
+        four_value, _fw = _olr_baseline(composite_points, 28)
+        rank_points = _olr_series_for(series, weeks_sorted, "total_rank")
+        total = {
+            "now": _olr_round(now),
+            "first": _olr_round(first_value), "first_week": first_week,
+            "delta_window": _olr_round(now - first_value),
+            "delta_4w": _olr_round(now - four_value) if four_value is not None else None,
+            "weeks_total": len(composite_points),
+            "rank_now": int(rank_points[-1][1]) if rank_points else None,
+            "rank_ordinal": _olr_ordinal(int(rank_points[-1][1])) if rank_points else None,
+            "rank_delta": (int(rank_points[0][1]) - int(rank_points[-1][1]))
+                          if len(rank_points) > 1 else None,
+            "at_target": now >= target,
+            "shortfall": _olr_round(target - now) if now < target else None,
+            "points": composite_points,
+            "field_size": field_size,
+        }
+
+    support = _olr_support_figures(series, weeks_sorted)
+    try:
+        open_requests = len([r for r in db.get_training_requests(requested_by=login)
+                             if r["status"] == "open"])
+    except Exception:
+        open_requests = 0
+    insights = _olr_insights(total, rows, support, target, top_topics, open_requests)
+
+    # Worst first: a review is written about what needs explaining, so
+    # the metric furthest below target leads and the ones holding target
+    # come last.
+    rows.sort(key=lambda r: (r["shortfall"] is None, -(r["shortfall"] or 0), r["now"]))
+
+    return {
+        "target": target,
+        "total": total,
+        "rows": rows,
+        "support": support,
+        "insights": insights,
+        "draft": _olr_draft(login, total, rows, support, insights, target, top_topics),
+        "first_week_label": _olr_week_label(weeks_sorted[0]),
+        "last_week_label": _olr_week_label(weeks_sorted[-1]),
+        "open_requests": open_requests,
+    }
+
+
 def _build_olr_tab_data(login):
     """Everything the OLR tab shows for one person: the weekly score
     trend across all 7 metrics + the total composite, each metric's
@@ -258,6 +685,7 @@ def _build_olr_tab_data(login):
     xt_colors = {"Proficient": "#248a3d", "Practice": "#0b5cd7", "Refresh": "#a85b00", "Lapsed": "#d70015"}
     xt_chart, _weeks = _svg_line_chart(xt_series, xt_colors, y_min=0, y_max=max(max_xt, 1), y_suffix="", height=160)
 
+    safety_detail = _safety_overdue_detail_for_login(login)
     return {
         "score_chart": score_chart, "score_weeks": score_weeks, "score_colors": OLR_METRIC_COLORS,
         "rank_chart": rank_chart, "rank_weeks": rank_weeks,
@@ -265,9 +693,14 @@ def _build_olr_tab_data(login):
         "ir_gap_chart": ir_gap_chart,
         "ambassador_gap_chart": ambassador_gap_chart,
         "xt_chart": xt_chart, "xt_colors": xt_colors,
-        "safety_overdue_detail": _safety_overdue_detail_for_login(login),
+        "safety_overdue_detail": safety_detail,
         "has_history": bool(weeks_sorted),
         "week_count": len(weeks_sorted),
+        # The charts above are the evidence; this is the review written
+        # off them, which is what the manager actually has to produce.
+        "review": _olr_review_pack(login, series, weeks_sorted,
+                                   safety_detail.get("top_topics") or [],
+                                   field_size=manager_count),
     }
 
 
@@ -3667,26 +4100,56 @@ def shift_pulse_save_setting():
     return jsonify({"ok": True})
 
 
+def _userscript_match_lines():
+    """The @match lines for the provider, for wherever this console is
+    actually being served from.
+
+    Two rules decide the shape of these, and getting either wrong means a
+    provider that stops running:
+
+    A match pattern is scheme://host/path, and the path part may only use
+    `*` as a wildcard — a query string in it is not part of the grammar.
+    An earlier build matched the AM Overview tab with
+    `/overview?*tab=shiftpulse*`; a pattern the extension cannot register
+    is one the script is not injected by, which is why the provider kept
+    needing a reinstall. `/overview*` covers the tab and is valid. The
+    provider is harmless on the other Overview tabs: its init() only
+    attaches to elements that exist on the Shift Pulse one.
+
+    And the scheme is matched literally. This console sits behind a load
+    balancer that terminates TLS, so request.url_root can say http while
+    the manager's address bar says https — a pattern built from that
+    alone would never match. Both schemes are emitted for the host.
+    """
+    host = urlsplit(request.url_root).netloc
+    paths = ("/shift-pulse*", "/overview*")
+    return [f"// @match        {scheme}://{host}{path}"
+            for path in paths for scheme in ("https", "http")]
+
+
 @application.route("/shift-pulse/provider.user.js")
 def shift_pulse_userscript():
     """The standard Shift Pulse data provider, served with its @match
-    pointed at this console instead of a local file, and its version
-    suffixed so Tampermonkey offers the update. Nothing else is changed:
-    it is the same script the policy page ships, and the FCLM calls it
-    makes still run as the manager, under their own Midway session."""
+    pointed at this console instead of a local file. Nothing else is
+    changed: it is the same script the policy page ships, and the FCLM
+    calls it makes still run as the manager, under their own Midway
+    session.
+
+    The version carries a short digest of exactly what is being served,
+    so the build a manager has installed can be read off Tampermonkey's
+    own list and compared with this console's. It is deterministic: the
+    same file served to the same host always produces the same digest,
+    so the extension is not handed a new version on every check."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "static", "shift_pulse_provider.user.js")
     with open(path, encoding="utf-8") as handle:
         script = handle.read()
+    match_block = "\n".join(_userscript_match_lines())
+    script = script.replace("// @match        __LDIS_MATCH__", match_block)
     base = request.url_root.rstrip("/")
-    # Two places show the dashboard — the standalone page and the AM
-    # Overview tab — so the provider has to recognise both. Tampermonkey
-    # takes one @match per line; the placeholder expands to both.
-    script = script.replace(
-        "// @match        __LDIS_MATCH__",
-        f"// @match        {base}/shift-pulse*\n"
-        f"// @match        {base}/overview?*tab=shiftpulse*")
     script = script.replace("__LDIS_UPDATE__", base + url_for("shift_pulse_userscript"))
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()[:8]
+    script = script.replace("__LDIS_BUILD__", digest)
     return Response(script, mimetype="text/javascript; charset=utf-8")
 
 

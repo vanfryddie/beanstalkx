@@ -7227,9 +7227,20 @@ def get_olr_weekly_series(login, since=None):
 
 
 def _olr_composite(week_values):
-    """A week's overall score — the mean of whichever metrics were
-    actually uploaded for it, not assuming all 7 are always present."""
-    vals = [v for v in week_values.values() if v is not None]
+    """A week's overall score — the mean of whichever of the seven
+    scorecard metrics were actually captured for it, not assuming all 7
+    are always present.
+
+    Only those seven count. A week's snapshot row also carries each
+    metric's rank, the cross-training headcounts, the Indirect Roles and
+    Ambassador gap counts and Safety's average overdue days, and
+    averaging a rank of 4 and 11 overdue days in with seven percentages
+    produced a "Total L&D Score" of 33.8% for a manager actually sitting
+    at 83.1%. Filtering here rather than at each call site, because a
+    caller that forgets is a silently wrong number on a chart, not an
+    error anybody would see."""
+    vals = [v for k, v in week_values.items()
+            if v is not None and k in OLR_METRIC_KEYS]
     return sum(vals) / len(vals) if vals else None
 
 

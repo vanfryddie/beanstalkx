@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}AM Overview — L&D Operations Console{% endblock %}
+{% import "_dashboard.html" as dash %}
 {% block content %}
 <h1 class="page-title">Your area's L&amp;D status at a glance</h1>
 <p class="page-sub">A focused view of L&D compliance, weekly planning, training requirements and staffing coverage.</p>
@@ -260,70 +261,271 @@
 
 {% elif tab == 'olr' %}
   {% if not olr_data %}
-  <div class="empty-state">Pick an Area Manager, Operations Manager, or Senior Operations Manager above to see their OLR trend.</div>
+  <div class="dash-empty dash-empty-page">Pick an Area Manager, Operations Manager, or Senior Operations Manager above to see their OLR.</div>
   {% elif not olr_data.has_history %}
-  <div class="empty-state">No weekly OLR snapshots yet for this person — they're captured automatically whenever new data comes in through L&D Settings' Data Upload. Check back after the next upload.</div>
+  <div class="dash-empty dash-empty-page">No weekly OLR snapshots yet for this person — they're captured automatically whenever new data comes in through L&amp;D Settings' Data Upload. Check back after the next upload.</div>
   {% else %}
-  <p class="page-sub" style="margin-top:-8px;">{{ olr_data.week_count }} week{{ 's' if olr_data.week_count != 1 }} of history. Figures without a stored history yet (like Safety's top overdue topics) are shown as today's live snapshot instead of a trend.</p>
+  {% set rv = olr_data.review %}
 
-  <div class="panel">
-    <h2 class="panel-title" style="margin-bottom:2px;">Weekly L&amp;D score</h2>
-    <p style="font-size:12px; color:var(--text-lo); margin:4px 0 12px;">Each of the 7 metrics, plus the Total L&amp;D composite, per calendar week.</p>
-    {{ olr_data.score_chart|safe }}
-    <div class="olr-legend">
-      {% for label, color in olr_data.score_colors.items() %}
-      <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
-      {% endfor %}
+  {#- An Operational Leadership Review is a paper the manager writes.
+      The charts further down are the evidence; everything above them is
+      the review itself, in the order it gets written. -#}
+  {% if rv and rv.total %}
+  <section class="dash-summary olr-summary">
+    <div class="dash-summary-story">
+      <h2>
+        {% if rv.total.at_target %}Total L&amp;D Score is at target.
+        {% else %}Total L&amp;D Score is {{ rv.total.shortfall }} points short of target.{% endif %}
+      </h2>
+      <p>
+        {{ rv.total.weeks_total }} weekly snapshot{{ 's' if rv.total.weeks_total != 1 }} from
+        {{ rv.first_week_label }} to {{ rv.last_week_label }}.
+        {% set shortlist = rv.rows | selectattr('shortfall') | list %}
+        {% if shortlist %}{{ shortlist | length }} of {{ rv.rows | length }} metrics
+        {{ 'is' if shortlist|length == 1 else 'are' }} below the {{ rv.target }}% target.
+        {% else %}Every metric is at or above the {{ rv.target }}% target.{% endif %}
+      </p>
+      <span class="dash-chip">
+        <i class="dash-dot dash-dot-{{ dash.tone(rv.total.now, rv.target) }}"></i>
+        {% if rv.total.rank_now %}{{ rv.total.rank_ordinal }} of {{ rv.total.field_size }} managers on site{% else %}Not yet ranked{% endif %}
+      </span>
     </div>
-  </div>
-
-  <div class="panel" style="margin-top:16px;">
-    <h2 class="panel-title" style="margin-bottom:2px;">Rank development</h2>
-    <p style="font-size:12px; color:var(--text-lo); margin:4px 0 12px;">Where this person ranked among every AM/OM/SOM, per metric, per week. Lower is better — the chart's y-axis is inverted so 'up' always means improving.</p>
-    {% if olr_data.rank_chart %}{{ olr_data.rank_chart|safe }}{% else %}<div class="empty-state">No rank history yet.</div>{% endif %}
-    <div class="olr-legend">
-      {% for label, color in olr_data.score_colors.items() %}
-      <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
-      {% endfor %}
-    </div>
-  </div>
-
-  <div class="olr-grid-2">
-    <div class="panel">
-      <h2 class="panel-title" style="margin-bottom:2px;">Safety — average overdue days</h2>
-      {% if olr_data.overdue_days_chart %}{{ olr_data.overdue_days_chart|safe }}{% else %}<div class="empty-state">No overdue history yet.</div>{% endif %}
-      <h3 style="font-size:12.5px; margin:14px 0 8px;">Top overdue topics right now</h3>
-      {% if olr_data.safety_overdue_detail.top_topics %}
-      <ul class="olr-topic-list">
-        {% for t in olr_data.safety_overdue_detail.top_topics %}
-        <li><span>{{ t.topic }}</span><strong>{{ t.count }}</strong></li>
-        {% endfor %}
-      </ul>
-      {% else %}
-      <div class="empty-state" style="padding:12px 0;">Nothing currently overdue.</div>
-      {% endif %}
-    </div>
-
-    <div class="panel">
-      <h2 class="panel-title" style="margin-bottom:2px;">Indirect Roles — gaps per week</h2>
-      {% if olr_data.ir_gap_chart %}{{ olr_data.ir_gap_chart|safe }}{% else %}<div class="empty-state">No gap history yet.</div>{% endif %}
-    </div>
-
-    <div class="panel">
-      <h2 class="panel-title" style="margin-bottom:2px;">Ambassador Availability — gaps per week</h2>
-      {% if olr_data.ambassador_gap_chart %}{{ olr_data.ambassador_gap_chart|safe }}{% else %}<div class="empty-state">No gap history yet.</div>{% endif %}
-    </div>
-
-    <div class="panel">
-      <h2 class="panel-title" style="margin-bottom:2px;">Cross-Training — proficiency per week</h2>
-      {% if olr_data.xt_chart %}{{ olr_data.xt_chart|safe }}{% else %}<div class="empty-state">No history yet.</div>{% endif %}
-      <div class="olr-legend">
-        {% for label, color in olr_data.xt_colors.items() %}
-        <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
-        {% endfor %}
+    <div class="dash-summary-stats">
+      <div class="dash-stat">
+        <span class="dash-stat-label">Total L&amp;D Score</span>
+        {{ dash.figure(rv.total.now) }}
+        {{ dash.delta(rv.total.delta_window) }}
+        <span class="dash-stat-sub">Since {{ rv.first_week_label }}</span>
+      </div>
+      <div class="dash-stat">
+        <span class="dash-stat-label">Last 4 weeks</span>
+        {{ dash.delta(rv.total.delta_4w) }}
+        <span class="dash-stat-sub">Change over the month</span>
+      </div>
+      <div class="dash-stat">
+        <span class="dash-stat-label">Rank on site</span>
+        {{ dash.figure(rv.total.rank_now, suffix='') }}
+        {% if rv.total.rank_delta %}
+        <span class="dash-delta dash-delta-{{ 'up' if rv.total.rank_delta > 0 else 'down' }}">
+          {{ '&#9650;' | safe if rv.total.rank_delta > 0 else '&#9660;' | safe }}
+          {{ rv.total.rank_delta | abs }} place{{ 's' if rv.total.rank_delta|abs != 1 }}</span>
+        {% else %}
+        <span class="dash-stat-sub">of {{ rv.total.field_size }} managers</span>
+        {% endif %}
+      </div>
+      <div class="dash-stat">
+        <span class="dash-stat-label">Trend</span>
+        <span class="dash-stat-spark">{{ dash.spark(rv.total.points, 148, 40) }}</span>
+        <span class="dash-stat-sub">Weekly composite</span>
       </div>
     </div>
+  </section>
+  {% endif %}
+
+  {% if rv and rv.insights %}
+  <h2 class="dash-section-label">What to write about</h2>
+  <div class="olr-insights">
+    {% for i in rv.insights %}
+    <article class="olr-insight olr-insight-{{ i.tone }}">
+      <i class="dash-dot dash-dot-{{ 'good' if i.tone == 'win' else ('serious' if i.tone == 'risk' else 'watch') }}"></i>
+      <div>
+        <strong>{{ i.headline }}</strong>
+        <span>{{ i.detail }}</span>
+      </div>
+    </article>
+    {% endfor %}
   </div>
+  {% endif %}
+
+  {% if rv and rv.draft %}
+  <section class="olr-draft">
+    <header class="olr-draft-head">
+      <div>
+        <h2>Draft</h2>
+        <p>Every number below is read off the weekly snapshots. Edit it here, then copy it into your review.</p>
+      </div>
+      <button type="button" class="btn btn-gold btn-sm" id="olrCopy">Copy</button>
+    </header>
+    <label class="sr-only" for="olrDraftText">Draft review</label>
+    <textarea id="olrDraftText" class="olr-draft-text" rows="14" spellcheck="true">{{ rv.draft }}</textarea>
+    <span class="olr-draft-state" id="olrCopyState" hidden>Copied</span>
+  </section>
+  {% endif %}
+
+  {% if rv %}
+  <h2 class="dash-section-label">Every metric, worst first</h2>
+  <div class="dash-table-scroll">
+    <table class="dash-table olr-table">
+      <thead>
+        <tr>
+          <th scope="col">Metric</th>
+          <th scope="col" class="num">Now</th>
+          <th scope="col">Against {{ rv.target }}% target</th>
+          <th scope="col">Trend</th>
+          <th scope="col" class="num">4 wks</th>
+          <th scope="col" class="num">Since {{ rv.first_week_label }}</th>
+          <th scope="col" class="num">Best</th>
+          <th scope="col" class="num">Worst</th>
+          <th scope="col" class="num">Weeks under</th>
+          <th scope="col" class="num">Rank</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rv.rows %}
+        <tr>
+          <th scope="row">
+            <strong>{{ r.label }}</strong>
+            {% if r.shortfall %}<span>{{ r.shortfall }} points short</span>
+            {% else %}<span>At target</span>{% endif %}
+          </th>
+          <td class="num mono {{ 'is-below' if r.shortfall }}">{{ r.now }}%</td>
+          <td class="olr-meter-cell">{{ dash.meter(r.now, rv.target, r.label) }}</td>
+          <td class="olr-spark-cell">{{ dash.spark(r.points, 110, 26) }}</td>
+          <td class="num mono {{ 'is-below' if r.delta_4w is not none and r.delta_4w < 0 }}">{{ ('+' if r.delta_4w and r.delta_4w > 0 else '') ~ r.delta_4w if r.delta_4w is not none else '—' }}</td>
+          <td class="num mono {{ 'is-below' if r.delta_window is not none and r.delta_window < 0 }}">{{ ('+' if r.delta_window and r.delta_window > 0 else '') ~ r.delta_window if r.delta_window is not none else '—' }}</td>
+          <td class="num mono" title="{{ r.best_week }}">{{ r.best }}%</td>
+          <td class="num mono" title="{{ r.worst_week }}">{{ r.worst }}%</td>
+          <td class="num mono">{{ r.weeks_below }} / {{ r.weeks_total }}</td>
+          <td class="num mono">{{ r.rank_now if r.rank_now else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% set sup = rv.support %}
+  {% if sup.safety_days or sup.ir_gap or sup.ambassador_gap or sup.xt_lapsed %}
+  <h2 class="dash-section-label">Underneath the scores</h2>
+  <div class="olr-support">
+    {% for name, label, unit, hint in [
+         ('safety_days', 'Safety — average days overdue', ' days', 'How late the overdue items are running'),
+         ('ir_gap', 'Indirect Roles — open gaps', '', 'Roles short of their target headcount'),
+         ('ambassador_gap', 'Ambassador — availability gap', '', 'Against the departmental target'),
+         ('xt_lapsed', 'Cross-Training — lapsed', '', 'People whose process practice has lapsed')] %}
+    {% set f = sup.get(name) %}
+    {% if f %}
+    <article class="olr-support-card">
+      <span class="dash-metric-name">{{ label }}</span>
+      <strong class="dash-figure">{{ f.now }}{% if unit %}<i>{{ unit }}</i>{% endif %}</strong>
+      {#- One snapshot is not a flat line: saying "no change" about a
+          figure that has only ever been measured once would be read as
+          a result. -#}
+      {% if f.points | length < 2 %}
+      <span class="dash-delta dash-delta-none">First snapshot — nothing to compare yet</span>
+      {% elif f.change is not none and f.change != 0 %}
+      {% set good = (f.change < 0) if f.lower_is_better else (f.change > 0) %}
+      <span class="dash-delta dash-delta-{{ 'up' if good else 'down' }}">
+        {{ '&#9660;' | safe if f.change < 0 else '&#9650;' | safe }} {{ f.change | abs }} vs {{ f.then_week_label }}
+      </span>
+      {% else %}
+      <span class="dash-delta dash-delta-flat">No change since {{ f.then_week_label }}</span>
+      {% endif %}
+      <span class="dash-metric-sub">{{ hint }}</span>
+      {% if f.points | length > 1 %}<span class="olr-support-spark">{{ dash.spark(f.points, 150, 26) }}</span>{% endif %}
+    </article>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if olr_data.safety_overdue_detail.top_topics %}
+  <h2 class="dash-section-label">Biggest Safety backlogs right now</h2>
+  <div class="dash-table-scroll">
+    <table class="dash-table">
+      <thead><tr><th scope="col">Topic</th><th scope="col" class="num">Overdue</th></tr></thead>
+      <tbody>
+        {% for t in olr_data.safety_overdue_detail.top_topics %}
+        <tr><th scope="row"><strong>{{ t.topic }}</strong></th><td class="num mono">{{ t.count }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% endif %}
+
+  <details class="dash-table-wrap olr-evidence">
+    <summary>
+      <span>The full charts</span>
+      <span class="dash-summary-hint">Every metric week by week, rank development, and the supporting breakdowns</span>
+    </summary>
+    <div class="olr-evidence-body">
+      <div class="panel">
+        <h2 class="panel-title" style="margin-bottom:2px;">Weekly L&amp;D score</h2>
+        <p style="font-size:12px; color:var(--text-lo); margin:4px 0 12px;">Each of the 7 metrics, plus the Total L&amp;D composite, per calendar week.</p>
+        {{ olr_data.score_chart|safe }}
+        <div class="olr-legend">
+          {% for label, color in olr_data.score_colors.items() %}
+          <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <h2 class="panel-title" style="margin-bottom:2px;">Rank development</h2>
+        <p style="font-size:12px; color:var(--text-lo); margin:4px 0 12px;">Where this person ranked among every AM/OM/SOM, per metric, per week. Lower is better — the chart's y-axis is inverted so 'up' always means improving.</p>
+        {% if olr_data.rank_chart %}{{ olr_data.rank_chart|safe }}{% else %}<div class="dash-empty">No rank history yet.</div>{% endif %}
+        <div class="olr-legend">
+          {% for label, color in olr_data.score_colors.items() %}
+          <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="olr-grid-2">
+        <div class="panel">
+          <h2 class="panel-title" style="margin-bottom:2px;">Safety — average overdue days</h2>
+          {% if olr_data.overdue_days_chart %}{{ olr_data.overdue_days_chart|safe }}{% else %}<div class="dash-empty">No overdue history yet.</div>{% endif %}
+        </div>
+        <div class="panel">
+          <h2 class="panel-title" style="margin-bottom:2px;">Indirect Roles — gaps per week</h2>
+          {% if olr_data.ir_gap_chart %}{{ olr_data.ir_gap_chart|safe }}{% else %}<div class="dash-empty">No gap history yet.</div>{% endif %}
+        </div>
+        <div class="panel">
+          <h2 class="panel-title" style="margin-bottom:2px;">Ambassador Availability — gaps per week</h2>
+          {% if olr_data.ambassador_gap_chart %}{{ olr_data.ambassador_gap_chart|safe }}{% else %}<div class="dash-empty">No gap history yet.</div>{% endif %}
+        </div>
+        <div class="panel">
+          <h2 class="panel-title" style="margin-bottom:2px;">Cross-Training — proficiency per week</h2>
+          {% if olr_data.xt_chart %}{{ olr_data.xt_chart|safe }}{% else %}<div class="dash-empty">No history yet.</div>{% endif %}
+          <div class="olr-legend">
+            {% for label, color in olr_data.xt_colors.items() %}
+            <span class="olr-legend-item"><i style="background:{{ color }};"></i>{{ label }}</span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <script>
+  /* Copying the draft is the whole point of showing it — a manager is
+     taking this into a document, not reading it here. */
+  (function () {
+    var btn = document.getElementById('olrCopy');
+    var box = document.getElementById('olrDraftText');
+    var state = document.getElementById('olrCopyState');
+    if (!btn || !box) return;
+    btn.addEventListener('click', function () {
+      box.select();
+      var done = function () {
+        state.hidden = false;
+        setTimeout(function () { state.hidden = true; }, 2200);
+        window.getSelection().removeAllRanges();
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(box.value).then(done, function () {
+          /* Clipboard access can be refused; the text is selected
+             either way, so Ctrl+C still works and we say so. */
+          state.textContent = 'Press Ctrl+C to copy';
+          state.hidden = false;
+        });
+      } else {
+        state.textContent = 'Press Ctrl+C to copy';
+        state.hidden = false;
+      }
+    });
+  })();
+  </script>
   {% endif %}
 {% else %}
   <p class="page-sub" style="margin-top:-8px;">Cross-training coverage, ambassador/peer capacity, and indirect role staffing.</p>

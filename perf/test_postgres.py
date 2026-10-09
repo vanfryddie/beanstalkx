@@ -85,6 +85,7 @@ routes = [
     ("My Associates (search)", f"/overview?tab=directory&am={ams[0]}&q=a"),
     ("My Associates (role filter)", f"/overview?tab=directory&am={ams[0]}&holds=gaps"),
     ("Training request review queue", "/scorecards?tab=requests"),
+    ("OLR review tab", f"/overview?tab=olr&am={ams[0]}"),
     ("Weekly plan", "/weekly-plan"),
 ]
 for name, url in routes:
@@ -140,6 +141,49 @@ if directory:
               f"got {after[0]['status'] if after else 'nothing'}")
 with c.session_transaction() as s:
     s["login"], s["role"], s["auth_source"], s["site"] = "admin", "admin", "manual", "SCN2"
+
+print("\n4c. The OLR composite is the seven metrics, on Postgres too")
+# The snapshot writer stores ranks, gap counts and overdue days in the
+# same table as the seven scores. Taking a real snapshot here, rather
+# than trusting the seeded rows, is the only way to see what the OLR
+# tab would actually average in production.
+application.snapshot_olr_metrics_for_all_reviewees()
+olr_series = db.get_olr_weekly_series(ams[0])
+if olr_series:
+    latest_week = sorted(olr_series)[-1]
+    before = application._build_olr_tab_data(ams[0])["review"]["total"]["now"]
+    # The production snapshot stores these alongside the seven scores
+    # whenever the underlying figures exist. This small seed has no
+    # Ambassador or Indirect Roles data to produce them, so they are
+    # written directly: the point is what the reader does with a row
+    # that has them, not whether this fixture happens to generate them.
+    conn = db.get_db()
+    for key, value in (("total_rank", 6), ("ir_gap", 11), ("safety_avg_overdue_days", 63.7)):
+        conn.execute(
+            "INSERT INTO olr_weekly_metrics (login, week_start, metric_key, value, uploaded_by, uploaded_at) "
+            "VALUES (?,?,?,?,?,?) ON CONFLICT (login, week_start, metric_key) "
+            "DO UPDATE SET value=excluded.value",
+            (ams[0], latest_week, key, value, "test", "now"))
+    conn.commit(); conn.close()
+
+    latest = db.get_olr_weekly_series(ams[0])[latest_week]
+    extras = sorted(k for k in latest if k not in db.OLR_METRIC_KEYS)
+    check("the week now carries non-metric figures too", bool(extras), str(extras))
+    seven_only = {k: v for k, v in latest.items() if k in db.OLR_METRIC_KEYS}
+    check("the headline does not move when they appear",
+          abs(application._build_olr_tab_data(ams[0])["review"]["total"]["now"] - before) < 0.05,
+          f"{before} before, {application._build_olr_tab_data(ams[0])['review']['total']['now']} after")
+    check("and the composite ignores them",
+          db._olr_composite(latest) == db._olr_composite(seven_only),
+          f"{db._olr_composite(latest)} vs {db._olr_composite(seven_only)}")
+    pack = application._build_olr_tab_data(ams[0])["review"]
+    check("the review builds against Postgres", pack is not None)
+    if pack:
+        check("its headline matches the composite",
+              abs(pack["total"]["now"] - db._olr_composite(seven_only)) < 0.05,
+              f"{pack['total']['now']} vs {db._olr_composite(seven_only)}")
+else:
+    check("there is OLR history to check", False, "no snapshots written")
 
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()

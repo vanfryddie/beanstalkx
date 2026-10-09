@@ -136,10 +136,35 @@ check("the dashboard stylesheet loads on the tab", "shift_pulse.css" in tab)
 check("and its script", "shift_pulse.js" in tab)
 
 provider = client("admin", "admin").get("/shift-pulse/provider.user.js").get_data(as_text=True)
-matches = re.findall(r"(?m)^// @match\s+(\S+)", provider.split("==/UserScript==")[0])
-check("the provider matches both the page and the tab",
-      any("/shift-pulse" in m for m in matches) and any("tab=shiftpulse" in m for m in matches),
-      str(matches))
+meta = provider.split("// ==UserScript==")[1].split("// ==/UserScript==")[0]
+matches = re.findall(r"(?m)^// @match\s+(\S+)", meta)
+
+
+def covers(url):
+    """Whether any @match would fire on this URL, by the extension's own
+    rules: scheme and host exact, path globbed, query ignored. Checked
+    this way rather than by searching the patterns for 'tab=shiftpulse',
+    because a query string is not part of a match pattern at all — a
+    pattern that contained one looked right in a substring test and
+    never ran in a browser."""
+    parts = re.match(r"^(https?)://([^/?#]+)([^?#]*)", url)
+    u_scheme, u_host, u_path = parts.groups()
+    for pattern in matches:
+        m = re.match(r"^(\*|https?)://(\*|[^/*]+)(/[^?#]*)$", pattern)
+        if not m:
+            continue
+        scheme, host, path = m.groups()
+        if scheme not in ("*", u_scheme) or host not in ("*", u_host):
+            continue
+        if re.match("^" + ".*".join(re.escape(p) for p in path.split("*")) + "$", u_path or "/"):
+            return True
+    return False
+
+
+check("the provider covers the standalone page",
+      covers("http://localhost/shift-pulse"), str(matches))
+check("and the AM Overview tab",
+      covers("http://localhost/overview?tab=shiftpulse&am=am000000"), str(matches))
 
 print("\n" + "=" * 62)
 print("ALL ASSOCIATE / REQUEST CHECKS PASSED" if not fails else f"{len(fails)} FAILURE(S): {fails}")

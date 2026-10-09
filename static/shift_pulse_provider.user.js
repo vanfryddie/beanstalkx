@@ -1,14 +1,16 @@
 // Shift Pulse - Data Provider, as shipped with the EU PE NET standard
-// (B2B Action #3.5), with two lines changed: @match points at this
-// L&D Operations Console instead of a local Shift-Pulse.html, and the
-// version carries an -ldis suffix. The FCLM calls below are untouched
-// and still run as you, in your browser, under your own Midway
-// session - the console's server never sees FCLM.
+// (B2B Action #3.5). Only the metadata block differs, and only in the
+// three placeholders the console fills in when it serves this file:
+// @match points at this L&D Operations Console instead of a local
+// Shift-Pulse.html, @updateURL/@downloadURL point back here, and the
+// version carries a digest of the build. The FCLM calls below are
+// untouched and still run as you, in your browser, under your own
+// Midway session - the console's server never sees FCLM.
 
 // ==UserScript==
 // @name         Shift Pulse - Data Provider
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0-ldis1
+// @version      1.1.0-ldis.__LDIS_BUILD__
 // @author       Kiro
 // @description  [LDIS-hosted build] Manager-level overview without associate details or idle time. Based on Master Eagle Eye v6.5.0. Locale-aware number parsing.
 // @match        __LDIS_MATCH__

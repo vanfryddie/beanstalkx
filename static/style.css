@@ -4117,3 +4117,91 @@ html[data-theme="light"] .ad-request-bar { background: #fff; }
 html[data-theme="light"] .tr-head h3 { color: #1d1d1f; }
 html[data-theme="light"] .tr-reason { color: #1d1d1f; }
 html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }
+
+/* ============================================================
+   OLR — the review, not just the charts.
+
+   The tab's job is to get a manager from "here are six graphs" to a
+   paragraph they can defend in their Operational Leadership Review, so
+   the marks here are the same ones the dashboards use (dash-summary,
+   dash-table, dash-meter, dash-spark) plus the three things specific to
+   writing it up: the observations, the draft, and the supporting
+   figures that are counts rather than percentages.
+   ============================================================ */
+
+.olr-summary { margin-bottom: 20px; }
+
+.olr-insights {
+  display: grid; gap: 10px; margin-bottom: 26px;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+}
+.olr-insight {
+  display: flex; gap: 11px; align-items: flex-start;
+  padding: 14px 16px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-left: 3px solid var(--hairline);
+}
+.olr-insight-win    { border-left-color: var(--green); }
+.olr-insight-risk   { border-left-color: var(--red); }
+.olr-insight-watch  { border-left-color: var(--amber); }
+.olr-insight > i { margin-top: 6px; flex: none; }
+.olr-insight div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.olr-insight strong { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+.olr-insight span { font-size: 12.5px; color: var(--text-lo); line-height: 1.45; }
+
+.olr-draft {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 18px 20px 20px; margin-bottom: 26px;
+}
+.olr-draft-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 12px;
+}
+.olr-draft-head h2 { font-size: 15px; font-weight: 640; letter-spacing: -.02em; margin: 0 0 3px; }
+.olr-draft-head p { font-size: 12.5px; color: var(--text-lo); margin: 0; max-width: 60ch; }
+.olr-draft-text {
+  width: 100%; resize: vertical; min-height: 220px;
+  font: 400 13.5px/1.62 var(--font);
+  color: var(--text); background: var(--surface-solid, rgba(255,255,255,.03));
+  border: 1px solid var(--hairline); border-radius: 10px; padding: 14px 16px;
+}
+.olr-draft-text:focus { outline: 2px solid var(--aws-blue); outline-offset: 1px; }
+.olr-draft-state {
+  display: inline-block; margin-top: 8px; font-size: 12px; color: var(--green);
+}
+/* display wins over the hidden attribute unless it is said again here,
+   which is how an empty request bar once stayed on screen. */
+.olr-draft-state[hidden] { display: none !important; }
+
+/* The table sat flush against the next section label. */
+.olr-table { margin-bottom: 28px; }
+.olr-table th[scope="row"] { min-width: 190px; }
+.olr-table th[scope="row"] span { display: block; font-size: 11.5px; color: var(--text-lo); font-weight: 400; }
+.olr-meter-cell { min-width: 120px; }
+.olr-meter-cell .dash-meter { margin: 0; }
+.olr-spark-cell { width: 120px; }
+
+.olr-support {
+  display: grid; gap: 12px; margin-bottom: 26px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+.olr-support-card {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 15px 17px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--hairline);
+}
+.olr-support-spark { margin-top: 4px; }
+
+.olr-evidence { margin-top: 10px; }
+.olr-evidence-body { padding-top: 14px; }
+
+@media (max-width: 720px) {
+  .olr-draft-head { flex-direction: column; }
+  .olr-insights, .olr-support { grid-template-columns: 1fr; }
+}
+
+.sp-provider-link {
+  font-size: 12px; color: var(--aws-blue); text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.sp-provider-link:hover { border-bottom-color: currentColor; }

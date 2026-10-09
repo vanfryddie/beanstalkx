@@ -57,10 +57,63 @@ client = application.application.test_client()
 with client.session_transaction() as s:
     s["login"], s["role"], s["auth_source"], s["site"] = "admin", "admin", "manual", "SCN2"
 served = client.get("/shift-pulse/provider.user.js").get_data(as_text=True)
-# Anchor to a real header line: the banner above it mentions "@match" in
-# prose, and matching that instead would pass on the wrong thing.
-match = re.search(r"(?m)^// @match\s+(\S+)", served.split("==/UserScript==")[0])
+# Read the metadata block itself, not everything above its closing
+# marker: the banner comment above it mentions "@match" in prose, and
+# matching that instead passes on the wrong thing — it did, which is why
+# this is anchored to the block.
+meta_block = served.split("// ==UserScript==")[1].split("// ==/UserScript==")[0]
+match = re.search(r"(?m)^// @match\s+(\S+)", meta_block)
 check("@match points at the hosted page", bool(match) and "/shift-pulse" in match.group(1), match.group(1) if match else "none")
+
+# A match pattern is scheme://host/path and the path may only wildcard
+# with '*'. An earlier build wrote the AM Overview tab as
+# '/overview?*tab=shiftpulse*'; a pattern the extension cannot register
+# is a provider that silently stops running, which is what had managers
+# reinstalling it. This is checked rather than eyeballed because the
+# failure is invisible from the server's side.
+all_matches = re.findall(r"(?m)^// @match\s+(\S+)", meta_block)
+PATTERN_RE = re.compile(r"^(\*|https?)://(\*|(?:\*\.)?[^/*]+)(/[^?#]*)$")
+bad_patterns = [m for m in all_matches if not PATTERN_RE.match(m)]
+check("every @match is a valid match pattern", not bad_patterns, str(bad_patterns))
+check("no @match carries a query string", not [m for m in all_matches if "?" in m],
+      str([m for m in all_matches if "?" in m]))
+
+
+def pattern_matches(pattern, url):
+    """Chrome's match-pattern semantics, enough of them to tell whether
+    a pattern would actually fire on a URL: scheme and host exact, path
+    globbed, query and fragment ignored."""
+    pm = PATTERN_RE.match(pattern)
+    if not pm:
+        return False
+    scheme, host, path = pm.groups()
+    parts = re.match(r"^(https?)://([^/?#]+)([^?#]*)", url)
+    if not parts:
+        return False
+    u_scheme, u_host, u_path = parts.groups()
+    if scheme != "*" and scheme != u_scheme:
+        return False
+    if host != "*" and host != u_host:
+        return False
+    return re.match("^" + ".*".join(re.escape(p) for p in path.split("*")) + "$",
+                    u_path or "/") is not None
+
+
+for target in ("http://localhost/shift-pulse",
+               "http://localhost/overview?tab=shiftpulse&am=am000000",
+               "https://localhost/overview?tab=shiftpulse"):
+    check(f"a pattern actually fires on {target}",
+          any(pattern_matches(m, target) for m in all_matches), str(all_matches))
+check("both schemes are covered", {m.split("://")[0] for m in all_matches} == {"http", "https"},
+      str(sorted({m.split("://")[0] for m in all_matches})))
+
+version = re.search(r"(?m)^// @version\s+(\S+)", meta_block).group(1)
+check("the served version carries a build digest", version.startswith("1.1.0-ldis."), version)
+again = client.get("/shift-pulse/provider.user.js").get_data(as_text=True)
+check("and is stable across requests, so the extension is not told to update daily",
+      re.search(r"(?m)^// @version\s+(\S+)",
+                again.split("// ==UserScript==")[1].split("// ==/UserScript==")[0]
+                ).group(1) == version)
 check("no placeholder survived templating", "__LDIS_" not in served)
 check("the FCLM calls are untouched", "fclm-portal.amazon.com" in served)
 
@@ -200,6 +253,55 @@ with sync_playwright() as p:
       return mid && mid.closest('.sp-root') ? 'ok' : 'points outside the dashboard';
     })()""")
     check("the tour's highlight lands inside the dashboard", landed == "ok", str(landed))
+    ctx.close(); b.close()
+srv.shutdown()
+
+print("\n6b. The provider chip tells the truth, and keeps telling it")
+# The chip used to give up after six seconds and clear its timer, so a
+# manager who installed the provider and then pressed Refresh Data sat
+# in front of a full dashboard labelled "Data provider not detected" for
+# as long as the page stayed open. Both halves are checked: that the
+# provider is recognised when it arrives, and that a chip which has
+# already said "not detected" still corrects itself when data lands.
+srv = make_server("127.0.0.1", 5632, application.application, threaded=True)
+threading.Thread(target=srv.serve_forever, daemon=True).start(); time.sleep(1.0)
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args=["--no-sandbox"])
+    ctx = b.new_context(viewport={"width": 1500, "height": 950})
+
+    def open_dashboard(path):
+        pg = ctx.new_page()
+        pg.goto(f"http://127.0.0.1:5632/", wait_until="domcontentloaded")
+        if pg.query_selector("input[name=login_id]"):
+            pg.fill("input[name=login_id]", "admin"); pg.click("button[type=submit]"); pg.wait_for_timeout(400)
+        pg.goto(f"http://127.0.0.1:5632{path}", wait_until="networkidle")
+        return pg
+
+    def chip(pg):
+        return pg.eval_on_selector("#spProviderLabel", "e => e.textContent").strip()
+
+    # What the provider does on arrival: attach a click handler to the
+    # refresh button, at document-idle, after the page itself has.
+    pg = open_dashboard("/shift-pulse")
+    pg.wait_for_timeout(400)
+    pg.evaluate("document.getElementById('refreshBtn').addEventListener('click', function () {})")
+    pg.wait_for_timeout(900)
+    check("the provider is recognised as soon as it hooks the page",
+          "running" in chip(pg).lower() or "connected" in chip(pg).lower(), chip(pg))
+    pg.close()
+
+    # And the case that was broken: no provider at first, so the chip
+    # says so — then data lands anyway.
+    pg = open_dashboard("/shift-pulse")
+    pg.wait_for_timeout(7200)
+    check("without a provider it still says so after the grace period",
+          chip(pg) == "Data provider not detected", chip(pg))
+    pg.evaluate("""document.getElementById('deptOverviewTableBody').innerHTML =
+                   '<tr><td>07:00</td><td>1234</td></tr>'""")
+    pg.wait_for_timeout(1200)
+    check("and corrects itself once data actually arrives",
+          "connected" in chip(pg).lower(), chip(pg))
+    pg.close()
     ctx.close(); b.close()
 srv.shutdown()
 

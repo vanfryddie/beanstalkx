@@ -11,6 +11,11 @@
     <i class="dash-dot dash-dot-none" id="spProviderDot"></i>
     <span id="spProviderLabel">Checking for the data provider…</span>
   </span>
+  {#- Reachable whether or not the provider is running: the install
+      page is also the reinstall page, and a manager whose provider has
+      stopped working should not have to wait for the chip to admit it
+      before they can get at the link. -#}
+  <a class="sp-provider-link" href="{{ url_for('shift_pulse_userscript') }}">Install or update the data provider</a>
   {% if not can_edit_settings %}
   <span class="sp-readonly-note">
     Shift times, buckets and targets are set by Operations Managers for {{ site_code }}.
@@ -131,46 +136,89 @@
 <script src="{{ url_for('static', filename='shift_pulse.js', v='20261009b') }}"></script>
 
 <script>
-/* The provider writes into this page's tables; it never announces
-   itself. Watching for the first thing it fills is the only honest way
-   to tell a manager whether it is actually running, rather than leaving
-   them in front of an empty dashboard wondering. */
+/* Is the provider actually running?
+
+   It never announces itself, so this watches for the two things only it
+   does. The first is immediate: the provider's init() attaches a click
+   handler to #refreshBtn, and it runs at document-idle, after this
+   document has finished parsing — the page's own script attached its
+   handler while the document was still loading. So a click handler
+   arriving on that button after parsing is the provider arriving.
+
+   The second is proof rather than inference: data in the tables, or a
+   real timestamp. That can only come from FCLM through the provider.
+
+   The previous version gave up after six seconds and cleared its timer,
+   so a manager who installed the provider correctly and then pressed
+   Refresh Data watched a full dashboard sitting under the words "Data
+   provider not detected", for as long as the page stayed open. Nothing
+   here stops watching. */
 (function () {
   var dot = document.getElementById('spProviderDot');
   var label = document.getElementById('spProviderLabel');
   var help = document.getElementById('spProviderHelp');
   var started = Date.now();
+  var state = 'checking';
 
-  function seen() {
-    /* The provider is only "connected" once it has actually produced
-       something. The placeholder timestamp the page ships with reads
-       "--:--:--", and the overview body ships with a prompt row in it, so
-       neither existing is evidence — claiming connected on those would
-       leave a manager trusting an empty dashboard. */
-    if (typeof GM_xmlhttpRequest !== 'undefined') return true;
+  /* Hook the button before the provider gets to it. */
+  var sawLateListener = false;
+  var refreshBtn = document.getElementById('refreshBtn');
+  if (refreshBtn) {
+    var realAdd = refreshBtn.addEventListener.bind(refreshBtn);
+    refreshBtn.addEventListener = function (type, fn, opts) {
+      if (type === 'click' && document.readyState !== 'loading') {
+        sawLateListener = true;
+      }
+      return realAdd(type, fn, opts);
+    };
+  }
+
+  function hasData() {
     var stamp = document.getElementById('lastUpdateTime');
-    if (stamp) {
-      var text = (stamp.textContent || '').trim();
-      if (text && /[0-9]/.test(text)) return true;
-    }
+    if (stamp && /[0-9]/.test((stamp.textContent || '').trim())) return true;
     var body = document.getElementById('deptOverviewTableBody');
-    if (body && body.querySelector('td') &&
-        !/Enter FC code/i.test(body.textContent || '')) return true;
+    return !!(body && body.querySelector('td') &&
+              !/Enter FC code/i.test(body.textContent || ''));
+  }
+
+  function show(next, text, tone) {
+    if (state === next) return;
+    state = next;
+    dot.className = 'dash-dot dash-dot-' + tone;
+    label.textContent = text;
+    if (help) help.hidden = (next !== 'missing');
+  }
+
+  function evaluate() {
+    if (hasData()) {
+      show('live', 'Data provider connected · live data', 'good');
+      return true;
+    }
+    if (sawLateListener) {
+      show('running', 'Data provider running — press Refresh Data', 'good');
+      return false;
+    }
+    if (Date.now() - started > 6000) {
+      show('missing', 'Data provider not detected', 'watch');
+    }
     return false;
   }
 
+  /* Cheap and immediate while the page settles, then only when the
+     dashboard actually changes — so this costs nothing while a manager
+     leaves the tab open all shift. */
   var poll = setInterval(function () {
-    if (seen()) {
-      clearInterval(poll);
-      dot.className = 'dash-dot dash-dot-good';
-      label.textContent = 'Data provider connected';
-      if (help) help.hidden = true;
-    } else if (Date.now() - started > 6000) {
-      clearInterval(poll);
-      dot.className = 'dash-dot dash-dot-watch';
-      label.textContent = 'Data provider not detected';
-      if (help) help.hidden = false;
-    }
+    if (evaluate()) clearInterval(poll);
   }, 500);
+  setTimeout(function () { clearInterval(poll); }, 15000);
+
+  var watched = document.getElementById('deptOverviewTableBody');
+  var stampEl = document.getElementById('lastUpdateTime');
+  var observer = new MutationObserver(function () { evaluate(); });
+  if (watched) observer.observe(watched, { childList: true, subtree: true, characterData: true });
+  if (stampEl) observer.observe(stampEl, { childList: true, characterData: true, subtree: true });
+  if (refreshBtn) refreshBtn.addEventListener('click', function () { setTimeout(evaluate, 50); });
+
+  evaluate();
 })();
 </script>
