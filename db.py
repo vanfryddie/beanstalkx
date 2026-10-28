@@ -18,6 +18,7 @@ know or care which backend is live — see PGConnection/PGCursor.
 """
 import sqlite3
 import os
+import json
 import csv
 import io
 import uuid
@@ -165,6 +166,7 @@ _TABLES_WITH_ID_PK = {
     "ir_role_config", "xt_standards", "ambassador_targets", "olr_weekly_metrics", "internal_xt_targets",
     "user_department_assignments", "ambassador_indirect_roles", "de_tech_role_mapping",
     "training_requests", "training_request_nominees",
+    "floor_snapshots", "floor_presence",
     "xt_exclusions", "ambassador_process_definitions", "ambassador_training_sessions",
 }
 _INSERT_TABLE_RE = re.compile(r"INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
@@ -2160,6 +2162,47 @@ def init_db():
             updated_by TEXT,
             updated_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS floor_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            taken_at TEXT NOT NULL,
+            taken_by TEXT,
+            window_start TEXT,
+            window_end TEXT,
+            source TEXT,
+            row_count INTEGER DEFAULT 0,
+            matched_count INTEGER DEFAULT 0,
+            station_count INTEGER DEFAULT 0,
+            process_count INTEGER DEFAULT 0,
+            note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_floor_snapshots_taken ON floor_snapshots(taken_at);
+
+        CREATE TABLE IF NOT EXISTS floor_presence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL,
+            employee_id TEXT,
+            employee_login TEXT,
+            full_name TEXT,
+            manager_name TEXT,
+            process_key TEXT,
+            process_name TEXT,
+            function_name TEXT,
+            station TEXT,
+            paid_hours REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_floor_presence_snapshot ON floor_presence(snapshot_id);
+        CREATE INDEX IF NOT EXISTS idx_floor_presence_login ON floor_presence(employee_login);
+
+        CREATE TABLE IF NOT EXISTS floor_identity (
+            employee_id TEXT PRIMARY KEY,
+            employee_login TEXT,
+            full_name TEXT,
+            resolved_by TEXT,
+            first_seen TEXT,
+            last_seen TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_floor_identity_login ON floor_identity(employee_login);
 
         CREATE TABLE IF NOT EXISTS olr_weekly_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7307,6 +7350,380 @@ def is_shift_pulse_shared_key(key):
         return False
     return any(key == k or (k.endswith("_") and key.startswith(k))
                for k in SHIFT_PULSE_SHARED_KEYS)
+
+
+
+
+# ------------------------------------------------------- floor state ----
+#
+# Who is actually on shift, where, and on what. None of this is an L&D
+# figure: it comes from FCLM, through a manager's own browser, because
+# this server has no Midway session and must never hold one. What lands
+# here is a snapshot somebody's browser took and posted, with the time it
+# covers, so every view built on it can say how old it is rather than
+# implying it is live.
+#
+# FCLM identifies people by employee ID; LDIS knows them by login. The
+# identity map below is how the two meet, and it learns: an ID resolved
+# once is resolved for good, so later snapshots match without guessing
+# at names.
+
+FLOOR_PROCESSES_KEY = "floor_processes"
+FLOOR_WINDOW_KEY = "floor_window_minutes"
+FLOOR_DEFAULT_WINDOW_MINUTES = 30
+FLOOR_SNAPSHOT_KEEP = 8
+FLOOR_STALE_MINUTES = 45
+
+# The processes a sweep covers, as (key, FCLM process id, label). These
+# are the IDs the network's own Shift Pulse provider ships with, so a
+# site that runs the standard tool is already pointed at the same places.
+# A site can override the list through the floor_processes setting.
+FLOOR_DEFAULT_PROCESSES = (
+    ("pick", "1003001", "Pick"),
+    ("pack_single", "1002993", "Pack Single"),
+    ("pack_multis", "1002991", "Pack Multis"),
+    ("spp", "1002989", "SPP"),
+    ("sort", "1003051", "Sort"),
+    ("chuting", "1002969", "Chuting"),
+    ("each_tsi", "1002976", "Each TSI"),
+    ("tsi_decant", "1003019", "TSI Decant"),
+    ("each_stp", "1003016", "Each StP"),
+    ("prep_receiver", "1003002", "Prep Receiver"),
+    ("cubiscan", "1002971", "Cubiscan"),
+    ("pack_support", "1002994", "Pack Support"),
+)
+
+_NAME_NOISE_RE = re.compile(r"[^a-z]+")
+
+
+def normalise_person_name(name):
+    """A name reduced to the letters in it, sorted into a stable order.
+
+    FCLM writes "Lastname,Firstname"; the L&D uploads write "Firstname
+    Lastname"; some of them carry a middle name on one side only. Sorting
+    the parts makes the first two agree, and comparison falls back to
+    this only when no ID or login matched, because two different people
+    can share a name and an ID never lies."""
+    if not name:
+        return ""
+    parts = [p for p in _NAME_NOISE_RE.split(name.lower()) if p]
+    return " ".join(sorted(parts))
+
+
+def _floor_identity_map():
+    """Everything already known about which employee ID is which login."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT employee_id, employee_login FROM floor_identity WHERE employee_login IS NOT NULL"
+    ).fetchall()
+    conn.close()
+    return {str(r["employee_id"]): r["employee_login"] for r in rows}
+
+
+def _floor_known_people():
+    """Every associate this site has a record of, keyed by the three
+    things an FCLM row might be matched on: employee id, login, and a
+    normalised name. Built from the same tables the directory reads, so
+    presence can only ever attach to somebody LDIS already knows."""
+    conn = get_db()
+    by_id, by_login = {}, {}
+    name_owners = {}
+
+    def remember(login, full_name, employee_id=None):
+        if not login:
+            return
+        login = login.strip()
+        key = login.lower()
+        by_login.setdefault(key, login)
+        if full_name:
+            name_owners.setdefault(normalise_person_name(full_name), set()).add(key)
+        if employee_id:
+            by_id.setdefault(str(employee_id).strip(), login)
+
+    for r in conn.execute(
+        "SELECT DISTINCT employee_id, employee_login, full_name FROM xt_hours "
+        "WHERE employee_login IS NOT NULL").fetchall():
+        remember(r["employee_login"], r["full_name"], r["employee_id"])
+    for r in conn.execute(
+        "SELECT DISTINCT employee_login, full_name FROM tracked_items "
+        "WHERE employee_login IS NOT NULL").fetchall():
+        remember(r["employee_login"], r["full_name"])
+    for r in conn.execute(
+        "SELECT DISTINCT login, full_name FROM ir_dashboard WHERE login IS NOT NULL").fetchall():
+        remember(r["login"], r["full_name"])
+    conn.close()
+    # A name is only usable when exactly one person answers to it. Two
+    # associates called "Mohammed,Ahmed" are not a match, they are a
+    # coin toss, and a coin toss that puts one of them at the other's
+    # station is worse than leaving the row unattributed.
+    by_name = {key: by_login[next(iter(owners))]
+               for key, owners in name_owners.items()
+               if key and len(owners) == 1}
+    return by_id, by_login, by_name
+
+
+def _floor_match(row, identity, by_id, by_login, by_name):
+    """Which LDIS login an FCLM row belongs to, and how we know.
+
+    Tried in order of how much the answer can be trusted: a login the
+    browser already resolved, an ID resolved on an earlier sweep, an ID
+    the cross-training upload carries, then the name. Returns
+    (login, method) with login None when nothing matched, because a row
+    that cannot be attributed is better left unattributed than pinned on
+    somebody who happens to share a surname."""
+    login = (row.get("employee_login") or "").strip()
+    if login and login.lower() in by_login:
+        return by_login[login.lower()], "login"
+    employee_id = str(row.get("employee_id") or "").strip()
+    if employee_id:
+        if employee_id in identity:
+            return identity[employee_id], "identity"
+        if employee_id in by_id:
+            return by_id[employee_id], "employee_id"
+    key = normalise_person_name(row.get("full_name"))
+    if key and key in by_name:
+        return by_name[key], "name"
+    if login:
+        return login, "unknown-login"
+    return None, None
+
+
+def record_floor_snapshot(rows, window_start=None, window_end=None,
+                          taken_by=None, source="function-rollup", note=None):
+    """Store one sweep of the floor and return what it managed to match.
+
+    Rows are whatever the browser scraped: employee_id, full_name,
+    manager_name, process_key/process_name, function_name, station,
+    paid_hours, and employee_login when the browser could resolve it.
+    Every row is kept, matched or not, so a site can see that a sweep ran
+    and 40 of its people could not be identified rather than seeing an
+    empty floor and assuming nobody is in."""
+    rows = list(rows or [])
+    if not rows:
+        # A sweep that found nobody anywhere on site is a sweep that
+        # failed — every process request erred, or the session had
+        # expired — not a floor with nobody on it. Letting it become the
+        # newest snapshot would blank the page for everyone and look
+        # like the shift had gone home. The previous reading stays, and
+        # goes stale on its own, which is the honest display.
+        return {"snapshot_id": None, "rows": 0, "matched": 0, "unmatched": 0,
+                "learned": 0, "stored": False,
+                "reason": "an empty sweep is a failed sweep, so it was not stored"}
+    identity = _floor_identity_map()
+    by_id, by_login, by_name = _floor_known_people()
+    now = _now()
+
+    prepared, learned, matched = [], {}, 0
+    for row in rows:
+        login, method = _floor_match(row, identity, by_id, by_login, by_name)
+        if login and method not in (None, "unknown-login"):
+            matched += 1
+        employee_id = str(row.get("employee_id") or "").strip() or None
+        if employee_id and login and method in ("login", "employee_id", "name"):
+            learned[employee_id] = (login, row.get("full_name"), method)
+        prepared.append((
+            employee_id, login, row.get("full_name"), row.get("manager_name"),
+            row.get("process_key"), row.get("process_name"),
+            row.get("function_name"), row.get("station") or None,
+            _coerce_float(row.get("paid_hours")),
+        ))
+
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO floor_snapshots (taken_at, taken_by, window_start, window_end, "
+        "source, row_count, matched_count, station_count, process_count, note) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (now, taken_by, window_start, window_end, source, len(prepared), matched,
+         len([p for p in prepared if p[7]]),
+         len({p[4] for p in prepared if p[4]}), note),
+    )
+    snapshot_id = cur.lastrowid
+    for item in prepared:
+        conn.execute(
+            "INSERT INTO floor_presence (snapshot_id, employee_id, employee_login, full_name, "
+            "manager_name, process_key, process_name, function_name, station, paid_hours) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)", (snapshot_id,) + item)
+    for employee_id, (login, full_name, method) in learned.items():
+        conn.execute(
+            "INSERT INTO floor_identity (employee_id, employee_login, full_name, resolved_by, "
+            "first_seen, last_seen) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT (employee_id) DO UPDATE SET employee_login=excluded.employee_login, "
+            "full_name=excluded.full_name, resolved_by=excluded.resolved_by, "
+            "last_seen=excluded.last_seen",
+            (employee_id, login, full_name, method, now, now))
+
+    # Keep a short history: enough to see that sweeps are happening and
+    # to fall back one step if the newest came back empty, not enough to
+    # grow without bound on a site that sweeps every few minutes.
+    old = conn.execute(
+        "SELECT id FROM floor_snapshots ORDER BY taken_at DESC, id DESC").fetchall()
+    for r in old[FLOOR_SNAPSHOT_KEEP:]:
+        conn.execute("DELETE FROM floor_presence WHERE snapshot_id = ?", (r["id"],))
+        conn.execute("DELETE FROM floor_snapshots WHERE id = ?", (r["id"],))
+    conn.commit()
+    conn.close()
+    return {"snapshot_id": snapshot_id, "rows": len(prepared), "matched": matched,
+            "unmatched": len(prepared) - matched, "learned": len(learned), "stored": True}
+
+
+def _coerce_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_latest_floor_snapshot():
+    """The newest sweep's metadata, or None if the floor has never been
+    swept here."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM floor_snapshots ORDER BY taken_at DESC, id DESC LIMIT 1").fetchone()
+    conn.close()
+    if not row:
+        return None
+    meta = dict(row)
+    meta["age_minutes"] = _minutes_since(meta.get("taken_at"))
+    meta["is_stale"] = (meta["age_minutes"] is None
+                        or meta["age_minutes"] > FLOOR_STALE_MINUTES)
+    return meta
+
+
+def _minutes_since(stamp):
+    if not stamp:
+        return None
+    try:
+        then = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    return max(0, int((datetime.utcnow() - then).total_seconds() // 60))
+
+
+def get_floor_presence():
+    """The latest sweep as {login_lower: presence}, plus its metadata.
+
+    One entry per person even though FCLM reports them per process and
+    per function: somebody who moved from Pick to Pack during the window
+    appears in both, and what a manager needs is where they are now
+    (the process they booked the most time to in the window) with the
+    rest kept beside it."""
+    meta = get_latest_floor_snapshot()
+    if not meta:
+        return {}, None
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM floor_presence WHERE snapshot_id = ?", (meta["id"],)).fetchall()
+    conn.close()
+
+    people = {}
+    for r in rows:
+        login = (r["employee_login"] or "").strip()
+        if not login:
+            continue
+        key = login.lower()
+        entry = people.setdefault(key, {
+            "employee_login": login, "full_name": r["full_name"],
+            "employee_id": r["employee_id"], "manager_name": r["manager_name"],
+            "station": None, "processes": [], "paid_hours": 0.0,
+        })
+        if r["station"] and not entry["station"]:
+            entry["station"] = r["station"]
+        hours = r["paid_hours"] or 0.0
+        entry["paid_hours"] += hours
+        entry["processes"].append({
+            "process_key": r["process_key"], "process_name": r["process_name"],
+            "function_name": r["function_name"], "paid_hours": hours,
+        })
+
+    for entry in people.values():
+        entry["processes"].sort(key=lambda p: -(p["paid_hours"] or 0))
+        top = entry["processes"][0] if entry["processes"] else {}
+        entry["process_key"] = top.get("process_key")
+        entry["process_name"] = top.get("process_name")
+        entry["function_name"] = top.get("function_name")
+        entry["paid_hours"] = round(entry["paid_hours"], 2)
+        entry["also_in"] = [p["process_name"] for p in entry["processes"][1:]
+                            if p["process_name"] and p["process_name"] != entry["process_name"]]
+    return people, meta
+
+
+def get_floor_unmatched():
+    """Rows from the latest sweep that could not be tied to anybody LDIS
+    knows. Shown rather than dropped, because the usual cause is a name
+    spelled differently in two uploads and that is fixable."""
+    meta = get_latest_floor_snapshot()
+    if not meta:
+        return []
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT employee_id, full_name, manager_name, process_name, station "
+        "FROM floor_presence WHERE snapshot_id = ? AND (employee_login IS NULL OR employee_login = '') "
+        "ORDER BY full_name", (meta["id"],)).fetchall()
+    conn.close()
+    seen, out = set(), []
+    for r in rows:
+        key = (r["employee_id"], r["full_name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(r))
+    return out
+
+
+def get_site_setting(key, default=None):
+    """One site-level setting. Shares a table with the Shift Pulse keys
+    because it is the same kind of thing — a per-site value somebody
+    configured — but goes through its own accessor: the Shift Pulse pair
+    deliberately refuses any key that is not one of the dashboard's
+    proxied localStorage keys, and these are not."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT setting_value FROM shift_pulse_settings WHERE setting_key = ?", (key,)).fetchone()
+    conn.close()
+    return row["setting_value"] if row and row["setting_value"] is not None else default
+
+
+def set_site_setting(key, value, updated_by=None):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO shift_pulse_settings (setting_key, setting_value, updated_by, updated_at) "
+        "VALUES (?,?,?,?) ON CONFLICT(setting_key) DO UPDATE SET "
+        "setting_value=excluded.setting_value, updated_by=excluded.updated_by, "
+        "updated_at=excluded.updated_at",
+        (key, value, updated_by, _now()))
+    conn.commit()
+    conn.close()
+
+
+def get_floor_window_minutes():
+    """How far back a sweep looks. Long enough that somebody on a break
+    still counts as on site, short enough that it means "now"."""
+    try:
+        value = int(get_site_setting(FLOOR_WINDOW_KEY) or FLOOR_DEFAULT_WINDOW_MINUTES)
+    except (TypeError, ValueError):
+        return FLOOR_DEFAULT_WINDOW_MINUTES
+    return max(5, min(value, 720))
+
+
+def get_floor_processes():
+    """The processes a sweep should cover at this site."""
+    raw = get_site_setting(FLOOR_PROCESSES_KEY)
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            cleaned = [
+                {"key": p.get("key"), "process_id": str(p.get("process_id")),
+                 "label": p.get("label") or p.get("key")}
+                for p in parsed
+                if p.get("key") and p.get("process_id")
+            ]
+            if cleaned:
+                return cleaned
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return [{"key": k, "process_id": pid, "label": label}
+            for k, pid, label in FLOOR_DEFAULT_PROCESSES]
+
 
 
 def get_shift_pulse_settings():

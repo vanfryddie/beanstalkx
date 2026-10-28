@@ -1,0 +1,114 @@
+<!doctype html>
+<!--
+  A Function Rollup page, reduced to the structure the floor sweep reads.
+
+  Built to match the real report at SCN2 for Pick [1003001]: the same
+  two-row header, the same column order, the same employeeId links, the
+  per-function tables (MultiLowDensityPick, Pick To Rebin, RF Pick) each
+  ending in a spanning Total row, and names in FCLM's "Lastname,Firstname"
+  form. The Station column is the one the network's stations script adds;
+  the fixture carries it on one table and omits it on another, because
+  both happen in practice depending on what a manager has installed.
+
+  The people and ids are made up. The shape is not.
+-->
+<html><head><title>Function Rollup | FCLM Portal</title></head>
+<body>
+<div class="report-header">SCN2 &nbsp; FCLM &nbsp; PPR Labor Metrics &nbsp; Function Rollup</div>
+
+<h3>MultiLowDensityPick [4300016826]</h3>
+<table class="sortable result-table align-left">
+  <thead>
+    <tr>
+      <th rowspan="2">Type</th><th rowspan="2">ID</th><th rowspan="2">Name</th>
+      <th rowspan="2">Manager</th><th rowspan="2">Station</th>
+      <th colspan="5">Paid Hours</th>
+      <th rowspan="2">Jobs</th><th rowspan="2">JPH</th>
+      <th colspan="2">EACH-Small</th>
+    </tr>
+    <tr>
+      <th>Small</th><th>Medium</th><th>Large</th><th>HeavyBulky</th><th>Total</th>
+      <th>UNIT</th><th>UPH</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="empl-all">
+      <td>AMZN</td>
+      <td><a href="/employee/timeDetails?employeeId=100356745&amp;warehouseId=SCN2">100356745</a></td>
+      <td>Grzegorczyk,Rafal Michal</td>
+      <td>Chowdhury,Asif</td><td>&ndash;</td>
+      <td>0.01</td><td></td><td></td><td></td><td>0.01</td>
+      <td>8</td><td>553.85</td><td>8</td><td>553.85</td>
+    </tr>
+    <tr class="empl-all">
+      <td>AMZN</td>
+      <td><a href="/employee/timeDetails?employeeId=111119781&amp;warehouseId=SCN2">111119781</a></td>
+      <td>Adan omer,Saidiyo</td>
+      <td>Piskin,Firat</td><td>A04 &ndash; A4359</td>
+      <td>0.01</td><td></td><td></td><td></td><td>0.01</td>
+      <td>2</td><td>300.00</td><td>2</td><td>300.00</td>
+    </tr>
+    <tr class="empl-all">
+      <td>TEMP</td>
+      <td><a href="/employee/timeDetails?employeeId=113594621&amp;warehouseId=SCN2">113594621</a></td>
+      <td>Alamian,Tarek</td>
+      <td>Treptow,Marc Philip</td><td>&ndash;</td>
+      <td>0.08</td><td></td><td></td><td></td><td>0.08</td>
+      <td>71</td><td>926.09</td><td>71</td><td>926.09</td>
+    </tr>
+    <tr class="empl-all">
+      <td colspan="5">Total</td>
+      <td>3.82</td><td></td><td></td><td></td><td>3.82</td>
+      <td>2466</td><td>645.08</td><td>2466</td><td>645.08</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>RF Pick [4300000184]</h3>
+<table class="sortable result-table align-left">
+  <thead>
+    <tr>
+      <th rowspan="2">Type</th><th rowspan="2">ID</th><th rowspan="2">Name</th>
+      <th rowspan="2">Manager</th>
+      <th colspan="5">Paid Hours</th>
+      <th rowspan="2">Jobs</th><th rowspan="2">JPH</th>
+      <th colspan="2">EACH-Small</th>
+    </tr>
+    <tr>
+      <th>Small</th><th>Medium</th><th>Large</th><th>HeavyBulky</th><th>Total</th>
+      <th>UNIT</th><th>UPH</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="empl-all">
+      <td>AMZN</td>
+      <td><a href="/employee/timeDetails?employeeId=100356745&amp;warehouseId=SCN2">100356745</a></td>
+      <td>Grzegorczyk,Rafal Michal</td>
+      <td>Chowdhury,Asif</td>
+      <td>2.74</td><td>2.46</td><td></td><td></td><td>5.20</td>
+      <td>1950</td><td>374.98</td><td>1066</td><td>388.93</td>
+    </tr>
+    <tr class="empl-all">
+      <td>AMZN</td>
+      <td><a href="/employee/timeDetails?employeeId=104956548&amp;warehouseId=SCN2">104956548</a></td>
+      <td>Quraishi,Shahnawaz</td>
+      <td>Deraz,Ahmed</td>
+      <td>1.97</td><td>1.49</td><td>0.01</td><td></td><td>3.47</td>
+      <td>859</td><td>247.61</td><td>505</td><td>256.27</td>
+    </tr>
+    <tr class="empl-all">
+      <td>TEMP</td>
+      <td><a href="/employee/timeDetails?employeeId=208651433&amp;warehouseId=SCN2">208651433</a></td>
+      <td>Faisal,Abballa</td>
+      <td>Salhi,Hichem</td>
+      <td>2.53</td><td>2.41</td><td>0.07</td><td></td><td>5.01</td>
+      <td>1174</td><td>234.42</td><td>600</td><td>240.11</td>
+    </tr>
+    <tr class="empl-all">
+      <td colspan="4">Total</td>
+      <td>216.79</td><td>180.77</td><td>5.38</td><td></td><td>402.99</td>
+      <td>138419</td><td>343.48</td><td>78056</td><td>360.05</td>
+    </tr>
+  </tbody>
+</table>
+</body></html>

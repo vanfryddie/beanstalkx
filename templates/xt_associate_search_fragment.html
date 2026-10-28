@@ -10,6 +10,23 @@
       <strong style="font-size:14px; color:var(--navy);">{{ e.full_name or e.employee_login }}</strong>
       <span class="mono" style="font-size:11.5px; color:var(--text-lo);">{{ e.employee_login }} · {{ e.fclm_mapped or '—' }}</span>
     </div>
+    {%- set floor = (floor_presence or {}).get((e.employee_login or '')|lower) %}
+    {% if floor_meta %}
+    <div class="xt-floor-line">
+      {% if floor %}
+      <i class="dash-dot dash-dot-good"></i>
+      <span>
+        On the floor{% if floor.process_name %} in <strong>{{ floor.process_name }}</strong>{% endif %}
+        {%- if floor.function_name and floor.function_name != floor.process_name %} ({{ floor.function_name }}){% endif %}
+        {%- if floor.station %} at <strong>{{ floor.station }}</strong>{% endif %}
+      </span>
+      {% else %}
+      <i class="dash-dot dash-dot-none"></i>
+      <span>Not on the floor</span>
+      {% endif %}
+      <em>FCLM, {{ 'just now' if floor_meta.age_minutes == 0 else (floor_meta.age_minutes ~ ' min ago') }}</em>
+    </div>
+    {% endif %}
     <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
       <thead>
         <tr>

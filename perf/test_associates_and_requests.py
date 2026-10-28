@@ -101,6 +101,23 @@ print("\n5b. The summary at the top counts the same thing the cards do")
 # reading "1 open item" is the kind of thing a manager notices and then
 # stops trusting the page over. The two counts are different questions —
 # overdue, versus overdue or coming due — so both are named.
+# One associate whose only open item is a due-soon one. Without them the
+# two counts below can come out equal by luck of the seed, and comparing
+# two equal numbers proves nothing about which of them the header reads.
+_risk_only = "zz-risk-only"
+_conn = db.get_db()
+_conn.execute("DELETE FROM tracked_items WHERE employee_login = ?", (_risk_only,))
+_conn.execute(
+    "INSERT INTO tracked_items (section, employee_login, full_name, am_login, subcategory, status) "
+    "VALUES (?,?,?,?,?,?)",
+    ("safety_compliance", _risk_only, "Risk Only", am, "Due soon, not overdue",
+     sorted(db.STATUS_RISK)[0]))
+_conn.execute(
+    "INSERT INTO tracked_items (section, employee_login, full_name, am_login, subcategory, status) "
+    "VALUES (?,?,?,?,?,?)",
+    ("safety_compliance", _risk_only, "Risk Only", am, "Done", sorted(db.STATUS_OK)[0]))
+_conn.commit(); _conn.close()
+
 page_body = am_client.get(f"/overview?tab=directory&am={am}").get_data(as_text=True)
 cards_with_items = len(re.findall(r"<summary>\s*\d+ open item", page_body))
 people = db.get_associate_directory(am_logins=[am])
@@ -123,6 +140,12 @@ check("'Not compliant' counts only the overdue",
       f"header says {stat('Not compliant')}, {expect_gap} are overdue")
 check("the two are genuinely different here, so the check means something",
       expect_open != expect_gap, f"both {expect_open}")
+check("the at-risk-only associate counts as having an open item, not as not-compliant",
+      _risk_only in {p["employee_login"] for p in people if p["open_items"]}
+      and _risk_only not in {p["employee_login"] for p in people if p["totals"]["gap"]})
+_conn = db.get_db()
+_conn.execute("DELETE FROM tracked_items WHERE employee_login = ?", (_risk_only,))
+_conn.commit(); _conn.close()
 
 print("\n6. Shift Pulse is reachable as a tab, sharing the page's markup")
 tab = client("admin", "admin").get("/overview?tab=shiftpulse").get_data(as_text=True)

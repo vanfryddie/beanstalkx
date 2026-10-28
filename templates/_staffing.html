@@ -1,0 +1,263 @@
+{% import "_dashboard.html" as dash %}
+{#- Staffing.
+
+    Cross-training says who could run Pack. The floor sweep says who is
+    running Pack. Neither answers the question a manager actually has at
+    10:40 on a shift — who can I move — so this page is built to put the
+    two beside each other and filter on the gap between them.
+
+    Everything here is as old as the last sweep, and says so. A page that
+    looked live while showing an hour-old floor would get somebody sent to
+    a station nobody is standing at. -#}
+
+{% set m = floor_staffing.meta %}
+<div id="ldisFloorMarker"
+     data-age-seconds="{{ (m.age_minutes * 60) if m and m.age_minutes is not none else 99999 }}"
+     data-window="{{ floor_staffing.window_minutes }}" hidden></div>
+
+<div class="sp-panel-bar">
+  <span class="dash-chip" id="floorChip">
+    {% if not m %}
+    <i class="dash-dot dash-dot-none"></i><span id="floorChipText">No floor data yet</span>
+    {% elif m.is_stale %}
+    <i class="dash-dot dash-dot-watch"></i>
+    <span id="floorChipText">Floor last read {{ m.age_minutes }} min ago — out of date</span>
+    {% else %}
+    <i class="dash-dot dash-dot-good"></i>
+    <span id="floorChipText">Floor read {{ 'just now' if m.age_minutes == 0 else (m.age_minutes ~ ' min ago') }}</span>
+    {% endif %}
+  </span>
+  <button type="button" class="btn btn-ghost btn-sm" id="floorRefresh">Read the floor now</button>
+  <a class="sp-provider-link" href="{{ url_for('floor_userscript') }}">Install or update the floor reader</a>
+</div>
+
+{% if not m %}
+<div class="dash-empty dash-empty-page">
+  <strong>Nobody has read the floor yet.</strong>
+  <p style="margin:8px 0 0; font-size:13px; color:var(--text-lo); max-width:62ch;">
+    Live staffing comes from FCLM, and FCLM can only be read from your own browser under your
+    own Midway session — this server has none, and shouldn't. Install the
+    <a href="{{ url_for('floor_userscript') }}">floor reader</a> userscript in Tampermonkey and
+    reload this tab; it sweeps Function Rollup for every process at once and posts the result
+    back here, so the whole site reads the floor once rather than each manager reading it alone.
+  </p>
+</div>
+{% else %}
+
+<section class="dash-summary">
+  <div class="dash-summary-story">
+    <h2>{{ floor_staffing.on_site }} of {{ floor_staffing.total }} on the floor.</h2>
+    <p>
+      From the last {{ floor_staffing.window_minutes }} minutes of FCLM, read
+      {{ 'just now' if m.age_minutes == 0 else (m.age_minutes ~ (' minute ago' if m.age_minutes == 1 else ' minutes ago')) }}
+      {% if m.taken_by %}by {{ m.taken_by }}{% endif %}.
+      {% if floor_staffing.off_site %}{{ floor_staffing.off_site }} of your team
+      {{ 'has' if floor_staffing.off_site == 1 else 'have' }} not booked time to any swept process in
+      that window.{% endif %}
+    </p>
+    {% if floor_staffing.unmatched %}
+    <span class="dash-chip" title="FCLM rows that match nobody in this site's L&D data">
+      <i class="dash-dot dash-dot-watch"></i>
+      {{ floor_staffing.unmatched | length }} on the floor the console cannot name
+    </span>
+    {% endif %}
+  </div>
+  <div class="dash-summary-stats">
+    <div class="dash-stat">
+      <span class="dash-stat-label">On the floor</span>
+      {{ dash.figure(floor_staffing.on_site, suffix='') }}
+      <span class="dash-stat-sub">Booked in the window</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Not seen</span>
+      {{ dash.figure(floor_staffing.off_site, suffix='') }}
+      <span class="dash-stat-sub">Off shift, or elsewhere</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Processes running</span>
+      {{ dash.figure(floor_staffing.by_process | length, suffix='') }}
+      <span class="dash-stat-sub">With your people in them</span>
+    </div>
+  </div>
+</section>
+
+{% if floor_staffing.by_process %}
+<h2 class="dash-section-label">Where your team is</h2>
+<div class="st-process-strip">
+  {% for name, count in floor_staffing.by_process %}
+  <a class="st-process{{ ' is-active' if floor_staffing.filters.working_in == name }}"
+     href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope, working_in=('' if floor_staffing.filters.working_in == name else name), trained_for=floor_staffing.filters.trained_for, presence=floor_staffing.filters.presence) }}">
+    <strong>{{ count }}</strong>
+    <span>{{ name }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<form class="ad-controls st-controls" method="get" action="{{ url_for('overview') }}">
+  <input type="hidden" name="tab" value="staffing">
+  {% if am_scope %}<input type="hidden" name="am" value="{{ am_scope if am_scope is string else '' }}">{% endif %}
+  {% if fc_scope %}<input type="hidden" name="fc" value="{{ fc_scope }}">{% endif %}
+  <label class="sr-only" for="stSearch">Search</label>
+  <input id="stSearch" type="search" name="q" value="{{ floor_staffing.filters.q or '' }}"
+         placeholder="Search name, login, station or process">
+  <label class="sr-only" for="stPresence">Presence</label>
+  <select id="stPresence" name="presence" onchange="this.form.submit()">
+    <option value="">Everyone</option>
+    <option value="on_site" {{ 'selected' if floor_staffing.filters.presence == 'on_site' }}>On the floor</option>
+    <option value="off_site" {{ 'selected' if floor_staffing.filters.presence == 'off_site' }}>Not seen</option>
+  </select>
+  <label class="sr-only" for="stTrained">Trained for</label>
+  <select id="stTrained" name="trained_for" onchange="this.form.submit()">
+    <option value="">Trained for anything</option>
+    {% for p in floor_staffing.trained_options %}
+    <option value="{{ p }}" {{ 'selected' if floor_staffing.filters.trained_for == p }}>Trained for {{ p }}</option>
+    {% endfor %}
+  </select>
+  <label class="sr-only" for="stWorking">Currently in</label>
+  <select id="stWorking" name="working_in" onchange="this.form.submit()">
+    <option value="">In any process</option>
+    {#- The one that turns this page into a staffing decision: people who
+        can do the job, are here, and are doing something else. -#}
+    <option value="__elsewhere__" {{ 'selected' if floor_staffing.filters.working_in == '__elsewhere__' }}
+            {{ 'disabled' if not floor_staffing.filters.trained_for }}>
+      Trained for it, here, working elsewhere{{ ' — pick a process first' if not floor_staffing.filters.trained_for }}
+    </option>
+    {% for p in floor_staffing.floor_options %}
+    <option value="{{ p }}" {{ 'selected' if floor_staffing.filters.working_in == p }}>Currently in {{ p }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-ghost" type="submit">Search</button>
+  {% if floor_staffing.filters.q or floor_staffing.filters.presence or floor_staffing.filters.trained_for or floor_staffing.filters.working_in %}
+  <a class="btn btn-ghost" href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope) }}">Clear</a>
+  {% endif %}
+</form>
+
+{% if floor_staffing.people %}
+<div class="dash-table-scroll">
+  <table class="dash-table st-table">
+    <thead>
+      <tr>
+        <th scope="col">Associate</th>
+        <th scope="col">On the floor</th>
+        <th scope="col">Station</th>
+        <th scope="col">Trained for</th>
+        <th scope="col" class="num">Compliance</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in floor_staffing.people %}
+      <tr class="{{ 'st-off' if p.floor_state != 'present' }}">
+        <th scope="row">
+          <strong>{{ p.full_name }}</strong>
+          <span class="mono">{{ p.employee_login }}{% if p.shift %} · {{ db_shifts.get(p.shift, p.shift) }}{% endif %}</span>
+        </th>
+        <td>
+          {% if p.floor %}
+          <span class="st-now">
+            <i class="dash-dot dash-dot-good"></i>
+            <span>
+              <strong>{{ p.floor.process_name or 'Unattributed' }}</strong>
+              {% if p.floor.function_name and p.floor.function_name != p.floor.process_name %}
+              <em>{{ p.floor.function_name }}</em>{% endif %}
+              {% if p.floor.also_in %}<em>also {{ p.floor.also_in | join(', ') }}</em>{% endif %}
+            </span>
+          </span>
+          {% else %}
+          <span class="st-now st-now-off"><i class="dash-dot dash-dot-none"></i><span>Not seen</span></span>
+          {% endif %}
+        </td>
+        <td class="mono">
+          {% if p.floor and p.floor.station %}{{ p.floor.station }}
+          {% elif p.floor %}<span class="dash-muted" title="Station data was not available for this sweep">—</span>
+          {% else %}<span class="dash-muted">—</span>{% endif %}
+        </td>
+        <td>
+          {% if p.trained_processes %}
+          <span class="st-trained">
+            {% for t in p.trained_processes %}
+            <span class="ad-tag{{ ' st-tag-here' if t in p.doing_trained }}"
+                  {% if t in p.doing_trained %}title="Doing this right now"{% endif %}>{{ t }}</span>
+            {% endfor %}
+          </span>
+          {% else %}<span class="dash-muted">No cross-training recorded</span>{% endif %}
+        </td>
+        <td class="num mono {{ 'is-below' if p.compliance_pct is not none and p.compliance_pct < 95 }}">
+          {{ (p.compliance_pct ~ '%') if p.compliance_pct is not none else '—' }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="dash-empty dash-empty-page">
+  Nobody matches those filters.
+  <a href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope) }}">Show everyone</a>
+</div>
+{% endif %}
+
+{% if floor_staffing.unmatched %}
+<details class="dash-table-wrap st-unmatched">
+  <summary>
+    <span>{{ floor_staffing.unmatched | length }} on the floor the console cannot name</span>
+    <span class="dash-summary-hint">FCLM has them; no L&amp;D upload here does, so they belong to nobody's team yet</span>
+  </summary>
+  <div class="dash-table-scroll">
+    <table class="dash-table">
+      <thead><tr><th scope="col">Name in FCLM</th><th scope="col">Manager</th><th scope="col">Process</th><th scope="col">Station</th></tr></thead>
+      <tbody>
+        {% for u in floor_staffing.unmatched[:40] %}
+        <tr>
+          <th scope="row"><strong>{{ u.full_name }}</strong><span class="mono">{{ u.employee_id }}</span></th>
+          <td>{{ u.manager_name or '—' }}</td>
+          <td>{{ u.process_name or '—' }}</td>
+          <td class="mono">{{ u.station or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
+{% endif %}
+
+<script>
+/* The reader is a userscript, so the page cannot start it directly — it
+   asks, by firing an event the script listens for, and reports back
+   whatever the script says it is doing. If no script is installed
+   nothing answers and the button says so rather than spinning. */
+(function () {
+  var btn = document.getElementById('floorRefresh');
+  var text = document.getElementById('floorChipText');
+  if (!btn || !text) return;
+  var answered = false;
+
+  document.addEventListener('ldis-floor-status', function (e) {
+    answered = true;
+    var d = e.detail || {};
+    if (d.phase === 'fetching') {
+      text.textContent = 'Reading FCLM… ' + (d.done || 0) + ' of ' + (d.total || '?') + ' processes';
+    } else if (d.phase === 'resolving') { text.textContent = 'Matching ' + d.rows + ' rows to logins…'; }
+    else if (d.phase === 'stations') { text.textContent = 'Looking up stations…'; }
+    else if (d.phase === 'posting') { text.textContent = 'Saving the sweep…'; }
+    else if (d.phase === 'failed') { text.textContent = 'Could not read FCLM — ' + (d.error || 'see the console'); }
+  });
+
+  document.addEventListener('ldis-floor-updated', function () {
+    text.textContent = 'Floor read just now — reloading';
+    setTimeout(function () { location.reload(); }, 600);
+  });
+
+  btn.addEventListener('click', function () {
+    answered = false;
+    text.textContent = 'Asking the floor reader…';
+    document.dispatchEvent(new CustomEvent('ldis-floor-sweep'));
+    setTimeout(function () {
+      if (!answered) {
+        text.textContent = 'No floor reader is installed in this browser';
+      }
+    }, 2500);
+  });
+})();
+</script>

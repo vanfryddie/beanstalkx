@@ -11,6 +11,8 @@ cannot write.
 import io, os, re, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import application, db
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from browser import chromium_path
 from werkzeug.serving import make_server
 
 fails = []
@@ -120,7 +122,7 @@ check("the FCLM calls are untouched", "fclm-portal.amazon.com" in served)
 print("\n4. Shared settings round-trip through the server")
 from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
-    b = p.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args=["--no-sandbox"])
+    b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
     ctx = b.new_context(viewport={"width": 1500, "height": 950})
     pg = ctx.new_page()
     pg.goto("http://127.0.0.1:5630/", wait_until="domcontentloaded")
@@ -187,7 +189,7 @@ check("the stored value really is malformed (no buckets key)",
 srv = make_server("127.0.0.1", 5631, application.application, threaded=True)
 threading.Thread(target=srv.serve_forever, daemon=True).start(); time.sleep(1.0)
 with sync_playwright() as p:
-    b = p.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args=["--no-sandbox"])
+    b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
     ctx = b.new_context(viewport={"width": 1500, "height": 950})
     pg = ctx.new_page()
     page_errors = []
@@ -266,7 +268,7 @@ print("\n6b. The provider chip tells the truth, and keeps telling it")
 srv = make_server("127.0.0.1", 5632, application.application, threaded=True)
 threading.Thread(target=srv.serve_forever, daemon=True).start(); time.sleep(1.0)
 with sync_playwright() as p:
-    b = p.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args=["--no-sandbox"])
+    b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
     ctx = b.new_context(viewport={"width": 1500, "height": 950})
 
     def open_dashboard(path):

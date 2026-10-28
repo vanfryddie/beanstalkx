@@ -58,6 +58,54 @@ for line_no, script in scripts:
         if chunk.count("'") % 2:
             fail(f"db.py:{line_no} ';' splits a quoted literal: {chunk.strip()[:60]!r}")
 
+print("\nEvery table declared to have an id primary key really has one")
+# The Postgres layer appends RETURNING id to an INSERT into any table in
+# _TABLES_WITH_ID_PK, so a table listed there without an id column is a
+# 500 that only ever appears in production. floor_identity was added to
+# that set by hand and keys on employee_id; this is the check that would
+# have caught it before Postgres did.
+import sqlite3 as _sqlite3
+sys.path.insert(0, ROOT)
+import db
+
+probe = _sqlite3.connect(":memory:")
+for _line_no, block in scripts:
+    try:
+        probe.executescript(block)
+    except Exception as exc:
+        print("  note: could not apply one schema block to the probe:", exc)
+
+declared = {row[0] for row in probe.execute(
+    "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+missing_id, undeclared = [], []
+for table in sorted(db._TABLES_WITH_ID_PK):
+    if table not in declared:
+        continue
+    cols = {r[1] for r in probe.execute(f"PRAGMA table_info({table})").fetchall()}
+    if "id" not in cols:
+        missing_id.append(table)
+for table in sorted(declared):
+    cols = {r[1] for r in probe.execute(f"PRAGMA table_info({table})").fetchall()}
+    pk = [r[1] for r in probe.execute(f"PRAGMA table_info({table})").fetchall() if r[5]]
+    if "id" in cols and pk == ["id"] and table not in db._TABLES_WITH_ID_PK:
+        undeclared.append(table)
+probe.close()
+
+ok = True
+if missing_id:
+    ok = False
+    print("  FAIL  listed as having an id primary key but has no id column: " + ", ".join(missing_id))
+else:
+    print("  PASS  every table listed as having an id primary key has one")
+if undeclared:
+    print("  note  tables with an id primary key not listed (lastrowid will not work there): "
+          + ", ".join(undeclared))
+if not ok:
+    import sys as _sys
+    print("\n" + "=" * 60)
+    print("SCHEMA/ID MISMATCH — fix _TABLES_WITH_ID_PK in db.py")
+    _sys.exit(1)
+
 print("\n" + "=" * 60)
 if failures:
     print(f"{len(failures)} PROBLEM(S) — these break Postgres but not SQLite")

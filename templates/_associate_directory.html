@@ -127,6 +127,17 @@
       </div>
 
       <div class="ad-tags">
+        {#- Where they are right now, when the floor has been read. An
+            absent badge is only shown once a sweep exists: with no
+            snapshot, "not on the floor" would be a guess dressed as a
+            fact. -#}
+        {% if floor_meta and person.floor %}
+        <span class="ad-tag ad-tag-floor" title="From FCLM, read {{ floor_meta.age_minutes }} minutes ago">
+          On the floor{% if person.floor.process_name %} · {{ person.floor.process_name }}{% endif %}{% if person.floor.station %} · {{ person.floor.station }}{% endif %}
+        </span>
+        {% elif floor_meta and not floor_meta.is_stale %}
+        <span class="ad-tag ad-tag-offfloor" title="Not booked to any swept process in the last window">Not on the floor</span>
+        {% endif %}
         {% if person.is_ambassador %}
         <span class="ad-tag ad-tag-amb" title="Ambassador — {{ person.ambassador_kinds|join(' and ') }}">
           Ambassador{% if person.ambassador_kinds %} · {{ person.ambassador_kinds|join(', ') }}{% endif %}

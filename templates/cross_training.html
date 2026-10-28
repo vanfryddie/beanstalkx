@@ -107,6 +107,10 @@
     </div>
     <button type="button" id="xtDirectoryFilterGo" class="btn xt-directory-search-btn">Apply filters</button>
   </div>
+  {#- The floor reader sweeps when it finds this marker, so looking
+      somebody up here gets a current reading rather than whatever the
+      Staffing tab last left behind. -#}
+  <div id="ldisFloorMarker" data-age-seconds="{{ (floor_meta.age_minutes * 60) if floor_meta and floor_meta.age_minutes is not none else 99999 }}" hidden></div>
   <div id="xtDirectoryResults" class="xt-directory-results" aria-live="polite"></div>
 </section>
 

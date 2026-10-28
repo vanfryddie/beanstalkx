@@ -7,7 +7,7 @@ in a SQLite-only test suite can catch that class of bug.
 
 Point DATABASE_URL at a scratch Postgres and run this.
 """
-import os, sys, time
+import os, sys, time, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 if not os.environ.get("DATABASE_URL"):
@@ -86,6 +86,10 @@ routes = [
     ("My Associates (role filter)", f"/overview?tab=directory&am={ams[0]}&holds=gaps"),
     ("Training request review queue", "/scorecards?tab=requests"),
     ("OLR review tab", f"/overview?tab=olr&am={ams[0]}"),
+    ("Staffing tab", f"/overview?tab=staffing&am={ams[0]}"),
+    ("Floor config", "/floor/config"),
+    ("Floor status", "/floor/status"),
+    ("Floor reader userscript", "/floor/provider.user.js"),
     ("Weekly plan", "/weekly-plan"),
 ]
 for name, url in routes:
@@ -184,6 +188,44 @@ if olr_series:
               f"{pack['total']['now']} vs {db._olr_composite(seven_only)}")
 else:
     check("there is OLR history to check", False, "no snapshots written")
+
+print("\n4d. A floor sweep round-trips on Postgres")
+# The sweep is the one write path that arrives from outside the app, and
+# it inserts a row per person per process — hundreds at a site — in one
+# request. Worth proving against the real engine rather than SQLite.
+floor_team = db.get_associate_directory(am_logins=[ams[0]])
+sweep_rows = [{
+    "employee_id": f"88{i:05d}", "employee_login": p["employee_login"],
+    "full_name": p["full_name"], "manager_name": "Chowdhury,Asif",
+    "process_key": "pick" if i % 2 else "pack_single",
+    "process_name": "Pick" if i % 2 else "Pack Single",
+    "function_name": "RF Pick" if i % 2 else "Slam At Pack",
+    "station": f"A02 - A4{i:03d}", "paid_hours": 3.5,
+} for i, p in enumerate(floor_team)]
+sweep_rows.append({"employee_id": "880000", "full_name": "Stranger,Unknown",
+                   "process_name": "Pick", "paid_hours": 1.0})
+posted = c.post("/floor/snapshot", json={"window_start": "2026-10-28T10:00",
+                                         "window_end": "2026-10-28T10:30",
+                                         "rows": sweep_rows})
+check("a sweep posts", posted.status_code == 200, str(posted.status_code))
+result = posted.get_json() or {}
+check("every known associate in it is matched",
+      result.get("matched") == len(floor_team), json.dumps(result))
+check("the stranger is kept unattributed", result.get("unmatched") == 1, json.dumps(result))
+presence, meta = db.get_floor_presence()
+check("the sweep is readable in a later request", len(presence) == len(floor_team),
+      f"{len(presence)} of {len(floor_team)}")
+check("and its age is known", meta and meta["age_minutes"] is not None, str(meta))
+view = application.build_staffing_view([ams[0]], None,
+                                       {"trained_for": "Pack", "working_in": "__elsewhere__"})
+check("the staffing move runs against Postgres", isinstance(view["people"], list))
+check("identities learned on the sweep are stored",
+      db._floor_identity_map().get("8800000") in {p["employee_login"] for p in floor_team}
+      or len(db._floor_identity_map()) >= len(floor_team),
+      str(len(db._floor_identity_map())))
+r = c.get(f"/overview?tab=staffing&am={ams[0]}")
+check("the staffing tab renders the sweep", r.status_code == 200 and b"on the floor" in r.get_data().lower(),
+      str(r.status_code))
 
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()

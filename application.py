@@ -1905,6 +1905,8 @@ def overview():
     directory_filter = request.args.get("holds") or ""
     if tab in ("directory", "requests"):
         directory = db.get_associate_directory(am_logins=query_am_scope, fc=fc_scope)
+        floor_presence, _floor_meta = db.get_floor_presence()
+        _attach_floor_presence(directory, floor_presence)
         directory_roles = sorted(
             {r["role"] for person in directory for r in person["roles"]},
             key=str.lower)
@@ -1996,6 +1998,14 @@ def overview():
         shift_slots=shift_slots,
         scorecard_categories=scorecard_categories,
         directory=directory,
+        floor_meta=db.get_latest_floor_snapshot() if tab in ("directory", "staffing") else None,
+        floor_staffing=(build_staffing_view(
+            query_am_scope, fc_scope,
+            {"q": request.args.get("q"),
+             "presence": request.args.get("presence"),
+             "trained_for": request.args.get("trained_for"),
+             "working_in": request.args.get("working_in")})
+            if tab == "staffing" else None),
         db_shifts=db.SHIFTS,
         directory_roles=directory_roles,
         directory_q=directory_q,
@@ -3118,6 +3128,7 @@ def cross_training():
     return render_template(
         "cross_training.html",
         **_login_context(),
+        floor_meta=db.get_latest_floor_snapshot() if tab == "directory" else None,
         tab=tab,
         scenario=scenario,
         xt_scenarios=db.XT_SCENARIOS,
@@ -3167,7 +3178,7 @@ def api_xt_department(department):
         return "", 403
     try:
         employees = db.get_xt_employees_by_department(department)
-        return render_template("xt_associate_search_fragment.html", employees=employees, query=department, is_department_lookup=True, department=department)
+        return render_template("xt_associate_search_fragment.html", **_floor_fragment_context(), employees=employees, query=department, is_department_lookup=True, department=department)
     except Exception as e:
         return f'<div class="empty-state" style="padding:16px; color:var(--red); text-align:left;"><strong>Lookup failed:</strong> {e}</div>'
 
@@ -3182,7 +3193,7 @@ def api_xt_coverage_table():
     process = request.args.get("process") or None
     if not manager_login and not department and not process:
         return render_template(
-            "xt_associate_search_fragment.html", employees=[], query="",
+            "xt_associate_search_fragment.html", **_floor_fragment_context(), employees=[], query="",
             is_department_lookup=True, department="a manager, a department, or a process",
         )
     try:
@@ -3197,7 +3208,7 @@ def api_xt_coverage_table():
         if process:
             label_bits.append(f"trained in '{process}'")
         return render_template(
-            "xt_associate_search_fragment.html", employees=employees, query=" + ".join(label_bits),
+            "xt_associate_search_fragment.html", **_floor_fragment_context(), employees=employees, query=" + ".join(label_bits),
             is_department_lookup=True, department=" + ".join(label_bits),
         )
     except Exception as e:
@@ -3210,7 +3221,7 @@ def api_xt_team(manager_login):
         return "", 403
     try:
         employees = db.get_xt_team(manager_login)
-        return render_template("xt_associate_search_fragment.html", employees=employees, query=manager_login, is_team_lookup=True, manager_login=manager_login)
+        return render_template("xt_associate_search_fragment.html", **_floor_fragment_context(), employees=employees, query=manager_login, is_team_lookup=True, manager_login=manager_login)
     except Exception as e:
         return f'<div class="empty-state" style="padding:16px; color:var(--red); text-align:left;"><strong>Lookup failed:</strong> {e}</div>'
 
@@ -3230,7 +3241,7 @@ def api_xt_associate_search():
     query = request.args.get("q", "")
     try:
         employees = db.search_xt_employees(query)
-        return render_template("xt_associate_search_fragment.html", employees=employees, query=query)
+        return render_template("xt_associate_search_fragment.html", **_floor_fragment_context(), employees=employees, query=query)
     except Exception as e:
         # Surfacing the real error here (instead of letting it become a
         # bare 500) is deliberate and temporary — this exact class of
@@ -4053,6 +4064,276 @@ def training_request_decide(request_id):
            "declined": "Declined, and the reason is on the request.",
            "open": "Reopened."}[status], "success")
     return redirect(request.referrer or url_for("scorecards", tab="requests"))
+
+
+# ------------------------------------------------------- floor sync ----
+#
+# Who is on the floor right now comes from FCLM, and FCLM is reachable
+# only from a manager's own browser under their own Midway session. The
+# console therefore never fetches it: it hands out a userscript, takes
+# the snapshot that script posts back, and is honest on every page about
+# how old that snapshot is.
+
+FLOOR_POST_ROLES = OPS_SELF_ROLES | OPS_MANAGER_ROLES | ADMIN_TIER_ROLES
+
+
+def _floor_match_lines():
+    """Where the floor script runs: the pages that show floor state.
+
+    Same two rules as the Shift Pulse provider's @match lines — no query
+    string, because that is not part of a match pattern, and both
+    schemes, because a load balancer that terminates TLS leaves
+    request.url_root saying http while the address bar says https."""
+    host = urlsplit(request.url_root).netloc
+    paths = ("/overview*", "/ld-management/cross-training*")
+    return [f"// @match        {scheme}://{host}{path}"
+            for path in paths for scheme in ("https", "http")]
+
+
+@application.route("/floor/provider.user.js")
+def floor_userscript():
+    """The floor sweep, served with its match lines and endpoints filled
+    in for wherever this console is being served from."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "static", "floor_provider.user.js")
+    with open(path, encoding="utf-8") as handle:
+        script = handle.read()
+    base = request.url_root.rstrip("/")
+    script = script.replace("// @match        __LDIS_MATCH__",
+                            "\n".join(_floor_match_lines()))
+    script = script.replace("__LDIS_UPDATE__", base + url_for("floor_userscript"))
+    script = script.replace("__LDIS_CONFIG__", base + url_for("floor_config"))
+    script = script.replace("__LDIS_POST__", base + url_for("floor_snapshot"))
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()[:8]
+    script = script.replace("__LDIS_BUILD__", digest)
+    return Response(script, mimetype="text/javascript; charset=utf-8")
+
+
+@application.route("/floor/config")
+def floor_config():
+    """What the sweep should cover. Served rather than baked into the
+    script so a site can change its process list without every manager
+    reinstalling."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    return jsonify({
+        "warehouse_id": db.get_current_site(),
+        "window_minutes": db.get_floor_window_minutes(),
+        "processes": db.get_floor_processes(),
+        "stations": True,
+    })
+
+
+@application.route("/floor/snapshot", methods=["POST"])
+def floor_snapshot():
+    """One sweep, posted by a manager's browser.
+
+    The rows are whatever their FCLM session returned, so they are
+    treated as data: every field is read by name, nothing is executed,
+    and a row that cannot be tied to somebody this site already knows is
+    stored unattributed rather than guessed at."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    role = _effective_role()
+    if role not in FLOOR_POST_ROLES and login_id not in BOOTSTRAP_ADMIN_LOGINS:
+        return jsonify({"error": "not allowed to post floor data"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return jsonify({"error": "rows must be a list"}), 400
+    if len(rows) > 20000:
+        return jsonify({"error": "too many rows"}), 413
+
+    cleaned = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cleaned.append({
+            "employee_id": _floor_text(row.get("employee_id"), 40),
+            "employee_login": _floor_text(row.get("employee_login"), 60),
+            "full_name": _floor_text(row.get("full_name"), 160),
+            "manager_name": _floor_text(row.get("manager_name"), 160),
+            "process_key": _floor_text(row.get("process_key"), 60),
+            "process_name": _floor_text(row.get("process_name"), 120),
+            "function_name": _floor_text(row.get("function_name"), 160),
+            "station": _floor_text(row.get("station"), 60),
+            "paid_hours": row.get("paid_hours"),
+        })
+
+    result = db.record_floor_snapshot(
+        cleaned,
+        window_start=_floor_text(payload.get("window_start"), 40),
+        window_end=_floor_text(payload.get("window_end"), 40),
+        taken_by=login_id,
+    )
+    return jsonify({"ok": True, **result})
+
+
+def _floor_text(value, limit):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:limit] or None
+
+
+@application.route("/floor/status")
+def floor_status():
+    """How fresh the floor is, for a page that wants to say so without
+    reloading itself."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    meta = db.get_latest_floor_snapshot()
+    if not meta:
+        return jsonify({"has_data": False})
+    return jsonify({
+        "has_data": True, "age_minutes": meta["age_minutes"],
+        "is_stale": meta["is_stale"], "rows": meta["row_count"],
+        "matched": meta["matched_count"], "taken_at": meta["taken_at"],
+        "taken_by": meta["taken_by"],
+    })
+
+
+FLOOR_PRESENT = "present"
+FLOOR_ABSENT = "absent"
+
+
+def _attach_floor_presence(people, presence):
+    """Put each person's current whereabouts on their directory entry.
+
+    Absent is not the same as unknown: somebody the sweep did not see is
+    only "not on the floor" if the sweep itself worked. With no snapshot
+    at all every person is unknown, which is what the templates render
+    rather than quietly showing an empty site."""
+    for person in people:
+        found = presence.get((person.get("employee_login") or "").lower())
+        person["floor"] = found
+        person["floor_state"] = FLOOR_PRESENT if found else FLOOR_ABSENT
+    return people
+
+
+_FLOOR_WORD_RE = re.compile(r"[a-z]+")
+
+
+def _floor_fragment_context():
+    """Presence for the Cross Training lookups, which render one card per
+    associate. Fetched per request rather than globally: most pages in
+    the console have no use for the floor and should not pay for it."""
+    presence, meta = db.get_floor_presence()
+    return {"floor_presence": presence, "floor_meta": meta}
+
+
+def floor_process_matches(trained, floor_names):
+    """Whether a cross-trained process is the thing somebody is doing.
+
+    The two vocabularies do not agree and never will: cross-training
+    records "Pack", FCLM reports "Pack Single" and the function under it
+    is "Slam At Pack"; "Receive" turns up as "Prep Receiver". Matching on
+    equality made every single person look like they were working
+    somewhere other than what they are trained for, which is exactly the
+    filter this page exists for. A word of four letters or more that
+    starts a word on the other side is the rule — loose enough for
+    Pack/Pack Single and Receive/Prep Receiver, tight enough that Pick
+    and Pack stay apart."""
+    left = [w for w in _FLOOR_WORD_RE.findall((trained or "").lower()) if len(w) >= 4]
+    right = [w for w in _FLOOR_WORD_RE.findall(" ".join(n or "" for n in floor_names).lower())
+             if len(w) >= 4]
+    for a in left:
+        for b in right:
+            if a.startswith(b) or b.startswith(a):
+                return True
+    return False
+
+
+def build_staffing_view(am_logins, fc=None, filters=None):
+    """The staffing picture for one manager: their people, what each is
+    trained on, and where each one actually is.
+
+    The two halves answer different questions and only matter together.
+    Cross-training says who *could* run Pack; the floor sweep says who
+    *is* running Pack. A manager moving labour needs the gap between
+    them, which is why the filters are built to express it — trained on
+    a process, on site, and not currently in it."""
+    filters = filters or {}
+    presence, meta = db.get_floor_presence()
+    people = db.get_associate_directory(am_logins=am_logins, fc=fc)
+    _attach_floor_presence(people, presence)
+
+    for person in people:
+        person["trained_processes"] = sorted(
+            {p["process"] for p in person.get("processes", []) if p.get("process")},
+            key=str.lower)
+        floor = person.get("floor") or {}
+        names = [floor.get("process_name"), floor.get("function_name")]
+        person["doing_trained"] = sorted(
+            {t for t in person["trained_processes"] if floor_process_matches(t, names)},
+            key=str.lower)
+
+    trained_options = sorted({p for person in people for p in person["trained_processes"]},
+                             key=str.lower)
+    floor_options = sorted({f["process_name"] for f in presence.values() if f.get("process_name")},
+                           key=str.lower)
+
+    on_site = [p for p in people if p["floor_state"] == FLOOR_PRESENT]
+    by_process = {}
+    for person in on_site:
+        name = person["floor"].get("process_name") or "Unattributed"
+        by_process.setdefault(name, []).append(person)
+
+    shown = people
+    if filters.get("presence") == "on_site":
+        shown = [p for p in shown if p["floor_state"] == FLOOR_PRESENT]
+    elif filters.get("presence") == "off_site":
+        shown = [p for p in shown if p["floor_state"] != FLOOR_PRESENT]
+
+    trained_for = filters.get("trained_for")
+    if trained_for:
+        shown = [p for p in shown
+                 if any(t.lower() == trained_for.lower() for t in p["trained_processes"])]
+
+    working_in = filters.get("working_in")
+    if working_in:
+        if working_in == "__elsewhere__" and trained_for:
+            # The move a manager is actually looking for: trained on it,
+            # here, and currently doing something else.
+            shown = [p for p in shown
+                     if p["floor_state"] == FLOOR_PRESENT
+                     and trained_for not in p["doing_trained"]]
+        elif working_in != "__elsewhere__":
+            shown = [p for p in shown
+                     if p["floor_state"] == FLOOR_PRESENT
+                     and (p["floor"].get("process_name") or "").lower() == working_in.lower()]
+
+    query = (filters.get("q") or "").strip().lower()
+    if query:
+        shown = [p for p in shown
+                 if query in (p.get("full_name") or "").lower()
+                 or query in (p.get("employee_login") or "").lower()
+                 or any(query in t.lower() for t in p["trained_processes"])
+                 or (p["floor"] and query in (p["floor"].get("station") or "").lower())]
+
+    shown.sort(key=lambda p: (p["floor_state"] != FLOOR_PRESENT,
+                              (p["floor"] or {}).get("process_name") or "",
+                              (p.get("full_name") or "").lower()))
+
+    return {
+        "meta": meta,
+        "people": shown,
+        "total": len(people),
+        "on_site": len(on_site),
+        "off_site": len(people) - len(on_site),
+        "by_process": sorted(((name, len(rows)) for name, rows in by_process.items()),
+                             key=lambda item: -item[1]),
+        "trained_options": trained_options,
+        "floor_options": floor_options,
+        "unmatched": db.get_floor_unmatched() if meta else [],
+        "filters": filters,
+        "stale_after": db.FLOOR_STALE_MINUTES,
+        "window_minutes": db.get_floor_window_minutes(),
+    }
 
 
 def _shift_pulse_settings_with_default():
