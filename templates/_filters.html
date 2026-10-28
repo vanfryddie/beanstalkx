@@ -1,0 +1,159 @@
+{#- Filters that work the way a spreadsheet's do.
+
+    A manager picking labour does not want one process at a time. They
+    want "anyone trained on Pack or Stow", "anyone holding PIT or
+    Jambuster", "everyone currently in Pick, Pack or Sort" — several
+    boxes ticked in one filter, several filters at once. A <select> with
+    one value cannot express that, so these are checkbox panels: a
+    button that says what is ticked, a panel with a search box and
+    All/None, and the form submitted when the panel closes.
+
+    Built in plain HTML and about sixty lines of script, because the
+    console carries no front-end dependencies and this is not a reason
+    to start. -#}
+
+{% macro multiselect(name, label, options, selected, empty_label='All') -%}
+{% set chosen = selected or [] %}
+<div class="xf" data-xf>
+  <button type="button" class="xf-button{{ ' is-set' if chosen }}" aria-expanded="false" aria-haspopup="true">
+    <span class="xf-label">{{ label }}</span>
+    <span class="xf-value" data-xf-value
+          data-empty="{{ empty_label }}">
+      {%- if not chosen %}{{ empty_label }}
+      {%- elif chosen | length == 1 %}{{ chosen[0] }}
+      {%- else %}{{ chosen | length }} selected{% endif -%}
+    </span>
+    <svg class="xf-chevron" viewBox="0 0 12 8" aria-hidden="true"><path d="M1 1.5 6 6.5 11 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <div class="xf-panel" hidden role="group" aria-label="{{ label }}">
+    {% if options | length > 7 %}
+    <input type="search" class="xf-search" data-xf-search placeholder="Filter {{ label | lower }}…"
+           aria-label="Filter {{ label | lower }}">
+    {% endif %}
+    <div class="xf-actions">
+      <button type="button" data-xf-all>Select all</button>
+      <button type="button" data-xf-none>Clear</button>
+    </div>
+    <div class="xf-options">
+      {% for option in options %}
+      <label class="xf-option">
+        <input type="checkbox" name="{{ name }}" value="{{ option.value if option is mapping else option }}"
+               {{ 'checked' if (option.value if option is mapping else option) in chosen }}>
+        <span>{{ option.label if option is mapping else option }}</span>
+        {% if option is mapping and option.count is defined %}<em>{{ option.count }}</em>{% endif %}
+      </label>
+      {% else %}
+      <p class="xf-none">Nothing to filter on yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro segmented(name, options, selected) -%}
+{#- A toggle, for a question with one answer: everyone, or one state. -#}
+<div class="xseg" role="group">
+  {% for option in options %}
+  <label class="xseg-option{{ ' is-on' if (selected or '') == option.value }}">
+    <input type="radio" name="{{ name }}" value="{{ option.value }}"
+           {{ 'checked' if (selected or '') == option.value }}>
+    <span>{{ option.label }}</span>
+    {% if option.count is defined %}<em>{{ option.count }}</em>{% endif %}
+  </label>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro filter_script() -%}
+<script>
+/* One behaviour for every checkbox filter on the page. */
+(function () {
+  function summarise(root) {
+    var boxes = root.querySelectorAll('input[type=checkbox]');
+    var picked = [];
+    boxes.forEach(function (b) { if (b.checked) picked.push(b.parentElement.querySelector('span').textContent.trim()); });
+    var value = root.querySelector('[data-xf-value]');
+    var button = root.querySelector('.xf-button');
+    value.textContent = picked.length === 0 ? value.dataset.empty
+      : (picked.length === 1 ? picked[0] : picked.length + ' selected');
+    button.classList.toggle('is-set', picked.length > 0);
+  }
+
+  function close(root, submit) {
+    var panel = root.querySelector('.xf-panel');
+    if (panel.hidden) return;
+    panel.hidden = true;
+    root.querySelector('.xf-button').setAttribute('aria-expanded', 'false');
+    if (submit && root.dataset.xfDirty === '1') {
+      root.dataset.xfDirty = '0';
+      var form = root.closest('form');
+      if (form) form.submit();
+    }
+  }
+
+  document.querySelectorAll('[data-xf]').forEach(function (root) {
+    var button = root.querySelector('.xf-button');
+    var panel = root.querySelector('.xf-panel');
+    var search = root.querySelector('[data-xf-search]');
+
+    button.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var opening = panel.hidden;
+      document.querySelectorAll('[data-xf]').forEach(function (other) {
+        if (other !== root) close(other, true);
+      });
+      panel.hidden = !opening;
+      button.setAttribute('aria-expanded', String(opening));
+      if (opening && search) { search.focus(); }
+    });
+
+    panel.addEventListener('click', function (e) { e.stopPropagation(); });
+    panel.addEventListener('change', function () {
+      root.dataset.xfDirty = '1';
+      summarise(root);
+    });
+
+    if (search) {
+      search.addEventListener('input', function () {
+        var needle = search.value.trim().toLowerCase();
+        root.querySelectorAll('.xf-option').forEach(function (option) {
+          var text = option.textContent.trim().toLowerCase();
+          option.hidden = needle && text.indexOf(needle) === -1;
+        });
+      });
+    }
+
+    var all = root.querySelector('[data-xf-all]');
+    var none = root.querySelector('[data-xf-none]');
+    function setAll(value) {
+      root.querySelectorAll('.xf-option').forEach(function (option) {
+        if (option.hidden) return;
+        option.querySelector('input').checked = value;
+      });
+      root.dataset.xfDirty = '1';
+      summarise(root);
+    }
+    if (all) all.addEventListener('click', function () { setAll(true); });
+    if (none) none.addEventListener('click', function () { setAll(false); });
+
+    summarise(root);
+  });
+
+  document.addEventListener('click', function () {
+    document.querySelectorAll('[data-xf]').forEach(function (root) { close(root, true); });
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    document.querySelectorAll('[data-xf]').forEach(function (root) { close(root, false); });
+  });
+
+  /* The toggles submit on change: one click, one answer. */
+  document.querySelectorAll('.xseg input[type=radio]').forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      var form = radio.closest('form');
+      if (form) form.submit();
+    });
+  });
+})();
+</script>
+{%- endmacro %}

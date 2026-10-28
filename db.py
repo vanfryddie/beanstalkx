@@ -167,6 +167,7 @@ _TABLES_WITH_ID_PK = {
     "user_department_assignments", "ambassador_indirect_roles", "de_tech_role_mapping",
     "training_requests", "training_request_nominees",
     "floor_snapshots", "floor_presence",
+    # floor_clock and floor_identity key on a natural column, not an id.
     "xt_exclusions", "ambassador_process_definitions", "ambassador_training_sessions",
 }
 _INSERT_TABLE_RE = re.compile(r"INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
@@ -2193,6 +2194,20 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_floor_presence_snapshot ON floor_presence(snapshot_id);
         CREATE INDEX IF NOT EXISTS idx_floor_presence_login ON floor_presence(employee_login);
+
+        CREATE TABLE IF NOT EXISTS floor_clock (
+            employee_login TEXT PRIMARY KEY,
+            employee_id TEXT,
+            clock_state TEXT,
+            clocked_in_at TEXT,
+            clocked_out_at TEXT,
+            photo_url TEXT,
+            shift_code TEXT,
+            home_location TEXT,
+            checked_at TEXT,
+            checked_by TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_floor_clock_checked ON floor_clock(checked_at);
 
         CREATE TABLE IF NOT EXISTS floor_identity (
             employee_id TEXT PRIMARY KEY,
@@ -7703,6 +7718,84 @@ def get_floor_window_minutes():
     except (TypeError, ValueError):
         return FLOOR_DEFAULT_WINDOW_MINUTES
     return max(5, min(value, 720))
+
+
+FLOOR_CLOCK_STALE_MINUTES = 30
+
+
+def record_floor_clock(entries, checked_by=None):
+    """Store what Employee Time Details said about a handful of people.
+
+    Kept apart from the sweep on purpose. The sweep is one reading of the
+    whole floor; this is one reading per person, so it arrives for
+    whoever a manager happened to be looking at and each row carries its
+    own freshness. Merging them would make a figure taken ten minutes
+    ago look as current as one taken now."""
+    stored = 0
+    now = _now()
+    conn = get_db()
+    for entry in entries or []:
+        login = (entry.get("employee_login") or "").strip()
+        if not login:
+            continue
+        state = entry.get("clock_state")
+        if state not in ("in", "out", "unknown", None):
+            state = "unknown"
+        conn.execute(
+            "INSERT INTO floor_clock (employee_login, employee_id, clock_state, "
+            "clocked_in_at, clocked_out_at, photo_url, shift_code, home_location, "
+            "checked_at, checked_by) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (employee_login) DO UPDATE SET "
+            "employee_id=COALESCE(excluded.employee_id, floor_clock.employee_id), "
+            "clock_state=excluded.clock_state, clocked_in_at=excluded.clocked_in_at, "
+            "clocked_out_at=excluded.clocked_out_at, "
+            "photo_url=COALESCE(excluded.photo_url, floor_clock.photo_url), "
+            "shift_code=COALESCE(excluded.shift_code, floor_clock.shift_code), "
+            "home_location=COALESCE(excluded.home_location, floor_clock.home_location), "
+            "checked_at=excluded.checked_at, checked_by=excluded.checked_by",
+            (login, entry.get("employee_id"), state or "unknown",
+             entry.get("clocked_in_at"), entry.get("clocked_out_at"),
+             entry.get("photo_url"), entry.get("shift_code"),
+             entry.get("home_location"), now, checked_by))
+        if entry.get("employee_id"):
+            conn.execute(
+                "INSERT INTO floor_identity (employee_id, employee_login, full_name, "
+                "resolved_by, first_seen, last_seen) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT (employee_id) DO UPDATE SET employee_login=excluded.employee_login, "
+                "resolved_by=excluded.resolved_by, last_seen=excluded.last_seen",
+                (str(entry["employee_id"]), login, entry.get("full_name"),
+                 "time-details", now, now))
+        stored += 1
+    conn.commit()
+    conn.close()
+    return {"stored": stored}
+
+
+def get_floor_clock():
+    """Clock state by login, with how old each reading is. A reading
+    older than FLOOR_CLOCK_STALE_MINUTES is handed back marked stale
+    rather than withheld: a manager can judge a twenty-minute-old punch
+    perfectly well, as long as nothing pretends it is live."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM floor_clock").fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        entry = dict(r)
+        entry["age_minutes"] = _minutes_since(entry.get("checked_at"))
+        entry["is_stale"] = (entry["age_minutes"] is None
+                             or entry["age_minutes"] > FLOOR_CLOCK_STALE_MINUTES)
+        out[(entry["employee_login"] or "").lower()] = entry
+    return out
+
+
+def get_floor_photo_urls(logins=None):
+    """Badge photo URLs, by login. Only ever a URL: the image itself
+    stays on FCLM and is loaded by the manager's own browser, so this
+    database never holds a photograph of anybody."""
+    clock = get_floor_clock()
+    return {k: v["photo_url"] for k, v in clock.items()
+            if v.get("photo_url") and (logins is None or k in logins)}
 
 
 def get_floor_processes():

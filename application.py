@@ -2003,8 +2003,12 @@ def overview():
             query_am_scope, fc_scope,
             {"q": request.args.get("q"),
              "presence": request.args.get("presence"),
-             "trained_for": request.args.get("trained_for"),
-             "working_in": request.args.get("working_in")})
+             "clock": request.args.get("clock"),
+             # Ticked rather than picked: every one of these is a list,
+             # so "Pack or Pick or Stow" is one filter, not three pages.
+             "trained_for": request.args.getlist("trained_for"),
+             "role": request.args.getlist("role"),
+             "working_in": request.args.getlist("working_in")})
             if tab == "staffing" else None),
         db_shifts=db.SHIFTS,
         directory_roles=directory_roles,
@@ -4122,7 +4126,89 @@ def floor_config():
         "window_minutes": db.get_floor_window_minutes(),
         "processes": db.get_floor_processes(),
         "stations": True,
+        "clock": True,
+        "roster_url": url_for("floor_roster"),
+        "clock_url": url_for("floor_clock_post"),
     })
+
+
+@application.route("/floor/roster")
+def floor_roster():
+    """Who the clock pass should ask about.
+
+    Employee Time Details is one request per person, so this is
+    deliberately a manager's own team rather than the site: thirty
+    requests is a reasonable thing to do to FCLM on a page load, and
+    three hundred is not. People whose employee id the console has never
+    seen are left out, because there is no way to ask about them."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    scope = _resolve_am_scope(request.args.get("am") or login_id)
+    identity = {login.lower(): emp_id
+                for emp_id, login in db._floor_identity_map().items()}
+    known_ids = {}
+    conn = db.get_db()
+    for row in conn.execute(
+            "SELECT DISTINCT employee_login, employee_id FROM xt_hours "
+            "WHERE employee_login IS NOT NULL AND employee_id IS NOT NULL").fetchall():
+        known_ids.setdefault((row["employee_login"] or "").lower(), str(row["employee_id"]))
+    conn.close()
+
+    roster, unknown = [], 0
+    for person in db.get_associate_directory(am_logins=scope):
+        key = (person["employee_login"] or "").lower()
+        employee_id = identity.get(key) or known_ids.get(key)
+        if not employee_id:
+            unknown += 1
+            continue
+        roster.append({"employee_login": person["employee_login"],
+                       "employee_id": employee_id,
+                       "full_name": person["full_name"]})
+    return jsonify({"warehouse_id": db.get_current_site(), "roster": roster,
+                    "without_id": unknown,
+                    "stale_after_minutes": db.FLOOR_CLOCK_STALE_MINUTES})
+
+
+@application.route("/floor/clock", methods=["POST"])
+def floor_clock_post():
+    """Clock state, photo URLs and shift codes for a batch of people,
+    read out of Employee Time Details by a manager's browser."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    role = _effective_role()
+    if role not in FLOOR_POST_ROLES and login_id not in BOOTSTRAP_ADMIN_LOGINS:
+        return jsonify({"error": "not allowed to post floor data"}), 403
+    payload = request.get_json(silent=True) or {}
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return jsonify({"error": "entries must be a list"}), 400
+    if len(entries) > 2000:
+        return jsonify({"error": "too many entries"}), 413
+
+    cleaned = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        photo = _floor_text(entry.get("photo_url"), 400)
+        # Only an FCLM photo URL is ever stored, and only as a URL: the
+        # image stays on FCLM and is fetched by the manager's own
+        # browser, so this database never holds a photograph.
+        if photo and not photo.startswith("https://fclm-portal.amazon.com/"):
+            photo = None
+        cleaned.append({
+            "employee_login": _floor_text(entry.get("employee_login"), 60),
+            "employee_id": _floor_text(entry.get("employee_id"), 40),
+            "full_name": _floor_text(entry.get("full_name"), 160),
+            "clock_state": _floor_text(entry.get("clock_state"), 10),
+            "clocked_in_at": _floor_text(entry.get("clocked_in_at"), 40),
+            "clocked_out_at": _floor_text(entry.get("clocked_out_at"), 40),
+            "photo_url": photo,
+            "shift_code": _floor_text(entry.get("shift_code"), 40),
+            "home_location": _floor_text(entry.get("home_location"), 80),
+        })
+    return jsonify({"ok": True, **db.record_floor_clock(cleaned, checked_by=login_id)})
 
 
 @application.route("/floor/snapshot", methods=["POST"])
@@ -4248,64 +4334,124 @@ def floor_process_matches(trained, floor_names):
     return False
 
 
+def _as_list(value):
+    """A filter is a list whether one thing or five were ticked."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def build_staffing_view(am_logins, fc=None, filters=None):
     """The staffing picture for one manager: their people, what each is
-    trained on, and where each one actually is.
+    trained on, which Indirect Roles they hold, whether they are on the
+    clock, and where each one actually is.
 
-    The two halves answer different questions and only matter together.
+    The halves answer different questions and only matter together.
     Cross-training says who *could* run Pack; the floor sweep says who
-    *is* running Pack. A manager moving labour needs the gap between
-    them, which is why the filters are built to express it — trained on
-    a process, on site, and not currently in it."""
+    *is* running Pack; the clock pass says who is even in the building.
+    A manager moving labour needs all three at once, so every filter
+    here takes a list and they all apply together — trained on any of
+    these, holding any of those roles, punched in, currently in Pick or
+    Stow.
+
+    Presence and the clock are not the same fact and are not merged. The
+    sweep sees somebody booked to one of the processes it covers; the
+    clock pass sees whether they punched in. Somebody on a break is
+    punched in and on no process at all, and saying they had gone home
+    would be wrong."""
     filters = filters or {}
     presence, meta = db.get_floor_presence()
+    clock = db.get_floor_clock()
     people = db.get_associate_directory(am_logins=am_logins, fc=fc)
     _attach_floor_presence(people, presence)
 
     for person in people:
+        key = (person.get("employee_login") or "").lower()
         person["trained_processes"] = sorted(
             {p["process"] for p in person.get("processes", []) if p.get("process")},
             key=str.lower)
+        person["role_names"] = sorted(
+            {r["role"] for r in person.get("roles", []) if r.get("role")}, key=str.lower)
+        if person.get("is_ambassador"):
+            person["role_names"] = sorted(set(person["role_names"]) | {"Ambassador"},
+                                          key=str.lower)
         floor = person.get("floor") or {}
         names = [floor.get("process_name"), floor.get("function_name")]
         person["doing_trained"] = sorted(
             {t for t in person["trained_processes"] if floor_process_matches(t, names)},
             key=str.lower)
+        punch = clock.get(key)
+        person["clock"] = punch
+        person["clock_state"] = (punch or {}).get("clock_state") or "unknown"
+        person["photo_url"] = (punch or {}).get("photo_url")
 
     trained_options = sorted({p for person in people for p in person["trained_processes"]},
                              key=str.lower)
+    role_options = sorted({r for person in people for r in person["role_names"]},
+                          key=str.lower)
     floor_options = sorted({f["process_name"] for f in presence.values() if f.get("process_name")},
                            key=str.lower)
 
     on_site = [p for p in people if p["floor_state"] == FLOOR_PRESENT]
+    punched_in = [p for p in people if p["clock_state"] == "in"]
+    punched_out = [p for p in people if p["clock_state"] == "out"]
+    clock_known = len(punched_in) + len(punched_out)
     by_process = {}
     for person in on_site:
         name = person["floor"].get("process_name") or "Unattributed"
         by_process.setdefault(name, []).append(person)
 
+    trained_for = _as_list(filters.get("trained_for"))
+    roles_held = _as_list(filters.get("role"))
+    working_in = _as_list(filters.get("working_in"))
+    clock_filter = (filters.get("clock") or "").strip()
+    presence_filter = (filters.get("presence") or "").strip()
+    elsewhere = "__elsewhere__" in working_in
+    working_named = [w for w in working_in if w != "__elsewhere__"]
+
     shown = people
-    if filters.get("presence") == "on_site":
+    if presence_filter == "on_site":
         shown = [p for p in shown if p["floor_state"] == FLOOR_PRESENT]
-    elif filters.get("presence") == "off_site":
+    elif presence_filter == "off_site":
         shown = [p for p in shown if p["floor_state"] != FLOOR_PRESENT]
 
-    trained_for = filters.get("trained_for")
-    if trained_for:
-        shown = [p for p in shown
-                 if any(t.lower() == trained_for.lower() for t in p["trained_processes"])]
+    if clock_filter in ("in", "out"):
+        shown = [p for p in shown if p["clock_state"] == clock_filter]
+    elif clock_filter == "known":
+        shown = [p for p in shown if p["clock_state"] in ("in", "out")]
 
-    working_in = filters.get("working_in")
-    if working_in:
-        if working_in == "__elsewhere__" and trained_for:
-            # The move a manager is actually looking for: trained on it,
-            # here, and currently doing something else.
+    if trained_for:
+        wanted = {t.lower() for t in trained_for}
+        shown = [p for p in shown
+                 if wanted & {t.lower() for t in p["trained_processes"]}]
+
+    if roles_held:
+        wanted = {r.lower() for r in roles_held}
+        shown = [p for p in shown if wanted & {r.lower() for r in p["role_names"]}]
+
+    if working_named:
+        wanted = {w.lower() for w in working_named}
+        shown = [p for p in shown
+                 if p["floor_state"] == FLOOR_PRESENT
+                 and (p["floor"].get("process_name") or "").lower() in wanted]
+
+    if elsewhere:
+        # The move a manager is looking for: trained on something, here,
+        # and not currently doing it. With nothing ticked under "trained
+        # for" there is no "it" to be elsewhere from, so this narrows to
+        # people on the floor doing nothing they are trained for, which
+        # is the same question asked of their whole skill set.
+        if trained_for:
+            wanted = {t.lower() for t in trained_for}
             shown = [p for p in shown
                      if p["floor_state"] == FLOOR_PRESENT
-                     and trained_for not in p["doing_trained"]]
-        elif working_in != "__elsewhere__":
+                     and not (wanted & {t.lower() for t in p["doing_trained"]})]
+        else:
             shown = [p for p in shown
-                     if p["floor_state"] == FLOOR_PRESENT
-                     and (p["floor"].get("process_name") or "").lower() == working_in.lower()]
+                     if p["floor_state"] == FLOOR_PRESENT and not p["doing_trained"]]
 
     query = (filters.get("q") or "").strip().lower()
     if query:
@@ -4313,25 +4459,43 @@ def build_staffing_view(am_logins, fc=None, filters=None):
                  if query in (p.get("full_name") or "").lower()
                  or query in (p.get("employee_login") or "").lower()
                  or any(query in t.lower() for t in p["trained_processes"])
-                 or (p["floor"] and query in (p["floor"].get("station") or "").lower())]
+                 or any(query in r.lower() for r in p["role_names"])
+                 or (p["floor"] and query in (p["floor"].get("station") or "").lower())
+                 or (p["floor"] and query in (p["floor"].get("process_name") or "").lower())]
 
-    shown.sort(key=lambda p: (p["floor_state"] != FLOOR_PRESENT,
+    shown.sort(key=lambda p: (p["clock_state"] != "in",
+                              p["floor_state"] != FLOOR_PRESENT,
                               (p["floor"] or {}).get("process_name") or "",
                               (p.get("full_name") or "").lower()))
 
+    clock_ages = [c["age_minutes"] for c in clock.values()
+                  if c.get("age_minutes") is not None]
     return {
         "meta": meta,
         "people": shown,
         "total": len(people),
         "on_site": len(on_site),
         "off_site": len(people) - len(on_site),
+        "punched_in": len(punched_in),
+        "punched_out": len(punched_out),
+        "clock_known": clock_known,
+        "clock_unknown": len(people) - clock_known,
+        "clock_age_minutes": min(clock_ages) if clock_ages else None,
+        "has_clock": clock_known > 0,
+        "photos": len([p for p in people if p.get("photo_url")]),
         "by_process": sorted(((name, len(rows)) for name, rows in by_process.items()),
                              key=lambda item: -item[1]),
         "trained_options": trained_options,
+        "role_options": role_options,
         "floor_options": floor_options,
         "unmatched": db.get_floor_unmatched() if meta else [],
-        "filters": filters,
+        "filters": {"q": filters.get("q") or "", "presence": presence_filter,
+                    "clock": clock_filter, "trained_for": trained_for,
+                    "role": roles_held, "working_in": working_in},
+        "active_filters": len([f for f in (trained_for, roles_held, working_in) if f])
+                          + (1 if clock_filter else 0) + (1 if presence_filter else 0),
         "stale_after": db.FLOOR_STALE_MINUTES,
+        "clock_stale_after": db.FLOOR_CLOCK_STALE_MINUTES,
         "window_minutes": db.get_floor_window_minutes(),
     }
 

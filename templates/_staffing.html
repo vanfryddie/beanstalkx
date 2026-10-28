@@ -1,4 +1,5 @@
 {% import "_dashboard.html" as dash %}
+{% import "_filters.html" as xf %}
 {#- Staffing.
 
     Cross-training says who could run Pack. The floor sweep says who is
@@ -13,7 +14,8 @@
 {% set m = floor_staffing.meta %}
 <div id="ldisFloorMarker"
      data-age-seconds="{{ (m.age_minutes * 60) if m and m.age_minutes is not none else 99999 }}"
-     data-window="{{ floor_staffing.window_minutes }}" hidden></div>
+     data-window="{{ floor_staffing.window_minutes }}"
+     data-scope="{{ am_scope if am_scope is string else '' }}" hidden></div>
 
 <div class="sp-panel-bar">
   <span class="dash-chip" id="floorChip">
@@ -94,43 +96,54 @@
 </div>
 {% endif %}
 
-<form class="ad-controls st-controls" method="get" action="{{ url_for('overview') }}">
+<form class="st-filters" method="get" action="{{ url_for('overview') }}">
   <input type="hidden" name="tab" value="staffing">
   {% if am_scope %}<input type="hidden" name="am" value="{{ am_scope if am_scope is string else '' }}">{% endif %}
   {% if fc_scope %}<input type="hidden" name="fc" value="{{ fc_scope }}">{% endif %}
-  <label class="sr-only" for="stSearch">Search</label>
-  <input id="stSearch" type="search" name="q" value="{{ floor_staffing.filters.q or '' }}"
-         placeholder="Search name, login, station or process">
-  <label class="sr-only" for="stPresence">Presence</label>
-  <select id="stPresence" name="presence" onchange="this.form.submit()">
-    <option value="">Everyone</option>
-    <option value="on_site" {{ 'selected' if floor_staffing.filters.presence == 'on_site' }}>On the floor</option>
-    <option value="off_site" {{ 'selected' if floor_staffing.filters.presence == 'off_site' }}>Not seen</option>
-  </select>
-  <label class="sr-only" for="stTrained">Trained for</label>
-  <select id="stTrained" name="trained_for" onchange="this.form.submit()">
-    <option value="">Trained for anything</option>
-    {% for p in floor_staffing.trained_options %}
-    <option value="{{ p }}" {{ 'selected' if floor_staffing.filters.trained_for == p }}>Trained for {{ p }}</option>
-    {% endfor %}
-  </select>
-  <label class="sr-only" for="stWorking">Currently in</label>
-  <select id="stWorking" name="working_in" onchange="this.form.submit()">
-    <option value="">In any process</option>
-    {#- The one that turns this page into a staffing decision: people who
-        can do the job, are here, and are doing something else. -#}
-    <option value="__elsewhere__" {{ 'selected' if floor_staffing.filters.working_in == '__elsewhere__' }}
-            {{ 'disabled' if not floor_staffing.filters.trained_for }}>
-      Trained for it, here, working elsewhere{{ ' — pick a process first' if not floor_staffing.filters.trained_for }}
-    </option>
-    {% for p in floor_staffing.floor_options %}
-    <option value="{{ p }}" {{ 'selected' if floor_staffing.filters.working_in == p }}>Currently in {{ p }}</option>
-    {% endfor %}
-  </select>
-  <button class="btn btn-ghost" type="submit">Search</button>
-  {% if floor_staffing.filters.q or floor_staffing.filters.presence or floor_staffing.filters.trained_for or floor_staffing.filters.working_in %}
-  <a class="btn btn-ghost" href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope) }}">Clear</a>
-  {% endif %}
+
+  <div class="st-filter-row">
+    <label class="sr-only" for="stSearch">Search</label>
+    <input id="stSearch" type="search" name="q" value="{{ floor_staffing.filters.q }}"
+           placeholder="Search name, login, station, role or process">
+
+    {{ xf.multiselect('trained_for', 'Trained for', floor_staffing.trained_options,
+                      floor_staffing.filters.trained_for, 'Anything') }}
+    {{ xf.multiselect('role', 'Indirect role', floor_staffing.role_options,
+                      floor_staffing.filters.role, 'Any role') }}
+    {{ xf.multiselect('working_in', 'Currently in',
+                      [{'value': '__elsewhere__', 'label': 'Not on what they are trained for'}]
+                      + (floor_staffing.floor_options | list),
+                      floor_staffing.filters.working_in, 'Anywhere') }}
+
+    <button class="btn btn-ghost" type="submit">Search</button>
+    {% if floor_staffing.filters.q or floor_staffing.active_filters %}
+    <a class="btn btn-ghost" href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope) }}">Clear all</a>
+    {% endif %}
+  </div>
+
+  <div class="st-filter-row st-filter-toggles">
+    <span class="st-toggle-label">On the clock</span>
+    {{ xf.segmented('clock', [
+         {'value': '', 'label': 'Everyone'},
+         {'value': 'in', 'label': 'Punched in', 'count': floor_staffing.punched_in},
+         {'value': 'out', 'label': 'Punched out', 'count': floor_staffing.punched_out}],
+       floor_staffing.filters.clock) }}
+    <span class="st-toggle-label">Booked to a process</span>
+    {{ xf.segmented('presence', [
+         {'value': '', 'label': 'Everyone'},
+         {'value': 'on_site', 'label': 'On a process', 'count': floor_staffing.on_site},
+         {'value': 'off_site', 'label': 'On none', 'count': floor_staffing.off_site}],
+       floor_staffing.filters.presence) }}
+    {% if not floor_staffing.has_clock %}
+    <span class="st-toggle-note" title="Clock state comes from Employee Time Details, one request per person, run after the sweep">
+      No clock reading yet — read the floor to get one
+    </span>
+    {% elif floor_staffing.clock_unknown %}
+    <span class="st-toggle-note">
+      {{ floor_staffing.clock_unknown }} without a clock reading
+    </span>
+    {% endif %}
+  </div>
 </form>
 
 {% if floor_staffing.people %}
@@ -139,8 +152,10 @@
     <thead>
       <tr>
         <th scope="col">Associate</th>
+        <th scope="col">Clock</th>
         <th scope="col">On the floor</th>
         <th scope="col">Station</th>
+        <th scope="col">Indirect roles</th>
         <th scope="col">Trained for</th>
         <th scope="col" class="num">Compliance</th>
       </tr>
@@ -149,9 +164,32 @@
       {% for p in floor_staffing.people %}
       <tr class="{{ 'st-off' if p.floor_state != 'present' }}">
         <th scope="row">
-          <strong>{{ p.full_name }}</strong>
-          <span class="mono">{{ p.employee_login }}{% if p.shift %} · {{ db_shifts.get(p.shift, p.shift) }}{% endif %}</span>
+          <span class="st-person">
+            {#- The photo is loaded straight from FCLM by this browser,
+                under this manager's own session. The console stores the
+                address and never the picture. -#}
+            {% if p.photo_url %}
+            <img class="st-face" src="{{ p.photo_url }}" alt="" loading="lazy" referrerpolicy="no-referrer"
+                 onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'st-face st-face-initials',textContent:this.dataset.initials}))"
+                 data-initials="{{ (p.full_name or p.employee_login)[:2] | upper }}">
+            {% else %}
+            <span class="st-face st-face-initials">{{ (p.full_name or p.employee_login)[:2] | upper }}</span>
+            {% endif %}
+            <span class="st-person-text">
+              <strong>{{ p.full_name }}</strong>
+              <span class="mono">{{ p.employee_login }}{% if p.shift %} · {{ db_shifts.get(p.shift, p.shift) }}{% endif %}</span>
+            </span>
+          </span>
         </th>
+        <td class="st-clock">
+          {% if p.clock_state == 'in' %}
+          <span class="st-punch st-punch-in"><i class="dash-dot dash-dot-good"></i>Punched in</span>
+          {% elif p.clock_state == 'out' %}
+          <span class="st-punch st-punch-out"><i class="dash-dot dash-dot-none"></i>Punched out</span>
+          {% else %}
+          <span class="st-punch st-punch-unknown" title="No Employee Time Details reading for this person yet">—</span>
+          {% endif %}
+        </td>
         <td>
           {% if p.floor %}
           <span class="st-now">
@@ -170,6 +208,13 @@
         <td class="mono">
           {% if p.floor and p.floor.station %}{{ p.floor.station }}
           {% elif p.floor %}<span class="dash-muted" title="Station data was not available for this sweep">—</span>
+          {% else %}<span class="dash-muted">—</span>{% endif %}
+        </td>
+        <td>
+          {% if p.role_names %}
+          <span class="st-trained">
+            {% for r in p.role_names %}<span class="ad-tag ad-tag-role">{{ r }}</span>{% endfor %}
+          </span>
           {% else %}<span class="dash-muted">—</span>{% endif %}
         </td>
         <td>
@@ -221,6 +266,8 @@
 </details>
 {% endif %}
 {% endif %}
+
+{{ xf.filter_script() }}
 
 <script>
 /* The reader is a userscript, so the page cannot start it directly — it

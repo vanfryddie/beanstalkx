@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import application, db
 from browser import chromium_path
+from werkzeug.serving import make_server
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 fails = []
@@ -316,7 +317,9 @@ print("\n9. Presence reaches the pages that asked for it")
 body = client("admin", "admin").get(f"/overview?tab=staffing&am={am}").get_data(as_text=True)
 check("the staffing tab renders the floor", "on the floor." in body.lower())
 check("it offers the filter that makes it a staffing tool",
-      "Trained for it, here, working elsewhere" in body)
+      "Not on what they are trained for" in body)
+check("and the two toggles the shift actually turns on",
+      "Punched in" in body and "On a process" in body)
 check("it says how old the reading is", "FCLM" in body or "Floor read" in body)
 
 dir_body = client("admin", "admin").get(f"/overview?tab=directory&am={am}").get_data(as_text=True)
@@ -336,6 +339,196 @@ for label, url in (("the Staffing tab", f"/overview?tab=staffing&am={am}"),
     check(f"{label} carries the marker that starts a sweep", 'id="ldisFloorMarker"' in page)
     check(f"{label} tells the reader how old the reading is",
           re.search(r'id="ldisFloorMarker"[^>]*data-age-seconds="\d+"', page) is not None)
+
+print("\n9b. Punched in is a different fact from booked to a process")
+# Somebody on a break is on the clock and on no process at all. Merging
+# the two would have the console report they had gone home.
+td_parts = []
+for fn in ("fclmDate", "pad", "parseSessionTime", "infoField", "parseTimeDetails"):
+    m = re.search(r"(?ms)^    function " + fn + r"\(.*?\n    \}\n", script)
+    if not m:
+        check(f"the reader still defines {fn}", False)
+    else:
+        td_parts.append(m.group(0).replace("    function", "function"))
+
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
+    pg = b.new_context().new_page()
+    pg.goto("about:blank")
+    pg.add_script_tag(content="\n".join(td_parts))
+    def read(name):
+        html = open(os.path.join(ROOT, "perf/fixtures", name), encoding="utf-8").read()
+        return pg.evaluate("([h, iso]) => parseTimeDetails(h, new Date(iso))",
+                           [html, "2026-10-28T11:45:00"])
+    on = read("employee_time_details.html")
+    off = read("employee_time_details_off.html")
+    b.close()
+
+check("an open session reads as punched in", on["clock_state"] == "in", str(on["clock_state"]))
+check("with the time they clocked in", (on["clocked_in_at"] or "").startswith("2026-10-28T06:00"),
+      str(on["clocked_in_at"]))
+check("a finished shift reads as punched out", off["clock_state"] == "out", str(off["clock_state"]))
+check("with the time they clocked out", (off["clocked_out_at"] or "").startswith("2026-10-28T10:30"),
+      str(off["clocked_out_at"]))
+check("the login comes off the page, so no profile service is needed",
+      on["employee_login"] == "abbapfai", str(on["employee_login"]))
+check("so does the employee id", on["employee_id"] == "208651433", str(on["employee_id"]))
+check("and the shift code", on["shift_code"] == "D58F88MZ", str(on["shift_code"]))
+check("the badge photo is an FCLM address",
+      (on["photo_url"] or "").startswith("https://fclm-portal.amazon.com/"), str(on["photo_url"]))
+
+conn = db.get_db(); conn.execute("DELETE FROM floor_clock"); conn.commit(); conn.close()
+db.record_floor_clock([
+    {"employee_login": team[0]["employee_login"], "employee_id": "440000",
+     "clock_state": "in", "clocked_in_at": "2026-10-28T06:00:00",
+     "photo_url": "https://fclm-portal.amazon.com/employee/photo?employeeId=440000"},
+    {"employee_login": team[1]["employee_login"], "clock_state": "out",
+     "clocked_out_at": "2026-10-28T10:30:00"},
+], checked_by=am)
+clock = db.get_floor_clock()
+check("clock readings are stored per person", len(clock) == 2, str(len(clock)))
+check("each carries its own age",
+      all(c["age_minutes"] is not None for c in clock.values()))
+check("a fresh reading is not marked stale",
+      not clock[team[0]["employee_login"].lower()]["is_stale"])
+check("the photo is stored as a URL and nothing else",
+      db.get_floor_photo_urls()[team[0]["employee_login"].lower()].startswith(
+          "https://fclm-portal.amazon.com/"))
+
+punched = application.build_staffing_view([am], None, {"clock": "in"})
+check("the punched-in toggle returns only people on the clock",
+      all(p["clock_state"] == "in" for p in punched["people"]) and punched["people"],
+      str(len(punched["people"])))
+out_view = application.build_staffing_view([am], None, {"clock": "out"})
+check("the punched-out toggle returns only people off the clock",
+      all(p["clock_state"] == "out" for p in out_view["people"]) and out_view["people"],
+      str(len(out_view["people"])))
+full = application.build_staffing_view([am], None, {})
+check("people with no reading are neither in nor out",
+      full["clock_unknown"] == full["total"] - 2, str(full["clock_unknown"]))
+check("the two questions are counted separately",
+      "punched_in" in full and "on_site" in full)
+
+print("\n9c. A photo URL is only ever accepted from FCLM")
+posted = client(am, "am").post("/floor/clock", json={"entries": [
+    {"employee_login": team[2]["employee_login"], "clock_state": "in",
+     "photo_url": "https://example.invalid/not-fclm.png"}]})
+check("a posted sweep with a foreign photo host is accepted", posted.status_code == 200)
+check("but the foreign URL is not stored",
+      db.get_floor_photo_urls().get(team[2]["employee_login"].lower()) is None,
+      str(db.get_floor_photo_urls().get(team[2]["employee_login"].lower())))
+check("entries that are not a list are refused",
+      client(am, "am").post("/floor/clock", json={"entries": "nope"}).status_code == 400)
+check("an unauthenticated clock post is refused",
+      application.application.test_client().post(
+          "/floor/clock", json={"entries": []}).status_code in (401, 302))
+
+roster = client(am, "am").get(f"/floor/roster?am={am}").get_json()
+check("the roster is scoped to a team, not the site",
+      len(roster["roster"]) <= len(team), f"{len(roster['roster'])} vs team of {len(team)}")
+check("everybody on it has an employee id to ask about",
+      all(r.get("employee_id") for r in roster["roster"]))
+check("and it says how many it had to leave out",
+      "without_id" in roster, str(sorted(roster)))
+
+print("\n9d. Filters take several values at once")
+db.record_floor_snapshot(rows, taken_by=am)
+both = application.build_staffing_view([am], None, {"trained_for": ["Pack", "Pick"]})
+only_pack = application.build_staffing_view([am], None, {"trained_for": ["Pack"]})
+check("ticking two processes is an OR, not an AND",
+      len(both["people"]) >= len(only_pack["people"]),
+      f"{len(both['people'])} vs {len(only_pack['people'])}")
+check("everybody returned is trained on at least one of them",
+      all({"pack", "pick"} & {t.lower() for t in p["trained_processes"]}
+          for p in both["people"]))
+
+roles = application.build_staffing_view([am], None, {"role": ["Jambuster"]})
+check("indirect roles are filterable", isinstance(roles["people"], list))
+check("everybody returned holds the role",
+      all("jambuster" in {r.lower() for r in p["role_names"]} for p in roles["people"]))
+check("the role list offers the roles the site actually records",
+      full["role_options"], str(full["role_options"][:4]))
+
+places = application.build_staffing_view([am], None, {"working_in": ["Pick", "Pack Single"]})
+check("several places can be shown at once",
+      all(p["floor"] and p["floor"]["process_name"] in ("Pick", "Pack Single")
+          for p in places["people"]), str(len(places["people"])))
+
+combined = application.build_staffing_view(
+    [am], None, {"trained_for": ["Pack"], "role": ["Jambuster"], "clock": "in"})
+check("different filters narrow together",
+      all("Pack" in p["trained_processes"]
+          and "jambuster" in {r.lower() for r in p["role_names"]}
+          and p["clock_state"] == "in" for p in combined["people"]),
+      str(len(combined["people"])))
+
+print("\n9e. The filter panels open over the page, not under it")
+# The console's entry animation makes every direct child of .content its
+# own stacking context, so a dropdown in an earlier sibling renders
+# beneath a later one however it is z-indexed. Nothing in the markup
+# shows that, so it is checked by asking the browser what is on top.
+srv = make_server("127.0.0.1", 5642, application.application, threaded=True)
+threading.Thread(target=srv.serve_forever, daemon=True).start(); time.sleep(1.0)
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
+    ctx = b.new_context(viewport={"width": 1500, "height": 950})
+    pg = ctx.new_page()
+    errors = []
+    pg.on("pageerror", lambda e: errors.append(str(e)))
+    pg.goto("http://127.0.0.1:5642/", wait_until="domcontentloaded")
+    pg.fill("input[name=login_id]", "admin"); pg.click("button[type=submit]"); pg.wait_for_timeout(500)
+    pg.goto(f"http://127.0.0.1:5642/overview?tab=staffing&am={am}", wait_until="networkidle")
+    pg.wait_for_timeout(400)
+    check("no uncaught JavaScript on the staffing tab", not errors, "; ".join(errors[:2]))
+
+    pg.eval_on_selector(".st-filters", "e => e.scrollIntoView({block: 'center'})")
+    pg.wait_for_timeout(200)
+    pg.query_selector_all(".xf-button")[0].click()
+    pg.wait_for_timeout(300)
+    on_top = pg.evaluate("""() => {
+      const panel = document.querySelector('.xf-panel:not([hidden])');
+      const r = panel.getBoundingClientRect();
+      const hit = (dy) => document.elementFromPoint(r.left + r.width / 2, r.top + dy);
+      return [hit(10), hit(r.height / 2), hit(r.height - 8)]
+        .map(el => el ? !!el.closest('.xf-panel') : false);
+    }""")
+    check("the open panel is on top from its first row to its last",
+          all(on_top), str(on_top))
+    check("its options read as written, not shouted by the global label rule",
+          pg.eval_on_selector(".xf-option span",
+                              "e => getComputedStyle(e).textTransform") == "none",
+          pg.eval_on_selector(".xf-option span", "e => getComputedStyle(e).textTransform"))
+
+    # Ticking two boxes has to submit two values, which is the whole point.
+    boxes = pg.query_selector_all(".xf-panel:not([hidden]) input[type=checkbox]")
+    boxes[0].check(); boxes[1].check()
+    pg.wait_for_timeout(150)
+    pg.keyboard.press("Escape")
+    with pg.expect_navigation(wait_until="networkidle"):
+        pg.eval_on_selector(".st-filters", "f => f.submit()")
+    from urllib.parse import urlsplit, parse_qs
+    picked = parse_qs(urlsplit(pg.url).query).get("trained_for", [])
+    check("two ticked boxes arrive as two values", len(picked) == 2, str(picked))
+    pg.wait_for_selector(".xf-button.is-set")
+    label = pg.eval_on_selector(".xf-button.is-set", "e => e.textContent").strip()
+    check("and the button says so", "2 selected" in label, label)
+    shown = pg.eval_on_selector_all(".st-table tbody tr", "els => els.length")
+    check("the page narrows to the ticked processes", shown > 0, str(shown))
+
+    # A face that cannot load must become initials, not a broken image.
+    fallback = pg.evaluate("""() => {
+      const img = document.querySelector('img.st-face');
+      if (!img) return 'no photo in this fixture';
+      img.dispatchEvent(new Event('error'));
+      return document.querySelector('.st-face-initials') ? 'initials' : 'still broken';
+    }""")
+    check("a photo that will not load falls back to initials",
+          fallback in ("initials", "no photo in this fixture"), str(fallback))
+
+    over = pg.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+    check("no horizontal page scroll", over <= 1, f"overflows {over}px")
+    ctx.close(); b.close()
+srv.shutdown()
 
 print("\n10. History is kept short")
 wipe()

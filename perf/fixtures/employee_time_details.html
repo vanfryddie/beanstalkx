@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  An Employee Time Details page, reduced to what the floor reader takes
+  from it: the employee info block (login, id, shift, location, and the
+  badge photo) and the session table that says whether they are on the
+  clock right now.
+
+  Matched to the real page at SCN2. The open session is the one that
+  matters: FCLM renders a session that has not ended yet with an end of
+  next midnight and a duration that is still accruing, which is what
+  "punched in" looks like. The second fixture below it is the same page
+  for somebody who has gone home.
+
+  The person is invented. The structure is not.
+-->
+<html><head><title>Employee Time Details | FCLM Portal</title></head>
+<body>
+<div class="employeeInfo">
+  <img src="https://fclm-portal.amazon.com/employee/photo?employeeId=208651433" alt="">
+  <div>
+    <span class="line"><span class="row-label">Login</span><span>abbapfai</span></span>
+    <span class="line"><span class="row-label">Empl ID</span><span>208651433</span></span>
+    <span class="line"><span class="row-label">Badge</span><span>12647268</span></span>
+    <span class="line"><span class="row-label">Dept ID</span><span>1299</span></span>
+    <span class="line"><span class="row-label">Location</span><span>SCN2 ( 2R55 )</span></span>
+    <span class="line"><span class="row-label">Manager</span><span><a href="#">Salhi,Hichem</a></span></span>
+    <span class="line"><span class="row-label">Status</span><span>Active</span></span>
+    <span class="line"><span class="row-label">Shift</span><span>D58F88MZ</span></span>
+  </div>
+</div>
+
+<table class="sortable result-table">
+  <thead><tr><th>title</th><th>start</th><th>end</th><th>duration</th></tr></thead>
+  <tbody>
+    <tr><td>OffClock/UnPaid</td><td>10/28-00:00:00</td><td>10/28-06:00:00</td><td>360:00</td></tr>
+    <tr><td>OnClock/Paid</td><td>10/28-06:00:00</td><td>10/29-00:00:00</td><td>345:22</td></tr>
+    <tr><td>Pick Support&#9654;Pick Training</td><td>10/28-06:00:00</td><td>10/28-06:11:05</td><td>11:05</td></tr>
+    <tr><td>Pick&#9654;RF Pick</td><td>10/28-06:47:29</td><td>10/28-07:02:10</td><td>14:41</td></tr>
+    <tr><td>Break/Paid</td><td>10/28-10:15:00</td><td>10/28-10:15:00</td><td>00:00</td></tr>
+    <tr><td>Break/Unpaid</td><td>10/28-10:15:00</td><td>10/28-11:00:00</td><td>45:00</td></tr>
+    <tr><td>Pick&#9654;RF Pick</td><td>10/28-11:00:00</td><td>10/28-11:18:39</td><td>18:39</td></tr>
+  </tbody>
+</table>
+</body></html>

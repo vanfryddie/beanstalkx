@@ -4264,3 +4264,125 @@ html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }
   font-size: 12.5px;
 }
 .xt-floor-line em { font-style: normal; color: var(--text-lo); font-size: 11.5px; margin-left: auto; }
+
+/* ============================================================
+   Spreadsheet-style filters.
+
+   A manager picking labour wants several boxes ticked in one filter and
+   several filters at once — "trained on Pack or Stow, holding PIT,
+   currently in Pick or Sort". These are the marks for that: a button
+   that says what is ticked, a panel of checkboxes with a search and
+   All/Clear, and a segmented toggle for the questions that have one
+   answer.
+   ============================================================ */
+
+/* The console's entry animation gives every direct child of .content a
+   stacking context of its own, so later siblings paint over earlier ones
+   whatever z-index is set inside them — the filter panels opened
+   underneath the table. Lifting the whole filter bar is the fix; a
+   z-index on the panel alone cannot escape its own context. Any future
+   dropdown on a page like this needs the same. */
+.st-filters { display: flex; flex-direction: column; gap: 10px; margin-bottom: 22px;
+              position: relative; z-index: 20; }
+.st-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.st-filter-row > input[type="search"] {
+  flex: 1 1 260px; min-width: 0; width: auto;
+}
+.st-filter-toggles { gap: 12px; }
+.st-toggle-label {
+  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--text-lo);
+}
+.st-toggle-note { font-size: 12px; color: var(--text-lo); }
+
+.xf { position: relative; }
+.xf-button {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 13px; border-radius: 10px; cursor: pointer;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--hairline); font: inherit; font-size: 13px;
+}
+.xf-button:hover { border-color: var(--aws-blue); }
+.xf-button.is-set { border-color: var(--aws-blue); color: var(--aws-blue); }
+.xf-label { color: var(--text-lo); font-size: 11.5px; }
+.xf-button.is-set .xf-label { color: inherit; opacity: .8; }
+.xf-value { font-weight: 560; }
+.xf-chevron { width: 10px; height: 7px; opacity: .6; flex: none; }
+
+.xf-panel {
+  position: absolute; z-index: 40; top: calc(100% + 6px); left: 0;
+  min-width: 248px; max-width: 320px;
+  padding: 10px; border-radius: 12px;
+  background: var(--surface-solid, var(--surface));
+  border: 1px solid var(--hairline); box-shadow: var(--shadow-float, 0 18px 48px rgba(0,0,0,.4));
+}
+.xf-panel[hidden] { display: none !important; }
+.xf-search {
+  width: 100%; margin-bottom: 8px; padding: 7px 10px; font-size: 12.5px;
+  border-radius: 8px; border: 1px solid var(--hairline);
+  background: var(--surface); color: var(--text);
+}
+.xf-actions { display: flex; gap: 6px; margin-bottom: 7px; }
+.xf-actions button {
+  flex: 1; padding: 5px 8px; font-size: 11.5px; cursor: pointer;
+  border-radius: 7px; border: 1px solid var(--hairline);
+  background: transparent; color: var(--text-lo); font-family: inherit;
+}
+.xf-actions button:hover { color: var(--text); border-color: var(--aws-blue); }
+.xf-options { max-height: 262px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+/* These are <label> elements, and the console's global label rule makes
+   every one of them a block of uppercase 11px grey — which turned a list
+   of processes into a column of shouted fragments. Reset it here rather
+   than weakening the global rule, which the rest of the app relies on. */
+.xf-option {
+  display: flex; align-items: center; gap: 9px; cursor: pointer;
+  padding: 6px 8px; border-radius: 7px;
+  font-size: 13px; text-transform: none; letter-spacing: normal;
+  color: var(--text); font-weight: 400; margin-bottom: 0;
+}
+.xf-option:hover { background: rgba(127, 127, 127, .12); }
+.xf-option[hidden] { display: none !important; }
+.xf-option input { width: auto; margin: 0; flex: none; }
+.xf-option span { flex: 1; min-width: 0; }
+.xf-option em { font-style: normal; font-size: 11.5px; color: var(--text-lo); }
+.xf-none { font-size: 12.5px; color: var(--text-lo); margin: 6px 8px; }
+
+.xseg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px;
+        background: var(--surface); border: 1px solid var(--hairline); }
+.xseg-option {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 6px 12px; border-radius: 7px; font-size: 12.5px; color: var(--text-lo);
+  text-transform: none; letter-spacing: normal; font-weight: 400; margin-bottom: 0;
+}
+.xseg-option input { position: absolute; opacity: 0; pointer-events: none; }
+.xseg-option.is-on { background: rgba(41, 151, 255, .16); color: var(--aws-blue); font-weight: 560; }
+.xseg-option em { font-style: normal; font-size: 11px; opacity: .75; }
+
+/* Faces, loaded from FCLM by the manager's browser — never stored here.
+   The row-header rule above sets every span inside it to display:block,
+   which stacked the face on top of the name; both of these have to beat
+   it on specificity. */
+.st-table th[scope="row"] .st-person { display: flex; align-items: center; gap: 10px; }
+.st-table th[scope="row"] .st-person-text { display: flex; flex-direction: column; min-width: 0; }
+.st-person { display: flex; align-items: center; gap: 10px; }
+.st-person-text { display: flex; flex-direction: column; min-width: 0; }
+.st-face {
+  width: 34px; height: 34px; border-radius: 50%; flex: none;
+  object-fit: cover; background: var(--surface);
+  border: 1px solid var(--hairline);
+}
+.st-face-initials {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11.5px; font-weight: 600; color: var(--text-lo); letter-spacing: .02em;
+}
+.st-punch { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; white-space: nowrap; }
+.st-punch-out { color: var(--text-lo); }
+.st-punch-unknown { color: var(--text-lo); opacity: .6; }
+
+@media (max-width: 720px) {
+  .st-filter-row > input[type="search"] { flex-basis: 100%; }
+  .xf, .xf-button, .xseg { width: 100%; }
+  .xf-button { justify-content: space-between; }
+  .xf-panel { left: 0; right: 0; max-width: none; }
+  .xseg { justify-content: space-between; }
+}

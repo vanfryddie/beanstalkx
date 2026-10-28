@@ -202,6 +202,110 @@
     }
 
     /* ---------------------------------------------------------------
+       Employee Time Details: one person per request, which is why it is
+       not how the floor is swept. It is still the only place that says
+       whether somebody is actually on the clock rather than merely
+       booked to a process, so it runs as a second, bounded pass over
+       the people a manager asked about — and it hands back the badge
+       photo and the login in the same response, which the rollup cannot.
+       --------------------------------------------------------------- */
+
+    function timeDetailsUrl(warehouseId, employeeId, when) {
+        return 'https://fclm-portal.amazon.com/employee/timeDetails'
+            + '?employeeId=' + encodeURIComponent(employeeId)
+            + '&warehouseId=' + encodeURIComponent(warehouseId)
+            + '&spanType=Day'
+            + '&startDateDay=' + encodeURIComponent(fclmDate(when));
+    }
+
+    /* FCLM writes session times as MM/DD-HH:MM:SS with no year. The year
+       is the report's, and a session that runs past midnight is written
+       against the next day, so the date carries. */
+    function parseSessionTime(text, reference) {
+        var m = /(\d{2})\/(\d{2})-(\d{2}):(\d{2}):(\d{2})/.exec(String(text || ''));
+        if (!m) return null;
+        var year = reference.getFullYear();
+        var when = new Date(year, Number(m[1]) - 1, Number(m[2]),
+                            Number(m[3]), Number(m[4]), Number(m[5]));
+        /* A report run on 1 January showing 12/31 is last year's. */
+        if (when - reference > 180 * 86400000) when.setFullYear(year - 1);
+        if (reference - when > 180 * 86400000) when.setFullYear(year + 1);
+        return when;
+    }
+
+    function infoField(doc, label) {
+        var lines = doc.querySelectorAll('.employeeInfo .line, .employeeInfo span');
+        for (var i = 0; i < lines.length; i++) {
+            var tag = lines[i].querySelector ? lines[i].querySelector('.row-label') : null;
+            if (!tag) continue;
+            if ((tag.textContent || '').trim().toLowerCase() !== label) continue;
+            var text = (lines[i].textContent || '').trim();
+            return text.slice((tag.textContent || '').trim().length).trim();
+        }
+        return null;
+    }
+
+    function parseTimeDetails(html, now) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var reference = now || new Date();
+        var photo = doc.querySelector('.employeeInfo img');
+        var out = {
+            employee_login: infoField(doc, 'login'),
+            employee_id: infoField(doc, 'empl id'),
+            shift_code: infoField(doc, 'shift'),
+            home_location: infoField(doc, 'location'),
+            photo_url: photo ? photo.getAttribute('src') : null,
+            clock_state: 'unknown',
+            clocked_in_at: null,
+            clocked_out_at: null
+        };
+
+        var rows = doc.querySelectorAll('table tbody tr');
+        var onClock = [];
+        var offClock = [];
+        for (var r = 0; r < rows.length; r++) {
+            var cells = rows[r].children;
+            if (!cells || cells.length < 3) continue;
+            var title = (cells[0].textContent || '').trim();
+            var start = parseSessionTime(cells[1].textContent, reference);
+            var end = parseSessionTime(cells[2].textContent, reference);
+            if (!start || !end) continue;
+            if (/^onclock/i.test(title)) onClock.push({ start: start, end: end });
+            else if (/^offclock/i.test(title)) offClock.push({ start: start, end: end });
+        }
+        if (!onClock.length && !offClock.length) return out;
+
+        /* A session that has not ended yet is written with an end at the
+           next midnight, so "covers now" is what distinguishes somebody
+           still on the clock from somebody whose shift is recorded and
+           finished. */
+        var covering = null;
+        onClock.concat(offClock).forEach(function (session) {
+            if (session.start <= reference && reference < session.end) {
+                if (!covering || session.start > covering.start) covering = session;
+            }
+        });
+        var latestOn = onClock.reduce(function (a, b) {
+            return !a || b.start > a.start ? b : a;
+        }, null);
+
+        if (covering && onClock.indexOf(covering) > -1) {
+            out.clock_state = 'in';
+            out.clocked_in_at = covering.start.toISOString();
+        } else if (covering) {
+            out.clock_state = 'out';
+            if (latestOn) out.clocked_out_at = latestOn.end.toISOString();
+        } else if (latestOn && latestOn.end > reference) {
+            out.clock_state = 'in';
+            out.clocked_in_at = latestOn.start.toISOString();
+        } else if (latestOn) {
+            out.clock_state = 'out';
+            out.clocked_out_at = latestOn.end.toISOString();
+        }
+        return out;
+    }
+
+    /* ---------------------------------------------------------------
        Stations. Not an FCLM report — the same three sources the
        network's stations script reads. Every one of them is optional.
        --------------------------------------------------------------- */
@@ -349,6 +453,67 @@
         });
     }
 
+    /* ---------------------------------------------------------------
+       The clock pass. One request per person, so it is deliberately
+       limited to the team the page asked about and run a few at a time:
+       the point is to answer "punched in or not" without making FCLM
+       serve three hundred pages because somebody opened a tab.
+       --------------------------------------------------------------- */
+
+    var CLOCK_CONCURRENCY = 4;
+
+    function runPooled(items, size, worker) {
+        var index = 0;
+        var results = [];
+        function next() {
+            if (index >= items.length) return Promise.resolve();
+            var mine = index++;
+            return Promise.resolve(worker(items[mine], mine))
+                .then(function (value) { if (value) results.push(value); })
+                .catch(function () { /* one person failing is not the pass failing */ })
+                .then(next);
+        }
+        var runners = [];
+        for (var i = 0; i < Math.min(size, items.length); i++) runners.push(next());
+        return Promise.all(runners).then(function () { return results; });
+    }
+
+    function clockPass(config, scope) {
+        var rosterUrl = config.roster_url + (scope ? '?am=' + encodeURIComponent(scope) : '');
+        return fetch(rosterUrl, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var roster = data.roster || [];
+                if (!roster.length) return { stored: 0, asked: 0 };
+                announce({ phase: 'clock', done: 0, total: roster.length });
+                var done = 0;
+                var now = new Date();
+                return runPooled(roster, CLOCK_CONCURRENCY, function (person) {
+                    return fetchText(timeDetailsUrl(config.warehouse_id, person.employee_id, now))
+                        .then(function (html) {
+                            var parsed = parseTimeDetails(html, new Date());
+                            parsed.employee_login = parsed.employee_login || person.employee_login;
+                            parsed.employee_id = parsed.employee_id || person.employee_id;
+                            parsed.full_name = person.full_name;
+                            return parsed;
+                        })
+                        .then(function (parsed) {
+                            done += 1;
+                            announce({ phase: 'clock', done: done, total: roster.length });
+                            return parsed;
+                        });
+                }).then(function (entries) {
+                    if (!entries.length) return { stored: 0, asked: roster.length };
+                    return fetch(config.clock_url, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ entries: entries })
+                    }).then(function (r) { return r.json(); });
+                });
+            });
+    }
+
     /* --------------------------------------------------------------- */
 
     function sweep(force) {
@@ -398,8 +563,18 @@
                         })
                     }).then(function (r) { return r.json(); });
                 }).then(function (result) {
-                    state.lastRun = Date.now();
                     log('swept', result);
+                    if (!config.clock) return result;
+                    var marker = document.getElementById('ldisFloorMarker');
+                    var scope = marker ? marker.dataset.scope : null;
+                    return clockPass(config, scope)
+                        .catch(function (e) { log('clock pass failed', e); return null; })
+                        .then(function (clock) {
+                            result.clock = clock;
+                            return result;
+                        });
+                }).then(function (result) {
+                    state.lastRun = Date.now();
                     announce({ phase: 'done', result: result });
                     document.dispatchEvent(new CustomEvent('ldis-floor-updated', { detail: result }));
                 });

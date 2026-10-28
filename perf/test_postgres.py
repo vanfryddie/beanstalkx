@@ -87,6 +87,9 @@ routes = [
     ("Training request review queue", "/scorecards?tab=requests"),
     ("OLR review tab", f"/overview?tab=olr&am={ams[0]}"),
     ("Staffing tab", f"/overview?tab=staffing&am={ams[0]}"),
+    ("Staffing with several filters ticked",
+     f"/overview?tab=staffing&am={ams[0]}&trained_for=Pack&trained_for=Pick&clock=in"),
+    ("Floor roster", f"/floor/roster?am={ams[0]}"),
     ("Floor config", "/floor/config"),
     ("Floor status", "/floor/status"),
     ("Floor reader userscript", "/floor/provider.user.js"),
@@ -226,6 +229,27 @@ check("identities learned on the sweep are stored",
 r = c.get(f"/overview?tab=staffing&am={ams[0]}")
 check("the staffing tab renders the sweep", r.status_code == 200 and b"on the floor" in r.get_data().lower(),
       str(r.status_code))
+
+print("\n4e. Clock readings round-trip on Postgres")
+clock_entries = [{"employee_login": p["employee_login"], "employee_id": f"66{i:05d}",
+                  "clock_state": "in" if i % 3 else "out",
+                  "clocked_in_at": "2026-10-28T06:00:00",
+                  "photo_url": "https://fclm-portal.amazon.com/employee/photo?employeeId=1",
+                  "shift_code": "D58F88MZ"}
+                 for i, p in enumerate(floor_team)]
+resp = c.post("/floor/clock", json={"entries": clock_entries})
+check("a clock pass posts", resp.status_code == 200, str(resp.status_code))
+stored = db.get_floor_clock()
+check("every reading is stored", len(stored) == len(clock_entries),
+      f"{len(stored)} of {len(clock_entries)}")
+check("the upsert is idempotent",
+      c.post("/floor/clock", json={"entries": clock_entries}).status_code == 200
+      and len(db.get_floor_clock()) == len(clock_entries))
+view = application.build_staffing_view([ams[0]], None, {"clock": "in"})
+check("the punched-in filter runs against Postgres",
+      all(p["clock_state"] == "in" for p in view["people"]), str(len(view["people"])))
+check("photo URLs come back", len(db.get_floor_photo_urls()) == len(clock_entries),
+      str(len(db.get_floor_photo_urls())))
 
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()
