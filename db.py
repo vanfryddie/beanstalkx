@@ -2171,6 +2171,7 @@ def init_db():
             window_start TEXT,
             window_end TEXT,
             source TEXT,
+            reader_version TEXT,
             row_count INTEGER DEFAULT 0,
             matched_count INTEGER DEFAULT 0,
             station_count INTEGER DEFAULT 0,
@@ -2204,6 +2205,11 @@ def init_db():
             photo_url TEXT,
             shift_code TEXT,
             home_location TEXT,
+            current_title TEXT,
+            current_process TEXT,
+            current_function TEXT,
+            current_kind TEXT,
+            task_started_at TEXT,
             checked_at TEXT,
             checked_by TEXT
         );
@@ -2306,6 +2312,15 @@ def init_db():
             ("training_slots", "metric_key", "TEXT"),
             ("training_slots", "approved_by", "TEXT"),
             ("ambassadors", "is_indirect_roles_ambassador", "INTEGER DEFAULT 0"),
+            # floor_clock and floor_snapshots shipped a release before
+            # these columns existed, so a site that already deployed the
+            # first version has the tables without them.
+            ("floor_clock", "current_title", "TEXT"),
+            ("floor_clock", "current_process", "TEXT"),
+            ("floor_clock", "current_function", "TEXT"),
+            ("floor_clock", "current_kind", "TEXT"),
+            ("floor_clock", "task_started_at", "TEXT"),
+            ("floor_snapshots", "reader_version", "TEXT"),
         ]:
             if USE_POSTGRES:
                 # Postgres supports IF NOT EXISTS directly — no exception
@@ -7405,7 +7420,28 @@ FLOOR_DEFAULT_PROCESSES = (
     ("each_stp", "1003016", "Each StP"),
     ("prep_receiver", "1003002", "Prep Receiver"),
     ("cubiscan", "1002971", "Cubiscan"),
+    # The support and lead processes matter as much as the direct ones
+    # for a staffing picture: a first pass covered only the twelve above
+    # and reported a site of eighty as three processes and forty-six
+    # people "not seen", most of whom were on Pick Support, a dock or a
+    # lead role the sweep never asked about.
     ("pack_support", "1002994", "Pack Support"),
+    ("ob_lead", "1002987", "OB Lead/PA"),
+    ("ob_problem_solve", "1002985", "OB Problem Solve"),
+    ("pick_support", "1003049", "Pick Support"),
+    ("receive_dock", "1003010", "Receive Dock"),
+    ("receive_support", "1003033", "Receive Support"),
+    ("tsi_support", "1003020", "TSI Support"),
+    ("stp_support", "1003017", "StP Support"),
+    ("rsr_support", "1003012", "RSR Support"),
+    ("ib_lead", "1002982", "IB Lead"),
+    ("transfer_out", "1003021", "Transfer Out"),
+    ("tso_dock", "1003022", "TSO Dock"),
+    ("to_lead", "1003023", "TO Lead/PA"),
+    ("transfer_out_pick", "1003065", "Transfer Out Pick"),
+    ("vret_support", "1003059", "VRET Support"),
+    ("vret_pick", "1003034", "VRET Pick"),
+    ("vret_pack", "1003056", "VRET Pack"),
 )
 
 _NAME_NOISE_RE = re.compile(r"[^a-z]+")
@@ -7504,7 +7540,8 @@ def _floor_match(row, identity, by_id, by_login, by_name):
 
 
 def record_floor_snapshot(rows, window_start=None, window_end=None,
-                          taken_by=None, source="function-rollup", note=None):
+                          taken_by=None, source="function-rollup", note=None,
+                          reader_version=None):
     """Store one sweep of the floor and return what it managed to match.
 
     Rows are whatever the browser scraped: employee_id, full_name,
@@ -7546,9 +7583,10 @@ def record_floor_snapshot(rows, window_start=None, window_end=None,
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO floor_snapshots (taken_at, taken_by, window_start, window_end, "
-        "source, row_count, matched_count, station_count, process_count, note) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (now, taken_by, window_start, window_end, source, len(prepared), matched,
+        "source, reader_version, row_count, matched_count, station_count, process_count, note) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (now, taken_by, window_start, window_end, source, reader_version,
+         len(prepared), matched,
          len([p for p in prepared if p[7]]),
          len({p[4] for p in prepared if p[4]}), note),
     )
@@ -7744,7 +7782,9 @@ def record_floor_clock(entries, checked_by=None):
         conn.execute(
             "INSERT INTO floor_clock (employee_login, employee_id, clock_state, "
             "clocked_in_at, clocked_out_at, photo_url, shift_code, home_location, "
-            "checked_at, checked_by) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "current_title, current_process, current_function, current_kind, "
+            "task_started_at, checked_at, checked_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (employee_login) DO UPDATE SET "
             "employee_id=COALESCE(excluded.employee_id, floor_clock.employee_id), "
             "clock_state=excluded.clock_state, clocked_in_at=excluded.clocked_in_at, "
@@ -7752,11 +7792,23 @@ def record_floor_clock(entries, checked_by=None):
             "photo_url=COALESCE(excluded.photo_url, floor_clock.photo_url), "
             "shift_code=COALESCE(excluded.shift_code, floor_clock.shift_code), "
             "home_location=COALESCE(excluded.home_location, floor_clock.home_location), "
+            "current_title=excluded.current_title, current_process=excluded.current_process, "
+            "current_function=excluded.current_function, current_kind=excluded.current_kind, "
+            "task_started_at=excluded.task_started_at, "
             "checked_at=excluded.checked_at, checked_by=excluded.checked_by",
             (login, entry.get("employee_id"), state or "unknown",
              entry.get("clocked_in_at"), entry.get("clocked_out_at"),
              entry.get("photo_url"), entry.get("shift_code"),
-             entry.get("home_location"), now, checked_by))
+             entry.get("home_location"),
+             # A task only means anything while somebody is on the clock.
+             # Keeping the last one against a punched-out person would
+             # read as though they were still doing it.
+             entry.get("current_title") if state == "in" else None,
+             entry.get("current_process") if state == "in" else None,
+             entry.get("current_function") if state == "in" else None,
+             entry.get("current_kind") if state == "in" else None,
+             entry.get("task_started_at") if state == "in" else None,
+             now, checked_by))
         if entry.get("employee_id"):
             conn.execute(
                 "INSERT INTO floor_identity (employee_id, employee_login, full_name, "

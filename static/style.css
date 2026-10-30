@@ -4386,3 +4386,13 @@ html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }
   .xf-panel { left: 0; right: 0; max-width: none; }
   .xseg { justify-content: space-between; }
 }
+
+.st-banner {
+  display: flex; gap: 11px; align-items: flex-start;
+  padding: 13px 16px; margin-bottom: 16px; border-radius: var(--radius);
+  background: rgba(255, 159, 10, .09); border: 1px solid rgba(255, 159, 10, .32);
+}
+.st-banner > i { margin-top: 5px; flex: none; }
+.st-banner strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
+.st-banner span { font-size: 12.5px; color: var(--text-lo); line-height: 1.5; }
+.st-src { opacity: .62; }

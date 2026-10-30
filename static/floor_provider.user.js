@@ -22,7 +22,7 @@
 // ==UserScript==
 // @name         LDIS Floor Sync
 // @namespace    ldis
-// @version      1.0.0-__LDIS_BUILD__
+// @version      1.1.0-__LDIS_BUILD__
 // @description  Sweeps FCLM Function Rollup for who is on the floor and posts it to the L&D Operations Console.
 // @match        __LDIS_MATCH__
 // @grant        GM_xmlhttpRequest
@@ -41,6 +41,7 @@
 
     var CONFIG_URL = '__LDIS_CONFIG__';
     var POST_URL = '__LDIS_POST__';
+    var READER_VERSION = '1.1.0-__LDIS_BUILD__';
     var state = { running: false, lastRun: 0 };
 
     function log() {
@@ -245,6 +246,30 @@
         return null;
     }
 
+    /* FCLM writes a session as "Process<separator>Function", with its own
+       glyph in the middle. Which glyph is not worth depending on, so
+       anything that is not ordinary text is treated as the separator. */
+    var TITLE_SEPARATOR = /[^\x20-\x7E]+/;
+
+    function splitTaskTitle(title) {
+        var parts = String(title || '').split(TITLE_SEPARATOR)
+            .map(function (s) { return s.trim(); })
+            .filter(Boolean);
+        if (parts.length >= 2) return { process: parts[0], fn: parts.slice(1).join(' ') };
+        return { process: parts[0] || null, fn: null };
+    }
+
+    /* Clock rows are the shift; breaks and time off task are states, not
+       work. Telling them apart is the difference between "on Pick" and
+       "punched in, off task", which is the whole question a manager has
+       about somebody who is here but not on a process. */
+    function taskKind(title) {
+        if (/^onclock|^offclock/i.test(title)) return 'clock';
+        if (/^break/i.test(title)) return 'break';
+        if (/time off task|^tot\b/i.test(title)) return 'off-task';
+        return 'work';
+    }
+
     function parseTimeDetails(html, now) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
         var reference = now || new Date();
@@ -257,22 +282,58 @@
             photo_url: photo ? photo.getAttribute('src') : null,
             clock_state: 'unknown',
             clocked_in_at: null,
-            clocked_out_at: null
+            clocked_out_at: null,
+            current_title: null,
+            current_process: null,
+            current_function: null,
+            current_kind: null,
+            task_started_at: null
         };
 
         var rows = doc.querySelectorAll('table tbody tr');
         var onClock = [];
         var offClock = [];
+        var activity = [];
         for (var r = 0; r < rows.length; r++) {
             var cells = rows[r].children;
             if (!cells || cells.length < 3) continue;
             var title = (cells[0].textContent || '').trim();
             var start = parseSessionTime(cells[1].textContent, reference);
             var end = parseSessionTime(cells[2].textContent, reference);
-            if (!start || !end) continue;
-            if (/^onclock/i.test(title)) onClock.push({ start: start, end: end });
-            else if (/^offclock/i.test(title)) offClock.push({ start: start, end: end });
+            if (!start) continue;
+            var kind = taskKind(title);
+            if (kind === 'clock') {
+                if (!end) continue;
+                if (/^onclock/i.test(title)) onClock.push({ start: start, end: end });
+                else offClock.push({ start: start, end: end });
+            } else {
+                activity.push({ title: title, start: start, end: end, kind: kind });
+            }
         }
+
+        /* The row with no end is the one happening now. Failing that,
+           the latest one that has started — a report refreshed a moment
+           after a session closed has no open row at all. */
+        var current = null;
+        activity.forEach(function (row) {
+            if (row.end) return;
+            if (!current || row.start > current.start) current = row;
+        });
+        if (!current) {
+            activity.forEach(function (row) {
+                if (row.start > reference) return;
+                if (!current || row.start > current.start) current = row;
+            });
+        }
+        if (current) {
+            var split = splitTaskTitle(current.title);
+            out.current_title = current.title;
+            out.current_process = split.process;
+            out.current_function = split.fn;
+            out.current_kind = current.kind;
+            out.task_started_at = current.start.toISOString();
+        }
+
         if (!onClock.length && !offClock.length) return out;
 
         /* A session that has not ended yet is written with an end at the
@@ -531,19 +592,17 @@
 
                 var rows = [];
                 var done = 0;
-                return processes.reduce(function (chain, process) {
-                    return chain.then(function () {
-                        return fetchText(rollupUrl(config.warehouse_id, process.process_id, from, to))
-                            .then(function (html) {
-                                rows = rows.concat(parseRollup(html, process));
-                            })
-                            .catch(function (e) { log('process failed', process.key, e); })
-                            .then(function () {
-                                done += 1;
-                                announce({ phase: 'fetching', done: done, total: processes.length });
-                            });
-                    });
-                }, Promise.resolve()).then(function () {
+                return runPooled(processes, 3, function (process) {
+                    return fetchText(rollupUrl(config.warehouse_id, process.process_id, from, to))
+                        .then(function (html) {
+                            rows = rows.concat(parseRollup(html, process));
+                        })
+                        .catch(function (e) { log('process failed', process.key, e); })
+                        .then(function () {
+                            done += 1;
+                            announce({ phase: 'fetching', done: done, total: processes.length });
+                        });
+                }).then(function () {
                     announce({ phase: 'resolving', rows: rows.length });
                     return resolveLogins(rows);
                 }).then(function () {
@@ -559,6 +618,7 @@
                         body: JSON.stringify({
                             window_start: from.toISOString(),
                             window_end: to.toISOString(),
+                            reader_version: READER_VERSION,
                             rows: rows
                         })
                     }).then(function (r) { return r.json(); });

@@ -251,6 +251,29 @@ check("the punched-in filter runs against Postgres",
 check("photo URLs come back", len(db.get_floor_photo_urls()) == len(clock_entries),
       str(len(db.get_floor_photo_urls())))
 
+# The columns that carry what somebody is doing were added a release
+# after the table, so an existing deployment gets them by migration
+# rather than by CREATE TABLE. Worth proving against the real engine.
+task_login = floor_team[0]["employee_login"]
+c.post("/floor/clock", json={"entries": [
+    {"employee_login": task_login, "employee_id": "660000", "clock_state": "in",
+     "current_title": "Transfer In Support\u25c6Cart/Pallet Builder",
+     "current_process": "Transfer In Support", "current_function": "Cart/Pallet Builder",
+     "current_kind": "work", "task_started_at": "2026-10-30T10:15:00"}]})
+stored_task = db.get_floor_clock().get(task_login.lower(), {})
+check("the current task survives the round trip",
+      stored_task.get("current_process") == "Transfer In Support",
+      str(stored_task.get("current_process")))
+with application.application.test_request_context("/"):
+    unswept_view = application.build_staffing_view([ams[0]], None, {})
+by_login = {p["employee_login"]: p for p in unswept_view["people"]}
+check("and somebody on an unswept process is on site, not 'not seen'",
+      by_login[task_login]["floor_state"] == "present",
+      by_login[task_login]["floor_state"])
+check("a stale reader is flagged on Postgres too",
+      application.build_staffing_view.__name__ == "build_staffing_view"
+      and unswept_view["reader_stale"] in (True, False))
+
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()
 for i in range(40):

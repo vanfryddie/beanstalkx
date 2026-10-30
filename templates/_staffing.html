@@ -46,39 +46,82 @@
 </div>
 {% else %}
 
+{% if floor_staffing.reader_stale %}
+<div class="st-banner">
+  <i class="dash-dot dash-dot-watch"></i>
+  <div>
+    <strong>The floor reader in this browser is out of date.</strong>
+    <span>
+      The last sweep came from
+      {{ 'a build that predates clock readings' if not floor_staffing.reader_posted
+         else ('build ' ~ floor_staffing.reader_posted) }},
+      and this console serves {{ floor_staffing.reader_current }}. An old reader still sweeps
+      processes, so the floor fills in and the clock stays empty —
+      <a href="{{ url_for('floor_userscript') }}">install the current one</a> and reload.
+    </span>
+  </div>
+</div>
+{% endif %}
+
 <section class="dash-summary">
   <div class="dash-summary-story">
-    <h2>{{ floor_staffing.on_site }} of {{ floor_staffing.total }} on the floor.</h2>
+    <h2>{{ floor_staffing.on_site }} of {{ floor_staffing.total }} on site.</h2>
     <p>
-      From the last {{ floor_staffing.window_minutes }} minutes of FCLM, read
+      {% if floor_staffing.has_clock %}
+      {{ floor_staffing.punched_in }} punched in, {{ floor_staffing.on_process }} booked to one of
+      the {{ floor_staffing.process_count }} processes swept in the last
+      {{ floor_staffing.window_minutes }} minutes.
+      {% if floor_staffing.idle %}{{ floor_staffing.idle }} on a break or off task.{% endif %}
+      {% if floor_staffing.no_task %}{{ floor_staffing.no_task }} on the clock with no task
+      recorded.{% endif %}
+      {% else %}
+      {{ floor_staffing.on_process }} booked to one of the {{ floor_staffing.process_count }}
+      processes swept in the last {{ floor_staffing.window_minutes }} minutes, read
       {{ 'just now' if m.age_minutes == 0 else (m.age_minutes ~ (' minute ago' if m.age_minutes == 1 else ' minutes ago')) }}
       {% if m.taken_by %}by {{ m.taken_by }}{% endif %}.
-      {% if floor_staffing.off_site %}{{ floor_staffing.off_site }} of your team
-      {{ 'has' if floor_staffing.off_site == 1 else 'have' }} not booked time to any swept process in
-      that window.{% endif %}
+      Nobody's clock has been read, so anyone not on one of those processes — on a break, off
+      task, or on a process this site does not sweep — cannot be told apart from somebody who
+      went home.
+      {% endif %}
     </p>
+    <span class="dash-chip">
+      <i class="dash-dot dash-dot-{{ 'watch' if m.is_stale else 'good' }}"></i>
+      Read {{ 'just now' if m.age_minutes == 0 else (m.age_minutes ~ (' min' if m.age_minutes == 1 else ' min')) ~ ' ago' }}
+      {%- if m.taken_by %} by {{ m.taken_by }}{% endif %}
+    </span>
     {% if floor_staffing.unmatched %}
     <span class="dash-chip" title="FCLM rows that match nobody in this site's L&D data">
       <i class="dash-dot dash-dot-watch"></i>
       {{ floor_staffing.unmatched | length }} on the floor the console cannot name
     </span>
     {% endif %}
+    {% if floor_staffing.without_employee_id %}
+    <span class="dash-chip" title="Employee Time Details is looked up by employee ID, and these people have none on file yet">
+      <i class="dash-dot dash-dot-none"></i>
+      {{ floor_staffing.without_employee_id }} with no employee ID, so no clock
+    </span>
+    {% endif %}
   </div>
   <div class="dash-summary-stats">
     <div class="dash-stat">
-      <span class="dash-stat-label">On the floor</span>
+      <span class="dash-stat-label">On site</span>
       {{ dash.figure(floor_staffing.on_site, suffix='') }}
-      <span class="dash-stat-sub">Booked in the window</span>
+      <span class="dash-stat-sub">Punched in, or on a process</span>
     </div>
     <div class="dash-stat">
-      <span class="dash-stat-label">Not seen</span>
+      <span class="dash-stat-label">On a process</span>
+      {{ dash.figure(floor_staffing.on_process, suffix='') }}
+      <span class="dash-stat-sub">Of {{ floor_staffing.process_count }} swept</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Here, not on one</span>
+      {{ dash.figure(floor_staffing.idle + floor_staffing.no_task, suffix='') }}
+      <span class="dash-stat-sub">Break, off task, or elsewhere</span>
+    </div>
+    <div class="dash-stat">
+      <span class="dash-stat-label">Not on site</span>
       {{ dash.figure(floor_staffing.off_site, suffix='') }}
-      <span class="dash-stat-sub">Off shift, or elsewhere</span>
-    </div>
-    <div class="dash-stat">
-      <span class="dash-stat-label">Processes running</span>
-      {{ dash.figure(floor_staffing.by_process | length, suffix='') }}
-      <span class="dash-stat-sub">With your people in them</span>
+      <span class="dash-stat-sub">Off shift</span>
     </div>
   </div>
 </section>
@@ -131,7 +174,9 @@
     <span class="st-toggle-label">Booked to a process</span>
     {{ xf.segmented('presence', [
          {'value': '', 'label': 'Everyone'},
-         {'value': 'on_site', 'label': 'On a process', 'count': floor_staffing.on_site},
+         {'value': 'on_site', 'label': 'On a process', 'count': floor_staffing.on_process},
+         {'value': 'idle', 'label': 'Here, not on one',
+          'count': floor_staffing.idle + floor_staffing.no_task},
          {'value': 'off_site', 'label': 'On none', 'count': floor_staffing.off_site}],
        floor_staffing.filters.presence) }}
     {% if not floor_staffing.has_clock %}
@@ -191,23 +236,41 @@
           {% endif %}
         </td>
         <td>
-          {% if p.floor %}
+          {% set w = p.where %}
+          {% if w and w.kind == 'work' %}
           <span class="st-now">
             <i class="dash-dot dash-dot-good"></i>
             <span>
-              <strong>{{ p.floor.process_name or 'Unattributed' }}</strong>
-              {% if p.floor.function_name and p.floor.function_name != p.floor.process_name %}
-              <em>{{ p.floor.function_name }}</em>{% endif %}
-              {% if p.floor.also_in %}<em>also {{ p.floor.also_in | join(', ') }}</em>{% endif %}
+              <strong>{{ w.process or 'Unattributed' }}</strong>
+              {% if w.function and w.function != w.process %}<em>{{ w.function }}</em>{% endif %}
+              {% if w.also_in %}<em>also {{ w.also_in | join(', ') }}</em>{% endif %}
+              {% if w.source == 'sweep' %}<em class="st-src" title="From the Function Rollup sweep, up to {{ floor_staffing.window_minutes }} minutes old">from the sweep</em>{% endif %}
             </span>
           </span>
+          {% elif w and w.kind in ('break', 'off-task') %}
+          <span class="st-now">
+            <i class="dash-dot dash-dot-watch"></i>
+            <span>
+              <strong>{{ w.process }}</strong>
+              {% if w.since %}<em>since {{ w.since[11:16] }}</em>{% endif %}
+            </span>
+          </span>
+          {% elif w and w.kind == 'unknown-task' %}
+          <span class="st-now">
+            <i class="dash-dot dash-dot-watch"></i>
+            <span><strong>On the clock</strong><em>no task recorded</em></span>
+          </span>
+          {% elif p.clock_state == 'out' %}
+          <span class="st-now st-now-off"><i class="dash-dot dash-dot-none"></i><span>Not on site</span></span>
           {% else %}
-          <span class="st-now st-now-off"><i class="dash-dot dash-dot-none"></i><span>Not seen</span></span>
+          <span class="st-now st-now-off">
+            <i class="dash-dot dash-dot-none"></i>
+            <span>Not seen{% if not floor_staffing.has_clock %}<em class="st-src">no clock reading</em>{% endif %}</span>
+          </span>
           {% endif %}
         </td>
         <td class="mono">
-          {% if p.floor and p.floor.station %}{{ p.floor.station }}
-          {% elif p.floor %}<span class="dash-muted" title="Station data was not available for this sweep">—</span>
+          {% if p.where and p.where.station %}{{ p.where.station }}
           {% else %}<span class="dash-muted">—</span>{% endif %}
         </td>
         <td>

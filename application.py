@@ -4094,22 +4094,49 @@ def _floor_match_lines():
             for path in paths for scheme in ("https", "http")]
 
 
-@application.route("/floor/provider.user.js")
-def floor_userscript():
-    """The floor sweep, served with its match lines and endpoints filled
-    in for wherever this console is being served from."""
+FLOOR_READER_RELEASE = "1.1.0"
+
+
+def _floor_reader_version():
+    """Which build of the reader this console is serving.
+
+    Taken from the file alone, deliberately: the match lines and
+    endpoints differ by host, and a manager reaching the console by a
+    second address should not be told their reader is out of date when
+    it is the same reader. What this has to catch is a reader installed
+    before a feature existed — an old one is silent rather than broken,
+    sweeping and posting while the half of the page that needs the newer
+    build simply stays empty, which is how a site ends up with a full
+    floor and an empty clock."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "static", "floor_provider.user.js")
+    with open(path, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()[:8]
+    return FLOOR_READER_RELEASE + "-" + digest
+
+
+def _floor_reader_source():
+    """The reader as it would be served here, with its endpoints and
+    match lines filled in, plus the version that build carries."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "static", "floor_provider.user.js")
     with open(path, encoding="utf-8") as handle:
         script = handle.read()
     base = request.url_root.rstrip("/")
+    version = _floor_reader_version()
     script = script.replace("// @match        __LDIS_MATCH__",
                             "\n".join(_floor_match_lines()))
     script = script.replace("__LDIS_UPDATE__", base + url_for("floor_userscript"))
     script = script.replace("__LDIS_CONFIG__", base + url_for("floor_config"))
     script = script.replace("__LDIS_POST__", base + url_for("floor_snapshot"))
-    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()[:8]
-    script = script.replace("__LDIS_BUILD__", digest)
+    return script.replace("__LDIS_BUILD__", version.split("-", 1)[1]), version
+
+
+@application.route("/floor/provider.user.js")
+def floor_userscript():
+    """The floor sweep, served with its match lines and endpoints filled
+    in for wherever this console is being served from."""
+    script, _version = _floor_reader_source()
     return Response(script, mimetype="text/javascript; charset=utf-8")
 
 
@@ -4129,7 +4156,25 @@ def floor_config():
         "clock": True,
         "roster_url": url_for("floor_roster"),
         "clock_url": url_for("floor_clock_post"),
+        "reader_version": _floor_reader_version(),
     })
+
+
+def _floor_known_employee_ids():
+    """Every login this site can look up in Employee Time Details, with
+    the id to look it up by. Learned ids first, then whatever the
+    cross-training upload carries — somebody in neither cannot be asked
+    about at all, which is a thing the page has to say rather than
+    silently skip."""
+    known = {login.lower(): emp_id
+             for emp_id, login in db._floor_identity_map().items()}
+    conn = db.get_db()
+    for row in conn.execute(
+            "SELECT DISTINCT employee_login, employee_id FROM xt_hours "
+            "WHERE employee_login IS NOT NULL AND employee_id IS NOT NULL").fetchall():
+        known.setdefault((row["employee_login"] or "").lower(), str(row["employee_id"]))
+    conn.close()
+    return known
 
 
 @application.route("/floor/roster")
@@ -4145,20 +4190,12 @@ def floor_roster():
     if not login_id:
         return jsonify({"error": "not signed in"}), 401
     scope = _resolve_am_scope(request.args.get("am") or login_id)
-    identity = {login.lower(): emp_id
-                for emp_id, login in db._floor_identity_map().items()}
-    known_ids = {}
-    conn = db.get_db()
-    for row in conn.execute(
-            "SELECT DISTINCT employee_login, employee_id FROM xt_hours "
-            "WHERE employee_login IS NOT NULL AND employee_id IS NOT NULL").fetchall():
-        known_ids.setdefault((row["employee_login"] or "").lower(), str(row["employee_id"]))
-    conn.close()
+    known_ids = _floor_known_employee_ids()
 
     roster, unknown = [], 0
     for person in db.get_associate_directory(am_logins=scope):
         key = (person["employee_login"] or "").lower()
-        employee_id = identity.get(key) or known_ids.get(key)
+        employee_id = known_ids.get(key)
         if not employee_id:
             unknown += 1
             continue
@@ -4207,6 +4244,15 @@ def floor_clock_post():
             "photo_url": photo,
             "shift_code": _floor_text(entry.get("shift_code"), 40),
             "home_location": _floor_text(entry.get("home_location"), 80),
+            # What they are doing this minute. Dropped on the way in by
+            # the first version of this route, which is how a reader
+            # that had read the task correctly still produced a page
+            # saying "not seen".
+            "current_title": _floor_text(entry.get("current_title"), 160),
+            "current_process": _floor_text(entry.get("current_process"), 120),
+            "current_function": _floor_text(entry.get("current_function"), 120),
+            "current_kind": _floor_text(entry.get("current_kind"), 20),
+            "task_started_at": _floor_text(entry.get("task_started_at"), 40),
         })
     return jsonify({"ok": True, **db.record_floor_clock(cleaned, checked_by=login_id)})
 
@@ -4254,6 +4300,7 @@ def floor_snapshot():
         window_start=_floor_text(payload.get("window_start"), 40),
         window_end=_floor_text(payload.get("window_end"), 40),
         taken_by=login_id,
+        reader_version=_floor_text(payload.get("reader_version"), 40),
     )
     return jsonify({"ok": True, **result})
 
@@ -4286,19 +4333,76 @@ def floor_status():
 FLOOR_PRESENT = "present"
 FLOOR_ABSENT = "absent"
 
+# A task that is not work. FCLM records these the same way it records a
+# process, and a manager needs them told apart: "on Pick" and "punched
+# in, off task" are different problems.
+FLOOR_IDLE_KINDS = ("break", "off-task")
 
-def _attach_floor_presence(people, presence):
+
+def _attach_floor_presence(people, presence, clock=None):
     """Put each person's current whereabouts on their directory entry.
 
-    Absent is not the same as unknown: somebody the sweep did not see is
-    only "not on the floor" if the sweep itself worked. With no snapshot
-    at all every person is unknown, which is what the templates render
-    rather than quietly showing an empty site."""
+    Two sources, deliberately kept apart and then combined here. The
+    Function Rollup sweep sees a whole site at once but only the
+    processes it was told to cover — somebody on Cart/Pallet Builder or
+    sitting at Time Off Task is simply absent from it. Employee Time
+    Details sees one person at a time but sees everything they are
+    doing, including the states that are not a process at all.
+
+    So being on site means punched in OR booked to a swept process, and
+    what somebody is doing comes from whichever source actually knows.
+    The earlier version read only the sweep, which left a punched-in
+    associate on Cart/Pallet Builder reported as "Not seen" — present,
+    working, and invisible.
+
+    Absent is still not the same as unknown: with neither a sweep nor a
+    clock reading, everybody is unknown and the templates say so rather
+    than showing an empty site."""
+    clock = clock or {}
     for person in people:
-        found = presence.get((person.get("employee_login") or "").lower())
+        key = (person.get("employee_login") or "").lower()
+        found = presence.get(key)
+        punch = clock.get(key)
         person["floor"] = found
-        person["floor_state"] = FLOOR_PRESENT if found else FLOOR_ABSENT
+        person["clock"] = punch
+        person["clock_state"] = (punch or {}).get("clock_state") or "unknown"
+        person["photo_url"] = (punch or {}).get("photo_url")
+        person["on_process"] = bool(found)
+        person["on_clock"] = person["clock_state"] == "in"
+        person["floor_state"] = (FLOOR_PRESENT
+                                 if (found or person["on_clock"]) else FLOOR_ABSENT)
+        person["where"] = _floor_where(found, punch)
     return people
+
+
+def _floor_where(found, punch):
+    """One description of where somebody is, from whichever source knows.
+
+    Preference order is about freshness and completeness: a task read
+    from Time Details is this minute and covers everything; the sweep is
+    up to a window old and covers only the processes it was given. The
+    station only ever comes from the sweep, so it is carried across."""
+    station = (found or {}).get("station")
+    punch = punch or {}
+    state = punch.get("clock_state")
+
+    if state == "in" and punch.get("current_kind") in FLOOR_IDLE_KINDS:
+        return {"kind": punch["current_kind"], "process": punch.get("current_title"),
+                "function": None, "station": station, "source": "time-details",
+                "since": punch.get("task_started_at")}
+    if state == "in" and punch.get("current_process"):
+        return {"kind": "work", "process": punch["current_process"],
+                "function": punch.get("current_function"), "station": station,
+                "source": "time-details", "since": punch.get("task_started_at")}
+    if found:
+        return {"kind": "work", "process": found.get("process_name"),
+                "function": found.get("function_name"), "station": station,
+                "source": "sweep", "since": None,
+                "also_in": found.get("also_in") or []}
+    if state == "in":
+        return {"kind": "unknown-task", "process": None, "function": None,
+                "station": None, "source": "time-details", "since": None}
+    return None
 
 
 _FLOOR_WORD_RE = re.compile(r"[a-z]+")
@@ -4366,10 +4470,9 @@ def build_staffing_view(am_logins, fc=None, filters=None):
     presence, meta = db.get_floor_presence()
     clock = db.get_floor_clock()
     people = db.get_associate_directory(am_logins=am_logins, fc=fc)
-    _attach_floor_presence(people, presence)
+    _attach_floor_presence(people, presence, clock)
 
     for person in people:
-        key = (person.get("employee_login") or "").lower()
         person["trained_processes"] = sorted(
             {p["process"] for p in person.get("processes", []) if p.get("process")},
             key=str.lower)
@@ -4378,30 +4481,39 @@ def build_staffing_view(am_logins, fc=None, filters=None):
         if person.get("is_ambassador"):
             person["role_names"] = sorted(set(person["role_names"]) | {"Ambassador"},
                                           key=str.lower)
+        where = person.get("where") or {}
         floor = person.get("floor") or {}
-        names = [floor.get("process_name"), floor.get("function_name")]
+        # Matched against everything that knows what they are doing, not
+        # just the sweep: somebody whose current task only Time Details
+        # saw is still doing the thing they are trained for.
+        names = [where.get("process"), where.get("function"),
+                 floor.get("process_name"), floor.get("function_name")]
         person["doing_trained"] = sorted(
             {t for t in person["trained_processes"] if floor_process_matches(t, names)},
             key=str.lower)
-        punch = clock.get(key)
-        person["clock"] = punch
-        person["clock_state"] = (punch or {}).get("clock_state") or "unknown"
-        person["photo_url"] = (punch or {}).get("photo_url")
 
     trained_options = sorted({p for person in people for p in person["trained_processes"]},
                              key=str.lower)
     role_options = sorted({r for person in people for r in person["role_names"]},
                           key=str.lower)
-    floor_options = sorted({f["process_name"] for f in presence.values() if f.get("process_name")},
-                           key=str.lower)
+    floor_options = sorted(
+        {p["where"]["process"] for p in people
+         if p.get("where") and p["where"].get("process")},
+        key=str.lower)
 
     on_site = [p for p in people if p["floor_state"] == FLOOR_PRESENT]
     punched_in = [p for p in people if p["clock_state"] == "in"]
     punched_out = [p for p in people if p["clock_state"] == "out"]
+    on_process = [p for p in people if p["on_process"]]
+    idle = [p for p in people
+            if p["on_clock"] and (p.get("where") or {}).get("kind") in FLOOR_IDLE_KINDS]
+    no_task = [p for p in people
+               if p["on_clock"] and (p.get("where") or {}).get("kind") == "unknown-task"]
     clock_known = len(punched_in) + len(punched_out)
     by_process = {}
     for person in on_site:
-        name = person["floor"].get("process_name") or "Unattributed"
+        where = person.get("where") or {}
+        name = where.get("process") or "Not recorded"
         by_process.setdefault(name, []).append(person)
 
     trained_for = _as_list(filters.get("trained_for"))
@@ -4414,9 +4526,13 @@ def build_staffing_view(am_logins, fc=None, filters=None):
 
     shown = people
     if presence_filter == "on_site":
-        shown = [p for p in shown if p["floor_state"] == FLOOR_PRESENT]
+        shown = [p for p in shown if p["on_process"]]
     elif presence_filter == "off_site":
-        shown = [p for p in shown if p["floor_state"] != FLOOR_PRESENT]
+        shown = [p for p in shown if not p["on_process"]]
+    elif presence_filter == "idle":
+        shown = [p for p in shown
+                 if p["on_clock"]
+                 and (p.get("where") or {}).get("kind") in FLOOR_IDLE_KINDS + ("unknown-task",)]
 
     if clock_filter in ("in", "out"):
         shown = [p for p in shown if p["clock_state"] == clock_filter]
@@ -4435,8 +4551,7 @@ def build_staffing_view(am_logins, fc=None, filters=None):
     if working_named:
         wanted = {w.lower() for w in working_named}
         shown = [p for p in shown
-                 if p["floor_state"] == FLOOR_PRESENT
-                 and (p["floor"].get("process_name") or "").lower() in wanted]
+                 if ((p.get("where") or {}).get("process") or "").lower() in wanted]
 
     if elsewhere:
         # The move a manager is looking for: trained on something, here,
@@ -4460,28 +4575,46 @@ def build_staffing_view(am_logins, fc=None, filters=None):
                  or query in (p.get("employee_login") or "").lower()
                  or any(query in t.lower() for t in p["trained_processes"])
                  or any(query in r.lower() for r in p["role_names"])
-                 or (p["floor"] and query in (p["floor"].get("station") or "").lower())
-                 or (p["floor"] and query in (p["floor"].get("process_name") or "").lower())]
+                 or query in ((p.get("where") or {}).get("station") or "").lower()
+                 or query in ((p.get("where") or {}).get("process") or "").lower()
+                 or query in ((p.get("where") or {}).get("function") or "").lower()]
 
     shown.sort(key=lambda p: (p["clock_state"] != "in",
                               p["floor_state"] != FLOOR_PRESENT,
-                              (p["floor"] or {}).get("process_name") or "",
+                              (p.get("where") or {}).get("kind") in FLOOR_IDLE_KINDS,
+                              (p.get("where") or {}).get("process") or "",
                               (p.get("full_name") or "").lower()))
 
     clock_ages = [c["age_minutes"] for c in clock.values()
                   if c.get("age_minutes") is not None]
+    known_ids = _floor_known_employee_ids()
+    without_id = [p for p in people
+                  if (p.get("employee_login") or "").lower() not in known_ids]
+    reader_current = _floor_reader_version()
+    reader_posted = (meta or {}).get("reader_version")
     return {
         "meta": meta,
         "people": shown,
         "total": len(people),
         "on_site": len(on_site),
         "off_site": len(people) - len(on_site),
+        "on_process": len(on_process),
+        "idle": len(idle),
+        "no_task": len(no_task),
         "punched_in": len(punched_in),
         "punched_out": len(punched_out),
         "clock_known": clock_known,
         "clock_unknown": len(people) - clock_known,
         "clock_age_minutes": min(clock_ages) if clock_ages else None,
         "has_clock": clock_known > 0,
+        "without_employee_id": len(without_id),
+        "process_count": len(db.get_floor_processes()),
+        "reader_current": reader_current,
+        "reader_posted": reader_posted,
+        # No version at all means the last sweep came from a reader built
+        # before it started saying — which is exactly the build that
+        # cannot read a clock.
+        "reader_stale": bool(meta) and reader_posted != reader_current,
         "photos": len([p for p in people if p.get("photo_url")]),
         "by_process": sorted(((name, len(rows)) for name, rows in by_process.items()),
                              key=lambda item: -item[1]),

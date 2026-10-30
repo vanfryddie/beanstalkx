@@ -33,7 +33,7 @@ def client(login, role):
 
 def wipe():
     conn = db.get_db()
-    for table in ("floor_presence", "floor_snapshots", "floor_identity"):
+    for table in ("floor_presence", "floor_snapshots", "floor_identity", "floor_clock"):
         conn.execute("DELETE FROM " + table)
     conn.commit()
     conn.close()
@@ -192,18 +192,21 @@ view = application.build_staffing_view([am], None, {})
 check("the view covers the whole team, on the floor or not",
       view["total"] == len(team), f"{view['total']} vs {len(team)}")
 check("on-site and off-site add up", view["on_site"] + view["off_site"] == view["total"])
-check("it counts only people who were actually seen",
-      view["on_site"] == len([r for r in rows if r["employee_login"] in
-                              {p["employee_login"] for p in team}]),
-      str(view["on_site"]))
+check("it counts only people a source actually saw",
+      view["on_process"] == len([r for r in rows if r["employee_login"] in
+                                 {p["employee_login"] for p in team}]),
+      f"{view['on_process']} on a process")
+check("with no clock reading, on site is the same as on a process",
+      view["on_site"] == view["on_process"], f"{view['on_site']} vs {view['on_process']}")
 check("another manager's people are not in this view",
       not ({p["employee_login"] for p in view["people"]}
            & {p["employee_login"] for p in others}))
 
 on_pick = application.build_staffing_view([am], None, {"working_in": "Pick"})
 check("filtering to a process returns only people in it",
-      all(p["floor"] and p["floor"]["process_name"] == "Pick" for p in on_pick["people"]),
-      str(len(on_pick["people"])))
+      all((p.get("where") or {}).get("process") == "Pick" for p in on_pick["people"]),
+      str([(p["employee_login"], (p.get("where") or {}).get("process"))
+           for p in on_pick["people"][:3]]))
 
 trained_pack = application.build_staffing_view([am], None, {"trained_for": "Pack"})
 check("filtering to trained-for returns only people trained on it",
@@ -228,14 +231,14 @@ check("somebody on Pack is shown as doing what they are trained for",
       all("Pack" in p["doing_trained"] for p in packers), str(len(packers)))
 
 off = application.build_staffing_view([am], None, {"presence": "off_site"})
-check("the off-site filter returns only people not seen",
-      all(p["floor_state"] != "present" for p in off["people"]), str(len(off["people"])))
+check("the on-none filter returns only people the sweep did not see",
+      all(not p["on_process"] for p in off["people"]), str(len(off["people"])))
 
 print("\n6. Nothing is claimed when the floor has not been read")
 wipe()
 blank = application.build_staffing_view([am], None, {})
 check("with no snapshot there is no metadata to show", blank["meta"] is None)
-check("and nobody is counted as on the floor", blank["on_site"] == 0)
+check("and nobody is counted as on site", blank["on_site"] == 0)
 body = client("admin", "admin").get(f"/overview?tab=staffing&am={am}").get_data(as_text=True)
 check("the page says the floor has not been read", "Nobody has read the floor yet" in body)
 check("and points at the reader rather than showing an empty site",
@@ -315,7 +318,7 @@ db.record_floor_snapshot(rows, taken_by=am)
 
 print("\n9. Presence reaches the pages that asked for it")
 body = client("admin", "admin").get(f"/overview?tab=staffing&am={am}").get_data(as_text=True)
-check("the staffing tab renders the floor", "on the floor." in body.lower())
+check("the staffing tab renders the floor", "on site." in body.lower())
 check("it offers the filter that makes it a staffing tool",
       "Not on what they are trained for" in body)
 check("and the two toggles the shift actually turns on",
@@ -344,12 +347,17 @@ print("\n9b. Punched in is a different fact from booked to a process")
 # Somebody on a break is on the clock and on no process at all. Merging
 # the two would have the console report they had gone home.
 td_parts = []
-for fn in ("fclmDate", "pad", "parseSessionTime", "infoField", "parseTimeDetails"):
+for fn in ("fclmDate", "pad", "parseSessionTime", "infoField", "splitTaskTitle",
+           "taskKind", "parseTimeDetails"):
     m = re.search(r"(?ms)^    function " + fn + r"\(.*?\n    \}\n", script)
     if not m:
         check(f"the reader still defines {fn}", False)
     else:
         td_parts.append(m.group(0).replace("    function", "function"))
+separator = re.search(r"(?m)^    var TITLE_SEPARATOR = .*$", script)
+check("the reader knows how FCLM separates process from function", bool(separator))
+if separator:
+    td_parts.insert(0, separator.group(0).strip())
 
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
@@ -361,21 +369,39 @@ with sync_playwright() as p:
         return pg.evaluate("([h, iso]) => parseTimeDetails(h, new Date(iso))",
                            [html, "2026-10-28T11:45:00"])
     on = read("employee_time_details.html")
+    working = read("employee_time_details_working.html")
     off = read("employee_time_details_off.html")
     b.close()
 
 check("an open session reads as punched in", on["clock_state"] == "in", str(on["clock_state"]))
-check("with the time they clocked in", (on["clocked_in_at"] or "").startswith("2026-10-28T06:00"),
+check("with the time they clocked in", (on["clocked_in_at"] or "").startswith("2026-10-30T06:00"),
       str(on["clocked_in_at"]))
 check("a finished shift reads as punched out", off["clock_state"] == "out", str(off["clock_state"]))
 check("with the time they clocked out", (off["clocked_out_at"] or "").startswith("2026-10-28T10:30"),
       str(off["clocked_out_at"]))
 check("the login comes off the page, so no profile service is needed",
-      on["employee_login"] == "abbapfai", str(on["employee_login"]))
-check("so does the employee id", on["employee_id"] == "208651433", str(on["employee_id"]))
-check("and the shift code", on["shift_code"] == "D58F88MZ", str(on["shift_code"]))
+      on["employee_login"] == "abaltoma", str(on["employee_login"]))
+check("so does the employee id", on["employee_id"] == "206276953", str(on["employee_id"]))
+check("and the shift code", on["shift_code"] == "D58F8W3Z", str(on["shift_code"]))
 check("the badge photo is an FCLM address",
       (on["photo_url"] or "").startswith("https://fclm-portal.amazon.com/"), str(on["photo_url"]))
+
+# The row with no end time is what somebody is doing this minute, and
+# telling work apart from a break or time off task is the difference
+# between "on Pick" and "here, doing nothing in particular".
+check("the open last row is read as the current task",
+      on["current_title"] == "Time Off Task", str(on["current_title"]))
+check("and classified as off task, not as a process",
+      on["current_kind"] == "off-task", str(on["current_kind"]))
+check("real work is split into process and function",
+      (working["current_process"], working["current_function"]) == ("Pick", "RF Pick"),
+      f"{working['current_process']} / {working['current_function']}")
+check("and classified as work", working["current_kind"] == "work", str(working["current_kind"]))
+check("the task carries the time it started",
+      (working["task_started_at"] or "").startswith("2026-10-30T10:15"),
+      str(working["task_started_at"]))
+check("a punched-out person's last task is not treated as current work by the store",
+      off["clock_state"] == "out", str(off["clock_state"]))
 
 conn = db.get_db(); conn.execute("DELETE FROM floor_clock"); conn.commit(); conn.close()
 db.record_floor_clock([
@@ -471,7 +497,10 @@ srv = make_server("127.0.0.1", 5642, application.application, threaded=True)
 threading.Thread(target=srv.serve_forever, daemon=True).start(); time.sleep(1.0)
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
-    ctx = b.new_context(viewport={"width": 1500, "height": 950})
+    # Tall enough that a panel opening at the foot of a short page is
+    # still inside the viewport, because elementFromPoint only answers
+    # for points that are.
+    ctx = b.new_context(viewport={"width": 1500, "height": 1400})
     pg = ctx.new_page()
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))
@@ -481,19 +510,33 @@ with sync_playwright() as p:
     pg.wait_for_timeout(400)
     check("no uncaught JavaScript on the staffing tab", not errors, "; ".join(errors[:2]))
 
-    pg.eval_on_selector(".st-filters", "e => e.scrollIntoView({block: 'center'})")
-    pg.wait_for_timeout(200)
+    # The bar goes to the top of the viewport, not the middle: a panel
+    # that opens downwards needs room under it, and at the foot of a
+    # short page there is none — which is a quirk of the probe, not of
+    # the page, so it must not be read as a stacking failure.
+    pg.eval_on_selector(".st-filters", "e => e.scrollIntoView({block: 'start'})")
+    pg.evaluate("window.scrollBy(0, -90)")
+    pg.wait_for_timeout(250)
     pg.query_selector_all(".xf-button")[0].click()
     pg.wait_for_timeout(300)
-    on_top = pg.evaluate("""() => {
+    # elementFromPoint answers only for points inside the viewport, so
+    # the panel is scrolled fully into view before it is asked.
+    probe = pg.evaluate("""() => {
       const panel = document.querySelector('.xf-panel:not([hidden])');
       const r = panel.getBoundingClientRect();
-      const hit = (dy) => document.elementFromPoint(r.left + r.width / 2, r.top + dy);
-      return [hit(10), hit(r.height / 2), hit(r.height - 8)]
-        .map(el => el ? !!el.closest('.xf-panel') : false);
+      const hit = (dy) => {
+        const el = document.elementFromPoint(r.left + r.width / 2, r.top + dy);
+        return el ? {ok: !!el.closest('.xf-panel'),
+                     what: el.tagName + '.' + String(el.className).slice(0, 30)}
+                  : {ok: false, what: 'nothing (outside the viewport?)'};
+      };
+      return {rect: {top: Math.round(r.top), height: Math.round(r.height),
+                     viewport: window.innerHeight},
+              points: [hit(10), hit(r.height / 2), hit(r.height - 8)]};
     }""")
     check("the open panel is on top from its first row to its last",
-          all(on_top), str(on_top))
+          all(point["ok"] for point in probe["points"]),
+          "; ".join(f"{point['what']}" for point in probe["points"]) + f" {probe['rect']}")
     check("its options read as written, not shouted by the global label rule",
           pg.eval_on_selector(".xf-option span",
                               "e => getComputedStyle(e).textTransform") == "none",
@@ -529,6 +572,149 @@ with sync_playwright() as p:
     check("no horizontal page scroll", over <= 1, f"overflows {over}px")
     ctx.close(); b.close()
 srv.shutdown()
+
+print("\n9f. Punched in and doing something the sweep never asked about")
+# The complaint this was written for: a site of eighty read as three
+# processes and forty-six people "not seen", when most of them were
+# punched in on Cart/Pallet Builder, a dock, or sitting at Time Off
+# Task. The sweep covers the processes it is given; Employee Time
+# Details covers whatever somebody is actually doing, and the two have
+# to be read together or being present looks like being absent.
+wipe()
+unswept = team[0]
+idle_one = team[1]
+swept_one = team[2]
+gone = team[3]
+
+db.record_floor_snapshot([{
+    "employee_id": "330001", "employee_login": swept_one["employee_login"],
+    "full_name": swept_one["full_name"], "process_key": "pick", "process_name": "Pick",
+    "function_name": "RF Pick", "station": "A02 - A2324", "paid_hours": 3.0,
+}], taken_by=am, reader_version=application._floor_reader_version())
+
+db.record_floor_clock([
+    {"employee_login": unswept["employee_login"], "employee_id": "330002",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+     "current_title": "Transfer In Support\u25c6Cart/Pallet Builder",
+     "current_process": "Transfer In Support", "current_function": "Cart/Pallet Builder",
+     "current_kind": "work", "task_started_at": "2026-10-30T10:15:00"},
+    {"employee_login": idle_one["employee_login"], "employee_id": "330003",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+     "current_title": "Time Off Task", "current_process": "Time Off Task",
+     "current_kind": "off-task", "task_started_at": "2026-10-30T11:37:00"},
+    {"employee_login": swept_one["employee_login"], "employee_id": "330001",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+     "current_title": "Pick\u25c6RF Pick", "current_process": "Pick",
+     "current_function": "RF Pick", "current_kind": "work"},
+    {"employee_login": gone["employee_login"], "employee_id": "330004",
+     "clock_state": "out", "clocked_out_at": "2026-10-30T10:30:00",
+     "current_title": "Pick\u25c6RF Pick", "current_process": "Pick", "current_kind": "work"},
+], checked_by=am)
+
+view = application.build_staffing_view([am], None, {})
+by_login = {p["employee_login"]: p for p in view["people"]}
+
+row = by_login[unswept["employee_login"]]
+check("somebody on an unswept process is on site, not 'not seen'",
+      row["floor_state"] == "present", row["floor_state"])
+check("and the page says what they are actually doing",
+      (row["where"] or {}).get("process") == "Transfer In Support",
+      str((row["where"] or {}).get("process")))
+check("with the function under it",
+      (row["where"] or {}).get("function") == "Cart/Pallet Builder",
+      str((row["where"] or {}).get("function")))
+check("read from the page that knows, not the sweep",
+      (row["where"] or {}).get("source") == "time-details",
+      str((row["where"] or {}).get("source")))
+check("they are not counted as booked to a swept process", not row["on_process"])
+
+row = by_login[idle_one["employee_login"]]
+check("somebody off task is on site", row["floor_state"] == "present")
+check("and is shown as off task rather than as working",
+      (row["where"] or {}).get("kind") == "off-task", str((row["where"] or {}).get("kind")))
+check("with the time it started, so a manager can see how long",
+      (row["where"] or {}).get("since"), str((row["where"] or {}).get("since")))
+
+row = by_login[swept_one["employee_login"]]
+check("somebody the sweep saw keeps their station",
+      (row["where"] or {}).get("station") == "A02 - A2324",
+      str((row["where"] or {}).get("station")))
+check("and is counted as on a swept process", row["on_process"])
+
+row = by_login[gone["employee_login"]]
+check("a punched-out person is not on site", row["floor_state"] != "present")
+check("and their last task is not reported as current",
+      not (row["where"] or {}), str(row["where"]))
+
+check("on site counts the clock as well as the sweep", view["on_site"] == 3,
+      f"{view['on_site']} on site, {view['on_process']} on a process")
+check("and the two are reported separately", view["on_process"] == 1, str(view["on_process"]))
+check("idle people are counted", view["idle"] == 1, str(view["idle"]))
+
+idle_view = application.build_staffing_view([am], None, {"presence": "idle"})
+check("the here-but-not-on-a-process filter finds them",
+      [p["employee_login"] for p in idle_view["people"]] == [idle_one["employee_login"]],
+      str([p["employee_login"] for p in idle_view["people"]]))
+
+elsewhere = application.build_staffing_view([am], None, {"working_in": ["Transfer In Support"]})
+check("an unswept process is offered as a place to filter on",
+      "Transfer In Support" in view["floor_options"], str(view["floor_options"]))
+check("and filtering on it finds the person",
+      [p["employee_login"] for p in elsewhere["people"]] == [unswept["employee_login"]],
+      str([p["employee_login"] for p in elsewhere["people"]]))
+
+# Posted through the route, not straight into the store: the first
+# version of /floor/clock read every other field by name and quietly
+# dropped these five, so a reader that had parsed the task perfectly
+# still produced a page that said "not seen".
+posted = client(am, "am").post("/floor/clock", json={"entries": [{
+    "employee_login": unswept["employee_login"], "employee_id": "330002",
+    "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+    "current_title": "Transfer In Support\u25c6Cart/Pallet Builder",
+    "current_process": "Transfer In Support", "current_function": "Cart/Pallet Builder",
+    "current_kind": "work", "task_started_at": "2026-10-30T10:15:00"}]})
+check("a clock post is accepted", posted.status_code == 200, str(posted.status_code))
+through_route = db.get_floor_clock().get(unswept["employee_login"].lower(), {})
+check("the task survives the route, not just the store",
+      through_route.get("current_process") == "Transfer In Support",
+      str(through_route.get("current_process")))
+check("with its function", through_route.get("current_function") == "Cart/Pallet Builder",
+      str(through_route.get("current_function")))
+check("and its kind", through_route.get("current_kind") == "work",
+      str(through_route.get("current_kind")))
+
+print("\n9g. An out-of-date reader is called out rather than left to look like no data")
+check("a sweep from the current reader is not flagged",
+      not application.build_staffing_view([am], None, {})["reader_stale"])
+db.record_floor_snapshot([{"employee_id": "330001", "full_name": "Anyone,At All",
+                           "process_name": "Pick", "paid_hours": 1}],
+                         taken_by=am, reader_version="1.0.0-older")
+stale = application.build_staffing_view([am], None, {})
+check("one from an older build is", stale["reader_stale"], str(stale["reader_posted"]))
+db.record_floor_snapshot([{"employee_id": "330001", "full_name": "Anyone,At All",
+                           "process_name": "Pick", "paid_hours": 1}], taken_by=am)
+check("and one that does not say at all is too — that build had no clock",
+      application.build_staffing_view([am], None, {})["reader_stale"])
+with application.application.test_request_context("/"):
+    served = application._floor_reader_source()
+check("the version the reader carries is the one the console expects",
+      f"// @version      {application._floor_reader_version()}" in served[0],
+      served[1])
+check("and it does not move when the console is reached by another host",
+      application._floor_reader_version() == served[1])
+
+body = client("admin", "admin").get(f"/overview?tab=staffing&am={am}").get_data(as_text=True)
+check("the page says so where somebody will see it",
+      "floor reader in this browser is out of date" in body)
+
+print("\n9h. The sweep covers the whole site, not a corner of it")
+processes = db.get_floor_processes()
+labels = {p["label"] for p in processes}
+check("every process the network defines is swept", len(processes) >= 25, str(len(processes)))
+for expected in ("Pick", "Pick Support", "Receive Dock", "TO Lead/PA", "VRET Pack", "IB Lead"):
+    check(f"including {expected}", expected in labels)
+check("process ids are unique", len({p["process_id"] for p in processes}) == len(processes))
+check("keys are unique", len({p["key"] for p in processes}) == len(processes))
 
 print("\n10. History is kept short")
 wipe()

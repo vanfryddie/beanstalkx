@@ -1,44 +1,52 @@
 <!doctype html>
 <!--
-  An Employee Time Details page, reduced to what the floor reader takes
-  from it: the employee info block (login, id, shift, location, and the
-  badge photo) and the session table that says whether they are on the
-  clock right now.
+  An Employee Time Details page, copied in structure from a real one at
+  SCN2 on 2026/10/30 (abaltoma). This is the page that actually answers
+  "where is this person right now", and the two things that matter are
+  easy to miss:
 
-  Matched to the real page at SCN2. The open session is the one that
-  matters: FCLM renders a session that has not ended yet with an end of
-  next midnight and a duration that is still accruing, which is what
-  "punched in" looks like. The second fixture below it is the same page
-  for somebody who has gone home.
+    * OnClock/Paid is written with an end at the next midnight while the
+      shift is still running, so a session that has not finished is not
+      marked as such — it just reaches past now.
+    * The LAST row has no end time at all. That is what they are doing
+      this minute. Here it is Time Off Task; before that they were on
+      Cart/Pallet Builder under Transfer In Support, which is not one of
+      the processes a Function Rollup sweep covers. Reading only the
+      sweep, this person is invisible; reading this page, they are
+      punched in and off task.
 
-  The person is invented. The structure is not.
+  The title separator is FCLM's own diamond between process and function.
+  The person is invented; the shape and the times are not.
 -->
 <html><head><title>Employee Time Details | FCLM Portal</title></head>
 <body>
 <div class="employeeInfo">
-  <img src="https://fclm-portal.amazon.com/employee/photo?employeeId=208651433" alt="">
+  <img src="https://fclm-portal.amazon.com/employee/photo?employeeId=206276953" alt="">
   <div>
-    <span class="line"><span class="row-label">Login</span><span>abbapfai</span></span>
-    <span class="line"><span class="row-label">Empl ID</span><span>208651433</span></span>
-    <span class="line"><span class="row-label">Badge</span><span>12647268</span></span>
+    <span class="line"><span class="row-label">Login</span><span>abaltoma</span></span>
+    <span class="line"><span class="row-label">Empl ID</span><span>206276953</span></span>
+    <span class="line"><span class="row-label">Badge</span><span>14398090</span></span>
     <span class="line"><span class="row-label">Dept ID</span><span>1299</span></span>
     <span class="line"><span class="row-label">Location</span><span>SCN2 ( 2R55 )</span></span>
     <span class="line"><span class="row-label">Manager</span><span><a href="#">Salhi,Hichem</a></span></span>
     <span class="line"><span class="row-label">Status</span><span>Active</span></span>
-    <span class="line"><span class="row-label">Shift</span><span>D58F88MZ</span></span>
+    <span class="line"><span class="row-label">Shift</span><span>D58F8W3Z</span></span>
+    <span class="line"><span class="row-label">Station</span><span>-</span></span>
   </div>
 </div>
 
 <table class="sortable result-table">
   <thead><tr><th>title</th><th>start</th><th>end</th><th>duration</th></tr></thead>
   <tbody>
-    <tr><td>OffClock/UnPaid</td><td>10/28-00:00:00</td><td>10/28-06:00:00</td><td>360:00</td></tr>
-    <tr><td>OnClock/Paid</td><td>10/28-06:00:00</td><td>10/29-00:00:00</td><td>345:22</td></tr>
-    <tr><td>Pick Support&#9654;Pick Training</td><td>10/28-06:00:00</td><td>10/28-06:11:05</td><td>11:05</td></tr>
-    <tr><td>Pick&#9654;RF Pick</td><td>10/28-06:47:29</td><td>10/28-07:02:10</td><td>14:41</td></tr>
-    <tr><td>Break/Paid</td><td>10/28-10:15:00</td><td>10/28-10:15:00</td><td>00:00</td></tr>
-    <tr><td>Break/Unpaid</td><td>10/28-10:15:00</td><td>10/28-11:00:00</td><td>45:00</td></tr>
-    <tr><td>Pick&#9654;RF Pick</td><td>10/28-11:00:00</td><td>10/28-11:18:39</td><td>18:39</td></tr>
+    <tr><td>OffClock/UnPaid</td><td>10/30-00:00:00</td><td>10/30-06:00:00</td><td>360:00</td></tr>
+    <tr><td>OnClock/Paid</td><td>10/30-06:00:00</td><td>10/31-00:00:00</td><td>452:08</td></tr>
+    <tr><td>Transfer In Support&#9670;Cart/Pallet Builder</td><td>10/30-06:00:00</td><td>10/30-09:30:00</td><td>210:00</td></tr>
+    <tr><td>Break/Paid</td><td>10/30-09:30:00</td><td>10/30-09:30:00</td><td>00:00</td></tr>
+    <tr><td>Break/Unpaid</td><td>10/30-09:30:00</td><td>10/30-10:15:00</td><td>45:00</td></tr>
+    <tr><td>Transfer In Support&#9670;Cart/Pallet Builder</td><td>10/30-10:15:00</td><td>10/30-11:33:05</td><td>78:05</td></tr>
+    <tr><td>Stow to Prime&#9670;Stow Each Nike Light</td><td>10/30-11:33:05</td><td>10/30-11:33:24</td><td>00:18</td></tr>
+    <tr><td>Each Transfer In&#9670;Stow Each Nike Light</td><td>10/30-11:33:24</td><td>10/30-11:37:33</td><td>04:09</td></tr>
+    <tr><td>Time Off Task</td><td>10/30-11:37:33</td><td></td><td>114:35</td></tr>
   </tbody>
 </table>
 </body></html>
