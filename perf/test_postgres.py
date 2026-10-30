@@ -274,6 +274,72 @@ check("a stale reader is flagged on Postgres too",
       application.build_staffing_view.__name__ == "build_staffing_view"
       and unswept_view["reader_stale"] in (True, False))
 
+print("\n4f. Job names, faces and the narrowed pass on Postgres")
+# All three are new SQL, and two of them are the kinds Postgres is
+# fussier about than SQLite: a GROUP BY with COUNT(DISTINCT) ordered by
+# its own alias, and a scan that compares an id column against the text
+# inside another column.
+alias_login = floor_team[1]["employee_login"]
+conn = db.get_db()
+cur = conn.cursor()
+for login, merged in ((alias_login, "Stow Each Nike"),
+                      ("pg_alias_filler", "Stow Each Nike"),
+                      (floor_team[2]["employee_login"], "Stow Each Nike Light")):
+    cur.execute(
+        "INSERT INTO xt_hours (fc, fclm_mapped, employee_login, full_name, "
+        "supervisor_login, merged_function, trained_status, shift, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        ("SCN2", "Nike TSI", login, login, ams[0], merged, "Trained", "DA",
+         "2026-10-30T00:00:00"))
+conn.commit()
+conn.close()
+
+aliases = db.get_floor_aliases()
+check("the alias query runs on Postgres",
+      aliases.get("nike tsi") == ["Stow Each Nike", "Stow Each Nike Light"],
+      str(aliases.get("nike tsi")))
+
+c.post("/floor/clock", json={"entries": [
+    {"employee_login": alias_login, "employee_id": "660100", "clock_state": "in",
+     "clocked_in_at": "2026-10-30T06:00:00",
+     "current_title": "Nike TSI", "current_process": "Nike TSI",
+     "current_kind": "work", "task_started_at": "2026-10-30T10:15:00",
+     "photo_url": "https://fclm-portal.amazon.com/badge/image/660100.jpg"}]})
+with application.application.test_request_context("/"):
+    named = application.build_staffing_view([ams[0]], None, {})
+named_by_login = {p["employee_login"]: p for p in named["people"]}
+check("the defined job name reaches the page on Postgres",
+      (named_by_login[alias_login]["where"] or {}).get("label") == "Stow Each Nike",
+      str((named_by_login[alias_login]["where"] or {}).get("label")))
+
+template = db.get_floor_photo_template()
+check("the photo address is learned back out of Postgres",
+      template == "https://fclm-portal.amazon.com/badge/image/{id}.jpg", template)
+check("and built for somebody with no reading of their own",
+      db.floor_photo_url("660200", template)
+      == "https://fclm-portal.amazon.com/badge/image/660200.jpg",
+      str(db.floor_photo_url("660200", template)))
+with_faces = [p for p in named["people"] if p.get("photo_url")]
+check("so the team has faces, not initials", len(with_faces) > 1,
+      f"{len(with_faces)} of {len(named['people'])}")
+
+narrowed = c.get(f"/floor/roster?only=needs_task&am={ams[0]}").get_json()
+check("the narrowed roster runs on Postgres", narrowed.get("narrowed") is True,
+      json.dumps(narrowed)[:200])
+check("and asks about fewer people than the whole team",
+      len(narrowed["roster"]) < named["total"],
+      f"{len(narrowed['roster'])} of {named['total']}")
+
+frag = c.get(f"/staffing/fragment?am={ams[0]}")
+check("the live-refresh fragment renders on Postgres",
+      frag.status_code == 200 and 'id="staffingPanel"' in frag.get_data(as_text=True),
+      str(frag.status_code))
+
+conn = db.get_db()
+conn.execute("DELETE FROM xt_hours WHERE fclm_mapped = 'Nike TSI'")
+conn.commit()
+conn.close()
+
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()
 for i in range(40):

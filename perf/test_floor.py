@@ -420,7 +420,7 @@ print("\n9b. Punched in is a different fact from booked to a process")
 # Somebody on a break is on the clock and on no process at all. Merging
 # the two would have the console report they had gone home.
 td_parts = harness("fclmDate", "pad", "parseSessionTime", "infoField",
-                   "splitTaskTitle", "taskKind", "parseTimeDetails")
+                   "absoluteUrl", "splitTaskTitle", "taskKind", "parseTimeDetails")
 check("the reader knows how FCLM separates process from function",
       "TITLE_SEPARATOR" in td_parts)
 
@@ -623,15 +623,74 @@ with sync_playwright() as p:
     shown = pg.eval_on_selector_all(".st-table tbody tr", "els => els.length")
     check("the page narrows to the ticked processes", shown > 0, str(shown))
 
-    # A face that cannot load must become initials, not a broken image.
-    fallback = pg.evaluate("""() => {
-      const img = document.querySelector('img.st-face');
-      if (!img) return 'no photo in this fixture';
-      img.dispatchEvent(new Event('error'));
-      return document.querySelector('.st-face-initials') ? 'initials' : 'still broken';
+    # FCLM is not reachable from here, so every face on this page is a
+    # face that failed to load — which is the case that matters. The
+    # initials have to be showing, in the same 34px, with the row the
+    # same height it was: a table that reflows when photos arrive or
+    # fail is worse than one with no photos at all.
+    faces = pg.evaluate("""() => {
+      const stack = document.querySelector('.st-face-stack');
+      if (!stack) return {found: false};
+      const initials = stack.querySelector('.st-face-initials');
+      const img = stack.querySelector('img.st-face-photo');
+      const row = stack.closest('tr');
+      const box = stack.getBoundingClientRect();
+      return {
+        found: true,
+        hasInitials: !!initials && initials.offsetWidth > 0,
+        initialsText: initials ? initials.textContent.trim() : '',
+        size: [Math.round(box.width), Math.round(box.height)],
+        rowHeight: Math.round(row.getBoundingClientRect().height),
+        photoOpacity: img ? getComputedStyle(img).opacity : 'no photo',
+        marked: img ? img.getAttribute('data-floor-photo') : null
+      };
     }""")
-    check("a photo that will not load falls back to initials",
-          fallback in ("initials", "no photo in this fixture"), str(fallback))
+    check("the table has faces at all", faces.get("found"), str(faces))
+    if faces.get("found"):
+        check("a photo that will not load leaves the initials showing",
+              faces["hasInitials"] and len(faces["initialsText"]) == 2, str(faces))
+        check("in the same 34px, so nothing reflows either way",
+              faces["size"] == [34, 34], str(faces["size"]))
+        check("the photo that failed is transparent rather than broken",
+              faces["photoOpacity"] in ("0", "no photo"), str(faces["photoOpacity"]))
+        check("and is marked for the reader to fetch under its own session",
+              faces["marked"] and faces["marked"].startswith("https://fclm-portal.amazon.com/"),
+              str(faces["marked"]))
+
+    # The sweep finishing used to reload the page. It now re-renders the
+    # tab in place, which is only an improvement if the filters still
+    # work afterwards — they are bound by a script that does not run
+    # again, so they have to be rebound by hand.
+    pg.evaluate("window.scrollTo(0, 240)")
+    pg.wait_for_timeout(250)
+    before = pg.evaluate("""() => {
+      const p = document.getElementById('staffingPanel');
+      return {rows: document.querySelectorAll('.st-table tbody tr').length,
+              node: !!p, scroll: Math.round(window.scrollY)};
+    }""")
+    check("the tab is wrapped in the panel the refresh replaces", before["node"])
+    pg.evaluate("document.dispatchEvent(new CustomEvent('ldis-floor-updated'))")
+    pg.wait_for_timeout(1200)
+    after = pg.evaluate("""() => {
+      const p = document.getElementById('staffingPanel');
+      return {rows: document.querySelectorAll('.st-table tbody tr').length,
+              node: !!p, scroll: Math.round(window.scrollY),
+              bound: !!(p && p.querySelector('[data-xf][data-xf-bound="1"]'))};
+    }""")
+    check("a floor read re-renders the tab without reloading",
+          after["node"] and after["rows"] == before["rows"],
+          f"{before['rows']} rows before, {after['rows']} after")
+    check("and keeps the manager where they were on the page",
+          abs(after["scroll"] - before["scroll"]) <= 4,
+          f"{before['scroll']} -> {after['scroll']}")
+    check("the filters are rebound on the markup that replaced them",
+          after["bound"], str(after))
+    pg.query_selector_all(".xf-button")[0].click()
+    pg.wait_for_timeout(250)
+    check("so a filter still opens after a refresh",
+          pg.eval_on_selector_all(".xf-panel:not([hidden])", "e => e.length") == 1)
+    check("and no uncaught JavaScript came out of the swap", not errors,
+          "; ".join(errors[:2]))
 
     over = pg.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
     check("no horizontal page scroll", over <= 1, f"overflows {over}px")
@@ -842,6 +901,347 @@ for expected in ("Pick", "Pick Support", "Receive Dock", "TO Lead/PA", "VRET Pac
     check(f"including {expected}", expected in labels)
 check("process ids are unique", len({p["process_id"] for p in processes}) == len(processes))
 check("keys are unique", len({p["key"] for p in processes}) == len(processes))
+
+print("\n9i. FCLM's name for a process, and this site's name for the job")
+# "Each TSI" is not a job anybody was trained on. Stow Each Nike and
+# Stow Each Nike Light are, and the difference between them is why a
+# manager is reading the page. The map between the two is not hard-coded
+# anywhere: the cross-training upload already carries both names in the
+# same row — FCLM Mapped beside Merged Functions — so it is read from
+# there, which also means it keeps up when the site renames something.
+wipe()
+db.set_site_setting(db.FLOOR_ALIASES_KEY, "")
+
+# The site's own data already maps its processes, so that is checked as
+# it stands; the two-jobs-under-one-process case gets a process name of
+# its own so this section is not asserting against whatever the upload
+# happens to contain today.
+live = db.get_floor_aliases()
+check("the site's own upload maps its FCLM processes to defined jobs",
+      live.get("each tsi") and all(live["each tsi"]), str(live.get("each tsi")))
+
+PROC = "Nike TSI"
+nike = team[0]
+nike_light = team[1]
+unmapped = team[2]
+conn = db.get_db()
+cur = conn.cursor()
+
+
+def learn(login, merged, supervisor):
+    cur.execute(
+        "INSERT INTO xt_hours (fc, fclm_mapped, employee_login, full_name, "
+        "supervisor_login, merged_function, trained_status, shift, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        ("SCN2", PROC, login, login, supervisor, merged, "Trained", "DA",
+         "2026-10-30T00:00:00"))
+
+
+learn(nike["employee_login"], "Stow Each Nike", am)
+learn(nike_light["employee_login"], "Stow Each Nike Light", am)
+# Three people hold the plain variant and one the Light, so the headline
+# candidate — the fallback for when cross-training cannot pick — is the
+# one most of the floor is on, not whichever row came back first.
+learn("ldis_alias_filler_1", "Stow Each Nike", None)
+learn("ldis_alias_filler_2", "Stow Each Nike", None)
+conn.commit()
+conn.close()
+
+aliases = db.get_floor_aliases()
+check("the map is learned from the cross-training upload, not hard-coded",
+      aliases.get(PROC.lower()) == ["Stow Each Nike", "Stow Each Nike Light"],
+      str(aliases.get(PROC.lower())))
+check("a process nobody is trained in has no entry, so FCLM's name stands",
+      "cart/pallet builder" not in aliases, str(sorted(aliases)[:6]))
+check("the built-in seed still covers a site whose upload has no FCLM column",
+      "each stp" in aliases, str(sorted(aliases)[:6]))
+
+check("the defined name replaces FCLM's",
+      application._floor_defined_name(PROC, aliases) == "Stow Each Nike")
+check("and the person's own training picks between two candidates",
+      application._floor_defined_name(PROC, aliases, ["Pick", "Stow Each Nike Light"])
+      == "Stow Each Nike Light")
+check("a name this site does not define comes back as None, so FCLM's is used",
+      application._floor_defined_name("Cart/Pallet Builder", aliases) is None)
+check("and nothing is invented out of an empty reading",
+      application._floor_defined_name("", aliases) is None)
+
+db.record_floor_snapshot([{
+    "employee_id": "550009", "employee_login": team[3]["employee_login"],
+    "full_name": team[3]["full_name"], "process_key": "pick",
+    "process_name": "Pick", "function_name": "RF Pick", "paid_hours": 2.0}],
+    taken_by=am, reader_version=application._floor_reader_version())
+db.record_floor_clock([
+    {"employee_login": nike["employee_login"], "employee_id": "550001",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+     "current_title": PROC, "current_process": PROC,
+     "current_kind": "work", "task_started_at": "2026-10-30T10:00:00"},
+    {"employee_login": nike_light["employee_login"], "employee_id": "550002",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+     "current_title": PROC, "current_process": PROC,
+     "current_kind": "work", "task_started_at": "2026-10-30T10:00:00"},
+    {"employee_login": unmapped["employee_login"], "employee_id": "550003",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+     "current_title": "Transfer In Support\u25c6Cart/Pallet Builder",
+     "current_process": "Transfer In Support",
+     "current_function": "Cart/Pallet Builder",
+     "current_kind": "work", "task_started_at": "2026-10-30T10:00:00"},
+], checked_by=am)
+
+view = application.build_staffing_view([am], None, {})
+by_login = {p["employee_login"]: p for p in view["people"]}
+where = by_login[nike["employee_login"]]["where"]
+check("the row says the job this site defines, not the FCLM process",
+      where["label"] == "Stow Each Nike", str(where["label"]))
+check("what FCLM actually said is kept, so the report can be checked",
+      where["raw"] == PROC, str(where["raw"]))
+check("and the process is still there for a saved filter link",
+      where["area"] == PROC, str(where["area"]))
+light = by_login[nike_light["employee_login"]]["where"]
+check("somebody trained on the Light variant is shown on that one",
+      light["label"] == "Stow Each Nike Light", str(light["label"]))
+other = by_login[unmapped["employee_login"]]["where"]
+check("a job this site does not define keeps the name FCLM gave it",
+      other["label"] == "Cart/Pallet Builder", str(other["label"]))
+
+check("the filter offers the defined name", "Stow Each Nike" in view["floor_options"],
+      str(view["floor_options"]))
+check("and not the FCLM process", PROC not in view["floor_options"],
+      str(view["floor_options"]))
+picked = application.build_staffing_view([am], None, {"working_in": ["Stow Each Nike"]})
+check("filtering on the defined name finds the person",
+      [p["employee_login"] for p in picked["people"]] == [nike["employee_login"]],
+      str([p["employee_login"] for p in picked["people"]]))
+by_raw = application.build_staffing_view([am], None, {"working_in": [PROC]})
+check("and a link saved against the FCLM name still works",
+      nike["employee_login"] in {p["employee_login"] for p in by_raw["people"]},
+      str([p["employee_login"] for p in by_raw["people"]]))
+
+page = client("admin", "admin").get(f"/overview?tab=staffing&am={am}").get_data(as_text=True)
+check("the page shows the defined name", "Stow Each Nike" in page)
+check("and does not show the bare FCLM process as the job",
+      ">" + PROC + "<" not in page)
+
+# An admin who disagrees with the upload can say so, and that wins.
+db.set_site_setting(db.FLOOR_ALIASES_KEY,
+                    json.dumps({PROC.lower(): ["Something Else Entirely"]}), updated_by=am)
+check("a site setting overrides what the upload says",
+      db.get_floor_aliases().get(PROC.lower()) == ["Something Else Entirely"],
+      str(db.get_floor_aliases().get(PROC.lower())))
+db.set_site_setting(db.FLOOR_ALIASES_KEY, "", updated_by=am)
+check("and clearing it goes back to the upload",
+      db.get_floor_aliases().get(PROC.lower()) == ["Stow Each Nike", "Stow Each Nike Light"])
+
+conn = db.get_db()
+conn.execute("DELETE FROM xt_hours WHERE fclm_mapped = ?", (PROC,))
+conn.commit()
+conn.close()
+
+print("\n9j. A face for everybody whose id is on file")
+# The photos were not loading, and the reason was not the photos: a
+# badge picture only ever arrived with a per-person Employee Time
+# Details reading, and that pass covers a handful of people. Everybody
+# else got initials for ever, despite their employee id sitting in the
+# cross-training upload the whole time. The address is built from the
+# id, and the shape of the address is learned from the readings that do
+# come back rather than guessed at permanently.
+wipe()
+check("there is a fallback shape before any reading has arrived",
+      db.get_floor_photo_template() == db.FLOOR_PHOTO_TEMPLATE,
+      db.get_floor_photo_template())
+db.record_floor_snapshot([{
+    "employee_id": "660001", "employee_login": team[0]["employee_login"],
+    "full_name": team[0]["full_name"], "process_key": "pick",
+    "process_name": "Pick", "function_name": "RF Pick", "paid_hours": 2.0}],
+    taken_by=am, reader_version=application._floor_reader_version())
+db.record_floor_clock([{
+    "employee_login": team[0]["employee_login"], "employee_id": "660001",
+    "clock_state": "in",
+    "photo_url": "https://fclm-portal.amazon.com/badge/image/660001.jpg"}],
+    checked_by=am)
+learned = db.get_floor_photo_template()
+check("one real reading teaches the console the real shape",
+      learned == "https://fclm-portal.amazon.com/badge/image/{id}.jpg", learned)
+check("and the shape is then used for somebody who has no reading at all",
+      db.floor_photo_url("660002", learned)
+      == "https://fclm-portal.amazon.com/badge/image/660002.jpg",
+      str(db.floor_photo_url("660002", learned)))
+check("an employee id is escaped into it rather than pasted",
+      db.floor_photo_url("66 00/3", learned)
+      == "https://fclm-portal.amazon.com/badge/image/66%2000%2F3.jpg",
+      str(db.floor_photo_url("66 00/3", learned)))
+check("no id means no address, not a broken one",
+      db.floor_photo_url(None, learned) is None)
+check("a template pointing anywhere but FCLM is refused",
+      db.floor_photo_url("660002", "https://example.invalid/{id}") is None)
+
+view = application.build_staffing_view([am], None, {})
+faces = [p for p in view["people"] if p.get("photo_url")]
+check("the cross-training upload carries the ids this depends on",
+      view["without_employee_id"] == 0, f"{view['without_employee_id']} without an id")
+check("the whole team gets a face, not just the few FCLM was asked about",
+      len(faces) == len(view["people"]) and len(faces) > 1,
+      f"{len(faces)} faces of {len(view['people'])}")
+check("the reading's own address wins over the built one",
+      {p["employee_login"]: p["photo_url"] for p in view["people"]}
+      .get(team[0]["employee_login"])
+      == "https://fclm-portal.amazon.com/badge/image/660001.jpg")
+
+page = client("admin", "admin").get(f"/overview?tab=staffing&am={am}").get_data(as_text=True)
+check("the page renders the photo", "st-face-photo" in page)
+check("with initials underneath it, so nothing moves when it arrives",
+      "st-face-stack" in page and "st-face-initials" in page)
+check("and marks it for the reader to retry if the browser is refused",
+      "data-floor-photo=" in page)
+check("the reader can fetch a face under the manager's own session",
+      "window.ldisFloorPhotos" in script and "responseType: 'blob'" in script)
+check("and only ever makes a blob of it in this tab",
+      "URL.createObjectURL" in script)
+
+print("\n9k. A sweep only asks about the people it has to")
+# Employee Time Details is one request per person and was being run
+# over a manager's whole team on every sweep. By the time it runs the
+# attendance read has already said who is in the building and the
+# rollup has said what most of them are doing, so the only people worth
+# a request are the ones punched in that nothing has accounted for.
+wipe()
+placed = team[0]
+unaccounted = team[1]
+away = team[2]
+db.record_floor_snapshot([{
+    "employee_id": "770001", "employee_login": placed["employee_login"],
+    "full_name": placed["full_name"], "process_key": "pick", "process_name": "Pick",
+    "function_name": "RF Pick", "paid_hours": 3.0}],
+    taken_by=am, reader_version=application._floor_reader_version())
+db.record_floor_clock([
+    {"employee_login": placed["employee_login"], "employee_id": "770001",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00"},
+    {"employee_login": unaccounted["employee_login"], "employee_id": "770002",
+     "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00"},
+    {"employee_login": away["employee_login"], "employee_id": "770003",
+     "clock_state": "out", "clocked_out_at": "2026-10-30T06:00:00"},
+], checked_by=am)
+
+c = client(am, "am")
+everyone = c.get("/floor/roster").get_json()
+narrowed = c.get("/floor/roster?only=needs_task").get_json()
+asked = {r["employee_login"] for r in narrowed["roster"]}
+check("the narrowed roster says it narrowed", narrowed["narrowed"] is True)
+check("it asks about the person nothing accounted for",
+      unaccounted["employee_login"] in asked, str(sorted(asked)))
+check("not about somebody the rollup already placed",
+      placed["employee_login"] not in asked, str(sorted(asked)))
+check("not about somebody who went home",
+      away["employee_login"] not in asked, str(sorted(asked)))
+check("so the pass is a fraction of the team it used to be",
+      len(narrowed["roster"]) < len(everyone["roster"]),
+      f"{len(narrowed['roster'])} of {len(everyone['roster'])}")
+check("and there is a ceiling on it however bad the day",
+      len(narrowed["roster"]) <= application.FLOOR_TASK_PASS_LIMIT)
+
+# With nothing read at all the narrowing has nothing to narrow by, and
+# the old whole-team behaviour is the only thing that still works.
+wipe()
+blind = c.get("/floor/roster?only=needs_task").get_json()
+check("with no clock reading it falls back to the whole team",
+      blind["narrowed"] is False and len(blind["roster"]) == len(everyone["roster"]),
+      f"narrowed={blind['narrowed']} {len(blind['roster'])} people")
+
+# A narrowed pass must not settle: a reading that has gone stale and a
+# sweep that has not placed them since is exactly the person nobody
+# knows anything current about, so they go back on the list.
+db.record_floor_clock([{
+    "employee_login": away["employee_login"], "employee_id": "770003",
+    "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+    "current_title": "Pick\u25c6RF Pick", "current_process": "Pick",
+    "current_function": "RF Pick", "current_kind": "work"}], checked_by=am)
+conn = db.get_db()
+conn.execute("UPDATE floor_clock SET checked_at = ? WHERE lower(employee_login) = ?",
+             ("2026-10-29T06:00:00", away["employee_login"].lower()))
+conn.commit()
+conn.close()
+stale_ask = c.get("/floor/roster?only=needs_task").get_json()
+check("a reading that has gone stale is asked about again",
+      away["employee_login"] in {r["employee_login"] for r in stale_ask["roster"]},
+      str([r["employee_login"] for r in stale_ask["roster"]]))
+
+check("the reader asks the console who needs a request, not the whole team",
+      "only=needs_task" in script, "reader still asks for the full roster")
+check("and reads the two whole-site reports at the same time",
+      "Promise.all([rollup, attendance])" in script)
+
+# Narrowing the pass has a consequence worth testing: a reading that
+# used to be refreshed every sweep can now sit still while the floor
+# moves around it. Somebody whose Time Details said Cart/Pallet Builder
+# an hour ago, and who the sweep has since found on Pick, is on Pick.
+wipe()
+moved = team[0]
+db.record_floor_clock([{
+    "employee_login": moved["employee_login"], "employee_id": "770009",
+    "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+    "current_title": "Transfer In Support\u25c6Cart/Pallet Builder",
+    "current_process": "Transfer In Support",
+    "current_function": "Cart/Pallet Builder",
+    "current_kind": "work", "task_started_at": "2026-10-30T09:00:00"}],
+    checked_by=am)
+conn = db.get_db()
+conn.execute("UPDATE floor_clock SET checked_at = ? WHERE lower(employee_login) = ?",
+             ("2026-10-30T09:00:00", moved["employee_login"].lower()))
+conn.commit()
+conn.close()
+db.record_floor_snapshot([{
+    "employee_id": "770009", "employee_login": moved["employee_login"],
+    "full_name": moved["full_name"], "process_key": "pick", "process_name": "Pick",
+    "function_name": "RF Pick", "station": "A02 - A9000", "paid_hours": 1.0}],
+    taken_by=am, reader_version=application._floor_reader_version())
+
+moved_view = application.build_staffing_view([am], None, {})
+moved_row = {p["employee_login"]: p for p in moved_view["people"]}[moved["employee_login"]]
+check("a sweep fresher than the last task reading is what they are doing",
+      (moved_row["where"] or {}).get("label") == "RF Pick",
+      str((moved_row["where"] or {}).get("label")))
+check("and it is the sweep that is credited",
+      (moved_row["where"] or {}).get("source") == "sweep",
+      str((moved_row["where"] or {}).get("source")))
+# The reverse still holds: a task read after the sweep is the newer fact,
+# which is the whole reason the per-person pass exists.
+db.record_floor_clock([{
+    "employee_login": moved["employee_login"], "employee_id": "770009",
+    "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+    "current_title": "Time Off Task", "current_process": "Time Off Task",
+    "current_kind": "off-task", "task_started_at": "2026-10-30T11:50:00"}],
+    checked_by=am)
+fresh_view = application.build_staffing_view([am], None, {})
+fresh_row = {p["employee_login"]: p for p in fresh_view["people"]}[moved["employee_login"]]
+check("a reading taken after the sweep still wins",
+      (fresh_row["where"] or {}).get("kind") == "off-task",
+      str((fresh_row["where"] or {}).get("kind")))
+
+print("\n9l. A floor read moves the numbers instead of reloading the page")
+# location.reload() threw away the scroll position and any open filter
+# panel to change four numbers. The tab is rendered again on its own and
+# swapped in, which is what a sweep finishing should look like.
+wipe()
+db.record_floor_snapshot([{
+    "employee_id": "880001", "employee_login": team[0]["employee_login"],
+    "full_name": team[0]["full_name"], "process_key": "pick", "process_name": "Pick",
+    "function_name": "RF Pick", "paid_hours": 3.0}],
+    taken_by=am, reader_version=application._floor_reader_version())
+frag = c.get(f"/staffing/fragment?am={am}&trained_for=Pick")
+check("the fragment renders", frag.status_code == 200, str(frag.status_code))
+frag_body = frag.get_data(as_text=True)
+check("it is the panel the page swaps", 'id="staffingPanel"' in frag_body)
+check("it carries the rows", "st-table" in frag_body or "Nobody matches" in frag_body)
+check("and not a second copy of the scripts that are already bound",
+      "ldisBindFilters = bind" not in frag_body)
+check("the page asks for it instead of reloading",
+      "staffing/fragment" in client("admin", "admin")
+      .get(f"/overview?tab=staffing&am={am}").get_data(as_text=True))
+check("signing out of it gets nothing",
+      application.application.test_client().get("/staffing/fragment").status_code == 401)
+check("the filters are read once for both",
+      "_staffing_filters()" in open(os.path.join(ROOT, "application.py"),
+                                    encoding="utf-8").read())
 
 print("\n10. History is kept short")
 wipe()

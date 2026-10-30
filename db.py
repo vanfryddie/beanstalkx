@@ -26,6 +26,7 @@ import re
 import threading
 import functools
 from datetime import datetime, date, timedelta
+from urllib.parse import quote
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
 GLOBAL_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "sites_registry.db")
@@ -7399,6 +7400,35 @@ def is_shift_pulse_shared_key(key):
 # at names.
 
 FLOOR_PROCESSES_KEY = "floor_processes"
+FLOOR_ALIASES_KEY = "floor_process_aliases"
+
+# What FCLM calls a process, and what this site calls the job inside it.
+#
+# FCLM reports the process — "Each TSI" — and a manager wants the thing
+# they trained somebody on: Stow Each Nike, or Stow Each Nike Light.
+#
+# This is only the seed. The real map is learned from the cross-training
+# upload, which already carries both vocabularies side by side (see
+# get_floor_aliases); these two are here so a site whose upload has no
+# FCLM Mapped column still reads correctly, and because they are the two
+# the floor is mostly standing in.
+#
+# A list, because a process can hold more than one defined job: the
+# person's own cross-training decides which, and the first is the
+# fallback when it cannot.
+FLOOR_DEFAULT_ALIASES = {
+    "each tsi": ["Stow Each Nike", "Stow Each Nike Light"],
+    "each stp": ["Stow Each Nike Light", "Stow Each Nike"],
+}
+
+# Where a badge photo lives, with {id} standing in for the employee id.
+# A guess, and deliberately only a fallback: the moment one real reading
+# comes back from Employee Time Details the shape of the real URL is
+# learned from it (get_floor_photo_template) and used for everybody,
+# including the hundreds of people no per-person request was ever made
+# for. Only ever a URL — see get_floor_photo_urls.
+FLOOR_PHOTO_TEMPLATE = "https://fclm-portal.amazon.com/employee/photo?employeeId={id}"
+FLOOR_PHOTO_HOST = "https://fclm-portal.amazon.com/"
 FLOOR_WINDOW_KEY = "floor_window_minutes"
 FLOOR_DEFAULT_WINDOW_MINUTES = 30
 FLOOR_SNAPSHOT_KEEP = 8
@@ -7758,6 +7788,82 @@ def set_site_setting(key, value, updated_by=None):
     conn.close()
 
 
+def get_floor_aliases():
+    """FCLM's name for a process, lowercased, to the jobs this site
+    defines inside it.
+
+    Learned from the cross-training upload, which carries both
+    vocabularies in the same row: "FCLM Mapped" is what the report calls
+    the process, "Merged Functions" is what this site calls the job
+    trained in it. So the console does not have to be told that Each TSI
+    means Stow Each Nike — it already knows, from the records it was
+    given, and it keeps knowing when the site renames something.
+
+    Ordered by how many people hold the training, so where a process
+    holds several jobs the fallback is the one most of the floor is on.
+
+    A site setting replaces the lot, for an upload that is wrong or has
+    no FCLM Mapped column at all; the built-in seed fills gaps the
+    upload leaves. Whatever is still unmapped keeps the name FCLM gave
+    it — show what this site defines, and only otherwise what FCLM
+    said."""
+    raw = get_site_setting(FLOOR_ALIASES_KEY)
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            cleaned = {}
+            for key, value in (parsed or {}).items():
+                names = value if isinstance(value, list) else [value]
+                names = [str(n).strip() for n in names if str(n).strip()]
+                if key and names:
+                    cleaned[str(key).strip().lower()] = names
+            if cleaned:
+                return cleaned
+        except (ValueError, TypeError, AttributeError):
+            pass
+    learned = _floor_learned_aliases()
+    for key, names in FLOOR_DEFAULT_ALIASES.items():
+        learned.setdefault(key, list(names))
+    return learned
+
+
+def _floor_learned_aliases():
+    """The FCLM-to-defined map as the cross-training upload spells it."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT fclm_mapped, merged_function, COUNT(DISTINCT employee_login) AS people "
+        "FROM xt_hours "
+        "WHERE fclm_mapped IS NOT NULL AND fclm_mapped <> '' "
+        "  AND merged_function IS NOT NULL AND merged_function <> '' "
+        "GROUP BY fclm_mapped, merged_function "
+        "ORDER BY people DESC").fetchall()
+    conn.close()
+    out = {}
+    for row in rows:
+        key = (row["fclm_mapped"] or "").strip().lower()
+        name = (row["merged_function"] or "").strip()
+        if not key or not name:
+            continue
+        names = out.setdefault(key, [])
+        if name not in names:
+            names.append(name)
+    return out
+
+
+def get_defined_processes():
+    """Every process this site actually trains people on, as the
+    cross-training upload spells them. The names on the page come from
+    here wherever they can, so the floor and the training records use
+    one vocabulary."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT merged_function FROM xt_hours "
+        "WHERE merged_function IS NOT NULL AND merged_function <> ''").fetchall()
+    conn.close()
+    return sorted({(r["merged_function"] or "").strip() for r in rows if r["merged_function"]},
+                  key=str.lower)
+
+
 def get_floor_window_minutes():
     """How far back a sweep looks. Long enough that somebody on a break
     still counts as on site, short enough that it means "now"."""
@@ -7890,6 +7996,57 @@ def get_floor_photo_urls(logins=None):
     clock = get_floor_clock()
     return {k: v["photo_url"] for k, v in clock.items()
             if v.get("photo_url") and (logins is None or k in logins)}
+
+
+def get_floor_photo_template():
+    """The shape of a badge photo URL at this site, with {id} where the
+    employee id goes.
+
+    Read back out of the readings already stored rather than hard-coded,
+    because only FCLM knows what that address looks like and it has no
+    reason to keep it stable. Every stored reading that contains its own
+    employee id tells us the shape; the one most of them agree on wins.
+    FLOOR_PHOTO_TEMPLATE is the fallback for a site that has no readings
+    yet, and is corrected by the first one that arrives.
+
+    This is what makes photos appear for people nobody has run an
+    Employee Time Details request for: their id is already on file from
+    the cross-training upload, and the address is now known."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT employee_id, photo_url FROM floor_clock "
+        "WHERE photo_url IS NOT NULL AND photo_url <> '' "
+        "  AND employee_id IS NOT NULL AND employee_id <> ''").fetchall()
+    conn.close()
+    counts = {}
+    for row in rows:
+        emp_id = str(row["employee_id"]).strip()
+        url = str(row["photo_url"]).strip()
+        if not emp_id or emp_id not in url:
+            continue
+        if not url.startswith(FLOOR_PHOTO_HOST):
+            continue
+        template = url.replace(emp_id, "{id}")
+        counts[template] = counts.get(template, 0) + 1
+    if not counts:
+        return FLOOR_PHOTO_TEMPLATE
+    return max(sorted(counts), key=lambda t: counts[t])
+
+
+def floor_photo_url(employee_id, template=None):
+    """A badge photo address for one employee id, or None.
+
+    The id is percent-encoded into the learned template and the result
+    checked back against the FCLM host, so a template that somehow
+    arrived pointing elsewhere cannot make this page load images from
+    anywhere but FCLM."""
+    if not employee_id:
+        return None
+    emp_id = str(employee_id).strip()
+    if not emp_id:
+        return None
+    url = (template or FLOOR_PHOTO_TEMPLATE).replace("{id}", quote(emp_id, safe=""))
+    return url if url.startswith(FLOOR_PHOTO_HOST) else None
 
 
 def get_floor_processes():

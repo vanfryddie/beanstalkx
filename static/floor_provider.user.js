@@ -22,7 +22,7 @@
 // ==UserScript==
 // @name         LDIS Floor Sync
 // @namespace    ldis
-// @version      1.1.0-__LDIS_BUILD__
+// @version      1.2.0-__LDIS_BUILD__
 // @description  Sweeps FCLM Function Rollup for who is on the floor and posts it to the L&D Operations Console.
 // @match        __LDIS_MATCH__
 // @grant        GM_xmlhttpRequest
@@ -41,7 +41,7 @@
 
     var CONFIG_URL = '__LDIS_CONFIG__';
     var POST_URL = '__LDIS_POST__';
-    var READER_VERSION = '1.1.0-__LDIS_BUILD__';
+    var READER_VERSION = '1.2.0-__LDIS_BUILD__';
     var state = { running: false, lastRun: 0 };
 
     function log() {
@@ -252,6 +252,16 @@
         return when;
     }
 
+    var FCLM_ORIGIN = 'https://fclm-portal.amazon.com';
+
+    function absoluteUrl(src) {
+        if (!src) return null;
+        try {
+            var url = new URL(src, FCLM_ORIGIN + '/employee/timeDetails');
+            return url.protocol === 'https:' ? url.href : null;
+        } catch (e) { return null; }
+    }
+
     function infoField(doc, label) {
         var lines = doc.querySelectorAll('.employeeInfo .line, .employeeInfo span');
         for (var i = 0; i < lines.length; i++) {
@@ -291,13 +301,19 @@
     function parseTimeDetails(html, now) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
         var reference = now || new Date();
-        var photo = doc.querySelector('.employeeInfo img');
+        /* FCLM writes the badge photo with whatever path it feels like,
+           and a relative one is meaningless by the time it reaches the
+           console — it was being dropped on arrival, which is why the
+           table showed initials. Resolved against the page it came from,
+           so what gets posted is an address that works from anywhere. */
+        var photoEl = doc.querySelector('.employeeInfo img');
+        var photo = photoEl ? absoluteUrl(photoEl.getAttribute('src')) : null;
         var out = {
             employee_login: infoField(doc, 'login'),
             employee_id: infoField(doc, 'empl id'),
             shift_code: infoField(doc, 'shift'),
             home_location: infoField(doc, 'location'),
-            photo_url: photo ? photo.getAttribute('src') : null,
+            photo_url: photo,
             clock_state: 'unknown',
             clocked_in_at: null,
             clocked_out_at: null,
@@ -616,26 +632,118 @@
         return out;
     }
 
-    function attendancePass(config) {
+    /* Read and post are separate so the read can run beside the rollup
+       sweep instead of after it: they are two independent reports and
+       waiting for one to finish before asking for the other was costing
+       the manager seconds for nothing. */
+    function attendanceRead(config) {
         return fetchText(attendanceUrl(config.warehouse_id, new Date()))
-            .then(function (html) {
-                var entries = parseAttendance(html, new Date());
-                if (!entries.length) return { stored: 0, source: 'attendance' };
-                announce({ phase: 'clock', done: entries.length, total: entries.length });
-                return fetch(config.clock_url, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ entries: entries, source: 'attendance' })
-                }).then(function (r) { return r.json(); });
-            });
+            .then(function (html) { return parseAttendance(html, new Date()); });
+    }
+
+    function attendancePost(config, entries) {
+        if (!entries || !entries.length) return Promise.resolve({ stored: 0, source: 'attendance' });
+        return fetch(config.clock_url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entries: entries, source: 'attendance' })
+        }).then(function (r) { return r.json(); });
     }
 
     /* ---------------------------------------------------------------
-       The clock pass. One request per person, so it is deliberately
-       limited to the team the page asked about and run a few at a time:
-       the point is to answer "punched in or not" without making FCLM
-       serve three hundred pages because somebody opened a tab.
+       Badge photos. The console knows the addresses and puts them on the
+       page; the browser usually just loads them. Usually — a photo is a
+       cross-origin request to an FCLM endpoint behind Midway, and
+       whether the session cookie rides along on a subresource is not
+       something this console gets to decide.
+
+       So the ones that did not load are fetched here instead, through
+       the same channel every report comes down: as the signed-in user,
+       from their own machine. The bytes become a blob URL in this tab
+       and go nowhere else — the console never receives a photograph,
+       only ever an address, which is the same rule as before.
+       --------------------------------------------------------------- */
+
+    var PHOTO_CONCURRENCY = 6;
+    var photoCache = {};
+
+    function fetchBlobUrl(url) {
+        if (photoCache[url]) return Promise.resolve(photoCache[url]);
+        return new Promise(function (resolve, reject) {
+            GM_xmlhttpRequest({
+                method: 'GET', url: url, responseType: 'blob',
+                onload: function (r) {
+                    var blob = r.response;
+                    if (r.status >= 400 || !blob || !/^image\//.test(blob.type || '')) {
+                        reject(new Error('not an image'));
+                        return;
+                    }
+                    photoCache[url] = URL.createObjectURL(blob);
+                    resolve(photoCache[url]);
+                },
+                onerror: function () { reject(new Error('photo request failed')); },
+                ontimeout: function () { reject(new Error('photo timed out')); }
+            });
+        });
+    }
+
+    /* A photo that has not loaded yet is not a photo that failed, so an
+       image still in flight is left alone and picked up by its own load
+       handler. Only a decided failure — errored, or complete with
+       nothing in it — is worth a second request. */
+    function needsRepair(img) {
+        if (!img.dataset.floorPhoto) return false;
+        if (img.classList.contains('is-loaded')) return false;
+        if (img.dataset.floorPhotoTried === '1') return false;
+        return img.dataset.floorPhotoFailed === '1'
+            || (img.complete && !img.naturalWidth);
+    }
+
+    function repairPhotos(scope) {
+        var root = scope && scope.querySelectorAll ? scope : document;
+        var broken = [];
+        root.querySelectorAll('img[data-floor-photo]').forEach(function (img) {
+            if (needsRepair(img)) broken.push(img);
+        });
+        if (!broken.length) return Promise.resolve(0);
+        return runPooled(broken, PHOTO_CONCURRENCY, function (img) {
+            img.dataset.floorPhotoTried = '1';
+            return fetchBlobUrl(img.dataset.floorPhoto).then(function (blobUrl) {
+                img.removeAttribute('data-floor-photo-failed');
+                img.src = blobUrl;
+                img.classList.add('is-loaded');
+                return 1;
+            });
+        }).then(function (done) { return done.length; });
+    }
+
+    window.ldisFloorPhotos = function (scope) {
+        return repairPhotos(scope).catch(function () { return 0; });
+    };
+
+    /* Images that are still loading when this runs get a second chance
+       once they have settled, without the page having to ask again. */
+    function watchPhotos() {
+        document.addEventListener('error', function (e) {
+            var img = e.target;
+            if (img && img.tagName === 'IMG' && img.dataset
+                && img.dataset.floorPhoto) {
+                img.dataset.floorPhotoFailed = '1';
+                repairPhotos(img.parentElement || document).catch(function () {});
+            }
+        }, true);
+    }
+
+    /* ---------------------------------------------------------------
+       The task pass. One Employee Time Details request per person, so
+       it is the expensive half of a sweep and is kept to the people it
+       can actually tell us something new about: by the time it runs,
+       attendance has said who is in the building and the rollup has
+       said what most of them are doing, so what is left is whoever is
+       punched in and unaccounted for. The console works out who that is
+       (/floor/roster?only=needs_task) because it is the side that holds
+       both halves.
        --------------------------------------------------------------- */
 
     var CLOCK_CONCURRENCY = 4;
@@ -657,13 +765,15 @@
     }
 
     function clockPass(config, scope) {
-        var rosterUrl = config.roster_url + (scope ? '?am=' + encodeURIComponent(scope) : '');
+        var params = ['only=needs_task'];
+        if (scope) params.push('am=' + encodeURIComponent(scope));
+        var rosterUrl = config.roster_url + '?' + params.join('&');
         return fetch(rosterUrl, { credentials: 'same-origin' })
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 var roster = data.roster || [];
-                if (!roster.length) return { stored: 0, asked: 0 };
-                announce({ phase: 'clock', done: 0, total: roster.length });
+                if (!roster.length) return { stored: 0, asked: 0, narrowed: !!data.narrowed };
+                announce({ phase: 'tasks', done: 0, total: roster.length });
                 var done = 0;
                 var now = new Date();
                 return runPooled(roster, CLOCK_CONCURRENCY, function (person) {
@@ -677,7 +787,7 @@
                         })
                         .then(function (parsed) {
                             done += 1;
-                            announce({ phase: 'clock', done: done, total: roster.length });
+                            announce({ phase: 'tasks', done: done, total: roster.length });
                             return parsed;
                         });
                 }).then(function (entries) {
@@ -687,7 +797,12 @@
                         credentials: 'same-origin',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ entries: entries })
-                    }).then(function (r) { return r.json(); });
+                    }).then(function (r) { return r.json(); })
+                      .then(function (result) {
+                          result.asked = roster.length;
+                          result.narrowed = !!data.narrowed;
+                          return result;
+                      });
                 });
             });
     }
@@ -709,7 +824,13 @@
 
                 var rows = [];
                 var done = 0;
-                return runPooled(processes, 3, function (process) {
+
+                /* Two whole-site reports, neither waiting on the other.
+                   The rollup says what the floor is doing; attendance
+                   says who is in the building. Run one after the other
+                   they cost the sum of both, and a manager watching a
+                   chip tick over notices. */
+                var rollup = runPooled(processes, 3, function (process) {
                     return fetchText(rollupUrl(config.warehouse_id, process.process_id, from, to))
                         .then(function (html) {
                             rows = rows.concat(parseRollup(html, process));
@@ -719,46 +840,57 @@
                             done += 1;
                             announce({ phase: 'fetching', done: done, total: processes.length });
                         });
-                }).then(function () {
+                });
+                var attendance = config.clock
+                    ? attendanceRead(config).catch(function (e) {
+                        log('attendance failed', e); return null;
+                    })
+                    : Promise.resolve(null);
+
+                return Promise.all([rollup, attendance]).then(function (both) {
                     announce({ phase: 'resolving', rows: rows.length });
-                    return resolveLogins(rows);
-                }).then(function () {
-                    if (!config.stations) return 0;
+                    return resolveLogins(rows).then(function () { return both[1]; });
+                }).then(function (attendanceEntries) {
+                    if (!config.stations) return attendanceEntries;
                     announce({ phase: 'stations' });
-                    return attachStations(rows, config.warehouse_id).catch(function () { return 0; });
-                }).then(function () {
+                    return attachStations(rows, config.warehouse_id)
+                        .catch(function () { return 0; })
+                        .then(function () { return attendanceEntries; });
+                }).then(function (attendanceEntries) {
                     announce({ phase: 'posting', rows: rows.length });
-                    return fetch(POST_URL, {
-                        method: 'POST',
-                        credentials: 'same-origin',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            window_start: from.toISOString(),
-                            window_end: to.toISOString(),
-                            reader_version: READER_VERSION,
-                            rows: rows
-                        })
-                    }).then(function (r) { return r.json(); });
-                }).then(function (result) {
+                    /* Both posts go at once, and both have to land before
+                       the task pass is asked who is still unaccounted
+                       for — that question is answered from what the
+                       console now holds, so asking it early would get
+                       the whole team back. */
+                    return Promise.all([
+                        fetch(POST_URL, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                window_start: from.toISOString(),
+                                window_end: to.toISOString(),
+                                reader_version: READER_VERSION,
+                                rows: rows
+                            })
+                        }).then(function (r) { return r.json(); }),
+                        attendancePost(config, attendanceEntries)
+                            .catch(function (e) { log('attendance post failed', e); return null; })
+                    ]);
+                }).then(function (posted) {
+                    var result = posted[0] || {};
+                    result.attendance = posted[1];
                     log('swept', result);
                     if (!config.clock) return result;
-                    announce({ phase: 'attendance' });
-                    return attendancePass(config)
-                        .catch(function (e) { log('attendance failed', e); return null; })
-                        .then(function (attendance) {
-                            result.attendance = attendance;
-                            /* Attendance says who is in the building;
-                               Time Details says what they are doing. The
-                               second only covers the team on screen, so
-                               it runs after and only adds detail. */
-                            var marker = document.getElementById('ldisFloorMarker');
-                            var scope = marker ? marker.dataset.scope : null;
-                            return clockPass(config, scope)
-                                .catch(function (e) { log('clock pass failed', e); return null; })
-                                .then(function (clock) {
-                                    result.clock = clock;
-                                    return result;
-                                });
+                    var marker = document.getElementById('ldisFloorMarker');
+                    var scope = marker ? marker.dataset.scope : null;
+                    announce({ phase: 'tasks' });
+                    return clockPass(config, scope)
+                        .catch(function (e) { log('task pass failed', e); return null; })
+                        .then(function (clock) {
+                            result.clock = clock;
+                            return result;
                         });
                 }).then(function (result) {
                     state.lastRun = Date.now();
@@ -779,6 +911,12 @@
     /* A page that wants the floor says so by carrying the marker; the
        script does nothing on any other page in the console. */
     function autoRun() {
+        /* Photos are repaired on any page that has them, sweep or no
+           sweep: a face that FCLM would not serve the console's own
+           request for is the one thing this script can fix without
+           touching FCLM's reports at all. */
+        watchPhotos();
+        repairPhotos(document).catch(function () {});
         if (!document.getElementById('ldisFloorMarker')) return;
         announce({ phase: 'present' });
         var stamp = Number(document.getElementById('ldisFloorMarker').dataset.ageSeconds || '99999');

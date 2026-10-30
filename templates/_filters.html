@@ -91,53 +91,71 @@
     }
   }
 
-  document.querySelectorAll('[data-xf]').forEach(function (root) {
-    var button = root.querySelector('.xf-button');
-    var panel = root.querySelector('.xf-panel');
-    var search = root.querySelector('[data-xf-search]');
+  function bind(scope) {
+    var where = scope || document;
+    where.querySelectorAll('[data-xf]').forEach(function (root) {
+      /* Bound once, however many times this runs: the panels are
+         re-rendered when a fragment of the page is swapped in, and the
+         ones that survived must not end up with two click handlers. */
+      if (root.dataset.xfBound === '1') { summarise(root); return; }
+      root.dataset.xfBound = '1';
+      var button = root.querySelector('.xf-button');
+      var panel = root.querySelector('.xf-panel');
+      var search = root.querySelector('[data-xf-search]');
 
-    button.addEventListener('click', function (e) {
-      e.stopPropagation();
-      var opening = panel.hidden;
-      document.querySelectorAll('[data-xf]').forEach(function (other) {
-        if (other !== root) close(other, true);
-      });
-      panel.hidden = !opening;
-      button.setAttribute('aria-expanded', String(opening));
-      if (opening && search) { search.focus(); }
-    });
-
-    panel.addEventListener('click', function (e) { e.stopPropagation(); });
-    panel.addEventListener('change', function () {
-      root.dataset.xfDirty = '1';
-      summarise(root);
-    });
-
-    if (search) {
-      search.addEventListener('input', function () {
-        var needle = search.value.trim().toLowerCase();
-        root.querySelectorAll('.xf-option').forEach(function (option) {
-          var text = option.textContent.trim().toLowerCase();
-          option.hidden = needle && text.indexOf(needle) === -1;
+      button.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var opening = panel.hidden;
+        document.querySelectorAll('[data-xf]').forEach(function (other) {
+          if (other !== root) close(other, true);
         });
+        panel.hidden = !opening;
+        button.setAttribute('aria-expanded', String(opening));
+        if (opening && search) { search.focus(); }
       });
-    }
 
-    var all = root.querySelector('[data-xf-all]');
-    var none = root.querySelector('[data-xf-none]');
-    function setAll(value) {
-      root.querySelectorAll('.xf-option').forEach(function (option) {
-        if (option.hidden) return;
-        option.querySelector('input').checked = value;
+      panel.addEventListener('click', function (e) { e.stopPropagation(); });
+      panel.addEventListener('change', function () {
+        root.dataset.xfDirty = '1';
+        summarise(root);
       });
-      root.dataset.xfDirty = '1';
+
+      if (search) {
+        search.addEventListener('input', function () {
+          var needle = search.value.trim().toLowerCase();
+          root.querySelectorAll('.xf-option').forEach(function (option) {
+            var text = option.textContent.trim().toLowerCase();
+            option.hidden = needle && text.indexOf(needle) === -1;
+          });
+        });
+      }
+
+      var all = root.querySelector('[data-xf-all]');
+      var none = root.querySelector('[data-xf-none]');
+      function setAll(value) {
+        root.querySelectorAll('.xf-option').forEach(function (option) {
+          if (option.hidden) return;
+          option.querySelector('input').checked = value;
+        });
+        root.dataset.xfDirty = '1';
+        summarise(root);
+      }
+      if (all) all.addEventListener('click', function () { setAll(true); });
+      if (none) none.addEventListener('click', function () { setAll(false); });
+
       summarise(root);
-    }
-    if (all) all.addEventListener('click', function () { setAll(true); });
-    if (none) none.addEventListener('click', function () { setAll(false); });
+    });
 
-    summarise(root);
-  });
+    /* The toggles submit on change: one click, one answer. */
+    where.querySelectorAll('.xseg input[type=radio]').forEach(function (radio) {
+      if (radio.dataset.xfBound === '1') return;
+      radio.dataset.xfBound = '1';
+      radio.addEventListener('change', function () {
+        var form = radio.closest('form');
+        if (form) form.submit();
+      });
+    });
+  }
 
   document.addEventListener('click', function () {
     document.querySelectorAll('[data-xf]').forEach(function (root) { close(root, true); });
@@ -147,13 +165,10 @@
     document.querySelectorAll('[data-xf]').forEach(function (root) { close(root, false); });
   });
 
-  /* The toggles submit on change: one click, one answer. */
-  document.querySelectorAll('.xseg input[type=radio]').forEach(function (radio) {
-    radio.addEventListener('change', function () {
-      var form = radio.closest('form');
-      if (form) form.submit();
-    });
-  });
+  /* Exposed so a page that re-renders part of itself can rebind the
+     filters it just replaced, instead of reloading to get them back. */
+  window.ldisBindFilters = bind;
+  bind(document);
 })();
 </script>
 {%- endmacro %}

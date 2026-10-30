@@ -132,8 +132,9 @@
             snapshot, "not on the floor" would be a guess dressed as a
             fact. -#}
         {% if floor_meta and person.floor %}
-        <span class="ad-tag ad-tag-floor" title="From FCLM, read {{ floor_meta.age_minutes }} minutes ago">
-          On the floor{% if person.floor.process_name %} · {{ person.floor.process_name }}{% endif %}{% if person.floor.station %} · {{ person.floor.station }}{% endif %}
+        <span class="ad-tag ad-tag-floor"
+              title="{{ person.where.raw or '' }}{{ ' — ' if person.where.raw }}from FCLM, read {{ floor_meta.age_minutes }} minutes ago">
+          On the floor{% if person.where and person.where.label %} · {{ person.where.label }}{% endif %}{% if person.floor.station %} · {{ person.floor.station }}{% endif %}
         </span>
         {% elif floor_meta and not floor_meta.is_stale %}
         <span class="ad-tag ad-tag-offfloor" title="Not booked to any swept process in the last window">Not on the floor</span>

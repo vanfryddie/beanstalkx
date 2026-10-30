@@ -1906,7 +1906,8 @@ def overview():
     if tab in ("directory", "requests"):
         directory = db.get_associate_directory(am_logins=query_am_scope, fc=fc_scope)
         floor_presence, _floor_meta = db.get_floor_presence()
-        _attach_floor_presence(directory, floor_presence)
+        _attach_floor_presence(directory, floor_presence,
+                               sweep_age=(_floor_meta or {}).get("age_minutes"))
         directory_roles = sorted(
             {r["role"] for person in directory for r in person["roles"]},
             key=str.lower)
@@ -1999,17 +2000,9 @@ def overview():
         scorecard_categories=scorecard_categories,
         directory=directory,
         floor_meta=db.get_latest_floor_snapshot() if tab in ("directory", "staffing") else None,
-        floor_staffing=(build_staffing_view(
-            query_am_scope, fc_scope,
-            {"q": request.args.get("q"),
-             "presence": request.args.get("presence"),
-             "clock": request.args.get("clock"),
-             # Ticked rather than picked: every one of these is a list,
-             # so "Pack or Pick or Stow" is one filter, not three pages.
-             "trained_for": request.args.getlist("trained_for"),
-             "role": request.args.getlist("role"),
-             "working_in": request.args.getlist("working_in")})
-            if tab == "staffing" else None),
+        floor_staffing=(build_staffing_view(query_am_scope, fc_scope,
+                                            _staffing_filters())
+                        if tab == "staffing" else None),
         db_shifts=db.SHIFTS,
         directory_roles=directory_roles,
         directory_q=directory_q,
@@ -4094,7 +4087,7 @@ def _floor_match_lines():
             for path in paths for scheme in ("https", "http")]
 
 
-FLOOR_READER_RELEASE = "1.1.0"
+FLOOR_READER_RELEASE = "1.2.0"
 
 
 def _floor_reader_version():
@@ -4177,23 +4170,68 @@ def _floor_known_employee_ids():
     return known
 
 
+# One Employee Time Details request answers for one person, so the pass
+# that uses it is the expensive half of a sweep. This is the ceiling on
+# how many it will ever make in one go — past it, the manager is better
+# served by a fast page with a few unknowns than a slow one with none.
+FLOOR_TASK_PASS_LIMIT = 60
+
+
 @application.route("/floor/roster")
 def floor_roster():
-    """Who the clock pass should ask about.
+    """Who the per-person pass should ask about.
 
     Employee Time Details is one request per person, so this is
     deliberately a manager's own team rather than the site: thirty
     requests is a reasonable thing to do to FCLM on a page load, and
     three hundred is not. People whose employee id the console has never
-    seen are left out, because there is no way to ask about them."""
+    seen are left out, because there is no way to ask about them.
+
+    With `only=needs_task` it is narrower still, and this is what makes
+    a sweep feel immediate. By the time the reader asks, it has already
+    posted the whole-site attendance read and the whole-site rollup
+    sweep, so almost everybody's clock and job are known: the people
+    worth a request are the ones punched in whose task nothing has
+    accounted for — on Cart/Pallet Builder, at Time Off Task, on a
+    process this site does not sweep. On a normal shift that is a
+    handful rather than the whole team, and a handful is the difference
+    between a page that updates and a page you wait for.
+
+    If no clock reading exists at all the narrowing is skipped: that
+    means the attendance read has not run or was refused, and the old
+    per-person behaviour is the only thing left that works."""
     login_id = _require_login()
     if not login_id:
         return jsonify({"error": "not signed in"}), 401
     scope = _resolve_am_scope(request.args.get("am") or login_id)
     known_ids = _floor_known_employee_ids()
+    only = (request.args.get("only") or "").strip()
+
+    people = db.get_associate_directory(am_logins=scope)
+    narrowed = False
+    if only == "needs_task":
+        presence, meta = db.get_floor_presence()
+        clock = db.get_floor_clock()
+        if clock:
+            narrowed = True
+            _attach_floor_presence(people, presence, clock,
+                                   sweep_age=(meta or {}).get("age_minutes"))
+
+            def worth_asking(person):
+                where = person.get("where") or {}
+                # Punched in with nothing accounting for the time.
+                if where.get("kind") == "unknown-task":
+                    return True
+                # Or the reading itself has gone stale and the sweep has
+                # not placed them since, which is how a narrowed pass
+                # would otherwise sit on yesterday's answer for ever.
+                return (not person.get("on_process")
+                        and (person.get("clock") or {}).get("is_stale"))
+
+            people = [p for p in people if worth_asking(p)]
 
     roster, unknown = [], 0
-    for person in db.get_associate_directory(am_logins=scope):
+    for person in people:
         key = (person["employee_login"] or "").lower()
         employee_id = known_ids.get(key)
         if not employee_id:
@@ -4202,7 +4240,10 @@ def floor_roster():
         roster.append({"employee_login": person["employee_login"],
                        "employee_id": employee_id,
                        "full_name": person["full_name"]})
-    return jsonify({"warehouse_id": db.get_current_site(), "roster": roster,
+    return jsonify({"warehouse_id": db.get_current_site(),
+                    "roster": roster[:FLOOR_TASK_PASS_LIMIT],
+                    "narrowed": narrowed,
+                    "skipped": max(0, len(roster) - FLOOR_TASK_PASS_LIMIT),
                     "without_id": unknown,
                     "stale_after_minutes": db.FLOOR_CLOCK_STALE_MINUTES})
 
@@ -4312,6 +4353,61 @@ def _floor_text(value, limit):
     return text[:limit] or None
 
 
+def _staffing_filters():
+    """The Staffing tab's filters, read off the query string.
+
+    One function, because the tab and the live refresh below must agree
+    exactly: a refresh that dropped a filter would quietly show a
+    manager a different set of people than the one they had asked for."""
+    return {
+        "q": request.args.get("q"),
+        "presence": request.args.get("presence"),
+        "clock": request.args.get("clock"),
+        # Ticked rather than picked: every one of these is a list, so
+        # "Pack or Pick or Stow" is one filter, not three pages.
+        "trained_for": request.args.getlist("trained_for"),
+        "role": request.args.getlist("role"),
+        "working_in": request.args.getlist("working_in"),
+    }
+
+
+@application.route("/staffing/fragment")
+def staffing_fragment():
+    """The Staffing tab's contents on their own, for a refresh that does
+    not reload the page.
+
+    A sweep finishing used to call location.reload(), which threw away
+    the scroll position and any open filter panel and repainted the
+    whole console to change four numbers. This renders the same include
+    with the same filters, and the page swaps it in — so a floor read
+    arriving looks like the numbers moving, which is what it is."""
+    login_id = _require_login()
+    if not login_id:
+        return Response("", status=401)
+    role = _effective_role()
+    if role is None:
+        return Response("", status=403)
+
+    base_login = login_id if role in OPS_SELF_ROLES else request.args.get("am")
+    if role in OPS_MANAGER_ROLES and not base_login:
+        base_login = login_id if db.get_descendant_ams(login_id) else None
+    query_am_scope = _resolve_am_scope(base_login) if base_login else None
+    fc_scope = request.args.get("fc")
+
+    return render_template(
+        "_staffing.html",
+        floor_staffing=build_staffing_view(query_am_scope, fc_scope, _staffing_filters()),
+        am_scope=base_login,
+        fc_scope=fc_scope,
+        db_shifts=db.SHIFTS,
+        # The scripts stay with the page that loaded them: a <script>
+        # set through innerHTML never runs, so re-sending them would
+        # only ship dead text and tempt somebody into thinking the
+        # filters had been rebound when they had not.
+        fragment=True,
+    )
+
+
 @application.route("/floor/status")
 def floor_status():
     """How fresh the floor is, for a page that wants to say so without
@@ -4339,7 +4435,21 @@ FLOOR_ABSENT = "absent"
 FLOOR_IDLE_KINDS = ("break", "off-task")
 
 
-def _attach_floor_presence(people, presence, clock=None):
+def _floor_context(logins=None):
+    """Everything the whereabouts columns need, fetched once.
+
+    Four lookups that every page showing presence needs together, kept
+    in one place so no caller ends up doing three of them and silently
+    going without the fourth — which is how the photos came to be
+    missing from a page that had every associate's employee id on file."""
+    return {
+        "aliases": db.get_floor_aliases(),
+        "photo_ids": _floor_known_employee_ids(),
+        "photo_template": db.get_floor_photo_template(),
+    }
+
+
+def _attach_floor_presence(people, presence, clock=None, context=None, sweep_age=None):
     """Put each person's current whereabouts on their directory entry.
 
     Two sources, deliberately kept apart and then combined here. The
@@ -4357,8 +4467,16 @@ def _attach_floor_presence(people, presence, clock=None):
 
     Absent is still not the same as unknown: with neither a sweep nor a
     clock reading, everybody is unknown and the templates say so rather
-    than showing an empty site."""
+    than showing an empty site.
+
+    `sweep_age` is how many minutes old the sweep is, and it is what
+    lets the two sources be ranked by freshness rather than by type —
+    see _floor_where."""
     clock = clock or {}
+    context = context if context is not None else _floor_context()
+    aliases = context.get("aliases") or {}
+    photo_ids = context.get("photo_ids") or {}
+    photo_template = context.get("photo_template")
     for person in people:
         key = (person.get("employee_login") or "").lower()
         found = presence.get(key)
@@ -4366,43 +4484,108 @@ def _attach_floor_presence(people, presence, clock=None):
         person["floor"] = found
         person["clock"] = punch
         person["clock_state"] = (punch or {}).get("clock_state") or "unknown"
-        person["photo_url"] = (punch or {}).get("photo_url")
+        # A reading gives the real address; failing that it is built from
+        # the employee id, which the cross-training upload already
+        # carries for nearly everybody. Waiting for a per-person FCLM
+        # request meant a table of initials, which is what the site saw.
+        person["photo_url"] = ((punch or {}).get("photo_url")
+                               or db.floor_photo_url(photo_ids.get(key), photo_template))
         person["on_process"] = bool(found)
         person["on_clock"] = person["clock_state"] == "in"
         person["floor_state"] = (FLOOR_PRESENT
                                  if (found or person["on_clock"]) else FLOOR_ABSENT)
-        person["where"] = _floor_where(found, punch)
+        trained = [p["process"] for p in person.get("processes", []) if p.get("process")]
+        person["where"] = _floor_where(found, punch, aliases=aliases, trained=trained,
+                                       sweep_age=sweep_age)
     return people
 
 
-def _floor_where(found, punch):
+def _floor_defined_name(name, aliases, trained=()):
+    """What this site calls the job FCLM reported, or None if it has no
+    name for it.
+
+    A process can hold more than one defined job — Each TSI holds Stow
+    Each Nike and Stow Each Nike Light — so the person's own
+    cross-training picks between them: if they are trained on exactly
+    one of the candidates, that is what they are doing. Failing that the
+    first candidate wins, which get_floor_aliases orders by headcount,
+    so the guess is the one most of the floor is on.
+
+    Returning None rather than guessing wider is the point: the caller
+    then shows what FCLM said, which is the rule — our names where we
+    have them, FCLM's where we do not."""
+    key = (name or "").strip().lower()
+    if not key:
+        return None
+    candidates = (aliases or {}).get(key)
+    if not candidates:
+        return None
+    held = {t.strip().lower() for t in trained or () if t}
+    matched = [c for c in candidates if c.strip().lower() in held]
+    if len(matched) == 1:
+        return matched[0]
+    return candidates[0]
+
+
+def _floor_where(found, punch, aliases=None, trained=(), sweep_age=None):
     """One description of where somebody is, from whichever source knows.
 
-    Preference order is about freshness and completeness: a task read
-    from Time Details is this minute and covers everything; the sweep is
-    up to a window old and covers only the processes it was given. The
-    station only ever comes from the sweep, so it is carried across.
+    Preference is about freshness and completeness. A task read from
+    Employee Time Details covers everything somebody might be doing,
+    including the states that are not a process at all, where the sweep
+    covers only the processes it was given — so the task wins by
+    default. But it wins on being current, not on being a task: the
+    per-person pass now only asks about the people the sweep could not
+    place, so a reading can sit untouched while sweep after sweep moves
+    somebody from Cart/Pallet Builder to Pick. When the sweep has them
+    and is the fresher of the two, the sweep is what they are doing.
+    Without a sweep age to compare against, the task wins as before.
 
-    `label` is what a manager wants to read, and that is the function,
-    not the process above it: Each TSI tells them nothing, Stow Each
-    Nike and Stow Each Nike Light are two different jobs and the
-    difference is the point. The process is kept as `area` for the
-    cases where the function is missing or where the wider grouping is
-    what is being asked for."""
+    The station only ever comes from the sweep, so it is carried across.
+
+    `label` is what a manager wants to read, and the order it is chosen
+    in is the whole point of this function. Our own name for the job
+    first. Then FCLM's function, because a function is already a job —
+    Cart/Pallet Builder says more than Transfer In Support, the process
+    it sits under, ever could, and swapping it for the coarser name
+    would be a step backwards. Only with no function at all does the
+    process get translated, and that is the case the site complained
+    about: Each TSI tells a manager nothing, Stow Each Nike and Stow
+    Each Nike Light are two different jobs, and the difference is why
+    they are looking.
+
+    `area` keeps FCLM's process whatever happens, so a filter link saved
+    against the raw name still finds the same people, and `raw` keeps
+    what the report actually said for the tooltip."""
     station = (found or {}).get("station")
     punch = punch or {}
     state = punch.get("clock_state")
+    aliases = aliases or {}
+    task_age = punch.get("age_minutes")
+    prefer_task = not (found and sweep_age is not None and task_age is not None
+                       and task_age > sweep_age)
+
+    def defined(*names):
+        for name in names:
+            resolved = _floor_defined_name(name, aliases, trained)
+            if resolved:
+                return resolved
+        return None
 
     def shape(kind, area, function, source, since=None, also=None):
+        raw = function or area
+        label = defined(function) or function or defined(area) or area
         return {"kind": kind, "area": area, "function": function,
-                "label": function or area, "process": area,
+                "label": label, "raw": raw, "process": area,
                 "station": station, "source": source, "since": since,
-                "also_in": also or []}
+                "also_in": [defined(name) or name for name in (also or [])]}
 
-    if state == "in" and punch.get("current_kind") in FLOOR_IDLE_KINDS:
+    if (state == "in" and prefer_task
+            and punch.get("current_kind") in FLOOR_IDLE_KINDS):
         return shape(punch["current_kind"], punch.get("current_title"), None,
                      "time-details", punch.get("task_started_at"))
-    if state == "in" and (punch.get("current_process") or punch.get("current_function")):
+    if (state == "in" and prefer_task
+            and (punch.get("current_process") or punch.get("current_function"))):
         return shape("work", punch.get("current_process"), punch.get("current_function"),
                      "time-details", punch.get("task_started_at"))
     if found:
@@ -4419,9 +4602,17 @@ _FLOOR_WORD_RE = re.compile(r"[a-z]+")
 def _floor_fragment_context():
     """Presence for the Cross Training lookups, which render one card per
     associate. Fetched per request rather than globally: most pages in
-    the console have no use for the floor and should not pay for it."""
+    the console have no use for the floor and should not pay for it.
+
+    `floor_jobs` is the FCLM-name-to-our-name map flattened for a
+    template: these cards show one person's own process, with no
+    cross-training in hand to pick between two candidates, so the
+    headline candidate is the one offered and the raw name stays
+    available for anything it does not cover."""
     presence, meta = db.get_floor_presence()
-    return {"floor_presence": presence, "floor_meta": meta}
+    aliases = db.get_floor_aliases()
+    return {"floor_presence": presence, "floor_meta": meta,
+            "floor_jobs": {key: names[0] for key, names in aliases.items() if names}}
 
 
 def floor_process_matches(trained, floor_names):
@@ -4478,7 +4669,9 @@ def build_staffing_view(am_logins, fc=None, filters=None):
     presence, meta = db.get_floor_presence()
     clock = db.get_floor_clock()
     people = db.get_associate_directory(am_logins=am_logins, fc=fc)
-    _attach_floor_presence(people, presence, clock)
+    context = _floor_context()
+    _attach_floor_presence(people, presence, clock, context,
+                           sweep_age=(meta or {}).get("age_minutes"))
 
     for person in people:
         person["trained_processes"] = sorted(
@@ -4598,7 +4791,7 @@ def build_staffing_view(am_logins, fc=None, filters=None):
 
     clock_ages = [c["age_minutes"] for c in clock.values()
                   if c.get("age_minutes") is not None]
-    known_ids = _floor_known_employee_ids()
+    known_ids = context.get("photo_ids") or {}
     without_id = [p for p in people
                   if (p.get("employee_login") or "").lower() not in known_ids]
     reader_current = _floor_reader_version()

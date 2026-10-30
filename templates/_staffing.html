@@ -12,6 +12,10 @@
     a station nobody is standing at. -#}
 
 {% set m = floor_staffing.meta %}
+{#- Everything inside this div is what a floor read changes, so this is
+    what gets replaced when one arrives — see the script at the bottom.
+    The scripts stay outside it, bound once for the life of the page. -#}
+<div id="staffingPanel">
 <div id="ldisFloorMarker"
      data-age-seconds="{{ (m.age_minutes * 60) if m and m.age_minutes is not none else 99999 }}"
      data-window="{{ floor_staffing.window_minutes }}"
@@ -212,14 +216,23 @@
           <span class="st-person">
             {#- The photo is loaded straight from FCLM by this browser,
                 under this manager's own session. The console stores the
-                address and never the picture. -#}
-            {% if p.photo_url %}
-            <img class="st-face" src="{{ p.photo_url }}" alt="" loading="lazy" referrerpolicy="no-referrer"
-                 onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'st-face st-face-initials',textContent:this.dataset.initials}))"
-                 data-initials="{{ (p.full_name or p.employee_login)[:2] | upper }}">
-            {% else %}
-            <span class="st-face st-face-initials">{{ (p.full_name or p.employee_login)[:2] | upper }}</span>
-            {% endif %}
+                address and never the picture.
+
+                Initials are rendered first and the photo fades in over
+                them, so the table is complete on the first paint and
+                nothing moves when the images arrive. A photo FCLM will
+                not serve cross-origin simply never arrives and the
+                initials stay — and the floor reader, which does have a
+                Midway session, picks those up and fills them in. -#}
+            <span class="st-face-stack">
+              <span class="st-face st-face-initials">{{ (p.full_name or p.employee_login)[:2] | upper }}</span>
+              {% if p.photo_url %}
+              <img class="st-face st-face-photo" src="{{ p.photo_url }}" alt="" loading="lazy"
+                   data-floor-photo="{{ p.photo_url }}"
+                   onload="this.classList.add('is-loaded')"
+                   onerror="this.dataset.floorPhotoFailed='1'">
+              {% endif %}
+            </span>
             <span class="st-person-text">
               <strong>{{ p.full_name }}</strong>
               <span class="mono">{{ p.employee_login }}{% if p.shift %} · {{ db_shifts.get(p.shift, p.shift) }}{% endif %}</span>
@@ -238,11 +251,12 @@
         <td>
           {% set w = p.where %}
           {% if w and w.kind == 'work' %}
-          {#- The function is the headline, because that is the job. The
-              process above it only earns a line when it is not already
-              obvious from the function's name. -#}
+          {#- This site's name for the job is the headline, because that
+              is what the manager trained somebody on. What FCLM called
+              it goes in the tooltip, for the cases where the two differ
+              and somebody wants to check against the report. -#}
           <span class="st-now"
-                title="{{ w.area }}{{ ' · from the Function Rollup sweep, up to ' ~ floor_staffing.window_minutes ~ ' minutes old' if w.source == 'sweep' else ' · read from their own time details' }}">
+                title="FCLM: {{ w.raw or w.area or '—' }}{{ ' · from the Function Rollup sweep, up to ' ~ floor_staffing.window_minutes ~ ' minutes old' if w.source == 'sweep' else ' · read from their own time details' }}">
             <i class="dash-dot dash-dot-good"></i>
             <span>
               <strong>{{ w.label or 'Unattributed' }}</strong>
@@ -331,45 +345,98 @@
 </details>
 {% endif %}
 {% endif %}
+</div>{#- /#staffingPanel -#}
 
+{% if not fragment %}
 {{ xf.filter_script() }}
 
 <script>
 /* The reader is a userscript, so the page cannot start it directly — it
    asks, by firing an event the script listens for, and reports back
    whatever the script says it is doing. If no script is installed
-   nothing answers and the button says so rather than spinning. */
+   nothing answers and the button says so rather than spinning.
+
+   The listeners live on the document and the panel is re-rendered under
+   them, so this runs once for the life of the page and finds the chip
+   and the button again each time it needs them. */
 (function () {
-  var btn = document.getElementById('floorRefresh');
-  var text = document.getElementById('floorChipText');
-  if (!btn || !text) return;
+  var PANEL = 'staffingPanel';
+  var FRAGMENT = '{{ url_for("staffing_fragment") }}';
   var answered = false;
+  var swapping = false;
+
+  function chip() { return document.getElementById('floorChipText'); }
+  function say(message) { var c = chip(); if (c) c.textContent = message; }
+
+  /* Everything after the ? on this page is the manager's filters, and
+     the fragment has to be rendered against exactly those or the
+     refresh would quietly change who is on screen. */
+  function fragmentUrl() {
+    var query = window.location.search.replace(/^\?/, '');
+    return FRAGMENT + (query ? '?' + query : '');
+  }
+
+  function swap() {
+    var panel = document.getElementById(PANEL);
+    if (!panel || swapping) return;
+    swapping = true;
+    fetch(fragmentUrl(), { credentials: 'same-origin',
+                           headers: { 'X-Requested-With': 'fetch' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        var fresh = new DOMParser().parseFromString(html, 'text/html')
+          .getElementById(PANEL);
+        if (!fresh) throw new Error('no panel in the fragment');
+        fresh = document.importNode(fresh, true);
+        panel.replaceWith(fresh);
+        /* The swapped-in markup carries no script of its own — a
+           <script> inserted this way never runs — so what needs
+           rebinding is rebound here, by name. */
+        if (window.ldisBindFilters) window.ldisBindFilters(fresh);
+        if (window.ldisFloorPhotos) window.ldisFloorPhotos(fresh);
+        document.dispatchEvent(new CustomEvent('ldis-staffing-swapped'));
+      })
+      .catch(function () {
+        /* A refresh that cannot be done quietly is still worth doing. */
+        location.reload();
+      })
+      .then(function () { swapping = false; });
+  }
 
   document.addEventListener('ldis-floor-status', function (e) {
     answered = true;
     var d = e.detail || {};
     if (d.phase === 'fetching') {
-      text.textContent = 'Reading FCLM… ' + (d.done || 0) + ' of ' + (d.total || '?') + ' processes';
-    } else if (d.phase === 'resolving') { text.textContent = 'Matching ' + d.rows + ' rows to logins…'; }
-    else if (d.phase === 'stations') { text.textContent = 'Looking up stations…'; }
-    else if (d.phase === 'posting') { text.textContent = 'Saving the sweep…'; }
-    else if (d.phase === 'failed') { text.textContent = 'Could not read FCLM — ' + (d.error || 'see the console'); }
+      say('Reading FCLM… ' + (d.done || 0) + ' of ' + (d.total || '?') + ' processes');
+    } else if (d.phase === 'resolving') { say('Matching ' + d.rows + ' rows to logins…'); }
+    else if (d.phase === 'attendance') { say('Reading who is in the building…'); }
+    else if (d.phase === 'stations') { say('Looking up stations…'); }
+    else if (d.phase === 'posting') { say('Saving the sweep…'); }
+    else if (d.phase === 'tasks') {
+      say(d.total ? ('Checking ' + d.total + ' off-process ' + (d.total === 1 ? 'person' : 'people') + '…')
+                  : 'Checking who is off process…');
+    }
+    else if (d.phase === 'failed') { say('Could not read FCLM — ' + (d.error || 'see the console')); }
   });
 
   document.addEventListener('ldis-floor-updated', function () {
-    text.textContent = 'Floor read just now — reloading';
-    setTimeout(function () { location.reload(); }, 600);
+    say('Floor read just now');
+    swap();
   });
 
-  btn.addEventListener('click', function () {
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('#floorRefresh') : null;
+    if (!btn) return;
     answered = false;
-    text.textContent = 'Asking the floor reader…';
+    say('Asking the floor reader…');
     document.dispatchEvent(new CustomEvent('ldis-floor-sweep'));
     setTimeout(function () {
-      if (!answered) {
-        text.textContent = 'No floor reader is installed in this browser';
-      }
+      if (!answered) { say('No floor reader is installed in this browser'); }
     }, 2500);
   });
 })();
 </script>
+{% endif %}

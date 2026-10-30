@@ -16,8 +16,13 @@
       {% if floor %}
       <i class="dash-dot dash-dot-good"></i>
       <span>
-        On the floor{% if floor.process_name %} in <strong>{{ floor.process_name }}</strong>{% endif %}
-        {%- if floor.function_name and floor.function_name != floor.process_name %} ({{ floor.function_name }}){% endif %}
+        {#- Our name for the job where this site defines one, FCLM's where
+            it does not: "Each TSI" names nothing a manager trains for. -#}
+        {%- set job = (floor_jobs or {}).get((floor.function_name or '')|lower)
+                      or (floor_jobs or {}).get((floor.process_name or '')|lower)
+                      or floor.function_name or floor.process_name %}
+        On the floor{% if job %} in <strong>{{ job }}</strong>{% endif %}
+        {%- if floor.process_name and floor.process_name != job %} ({{ floor.process_name }}){% endif %}
         {%- if floor.station %} at <strong>{{ floor.station }}</strong>{% endif %}
       </span>
       {% else %}

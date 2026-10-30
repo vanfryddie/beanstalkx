@@ -5,7 +5,8 @@ larger AM layer under those, each AM owning a team of associates with
 tracked_items across every scorecard section, plus xt_hours rows and
 OLR weekly snapshots so trend queries have something to walk.
 """
-import os, random, sys
+import os
+import zlib, random, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 random.seed(1234)
@@ -20,6 +21,15 @@ STATUSES = ["Compliant", "Overdue", "Due Soon", "Not Started", "In Progress", "C
 TOPICS = ["FSRI", "Robotic Arm Palletizer", "Powered Industrial Truck", "Fire Safety",
           "Manual Handling", "Lockout Tagout", "Conveyor Safety", "First Aid"]
 PROCESSES = ["Pack", "Pick", "Stow", "Receive", "Water Spider", "Problem Solve", "Decant"]
+# What FCLM calls the process these are trained in. The real upload has
+# this column and the console reads the floor through it — a seed without
+# it cannot show a job name or a face, so dev looked broken in exactly
+# the two ways the live site did.
+FCLM_MAPPED = {
+    "Pack": "Pack Single", "Pick": "Pick", "Stow": "Each TSI",
+    "Receive": "Each Receive", "Water Spider": "Transfer In Support",
+    "Problem Solve": "Problem Solve", "Decant": "Decant",
+}
 PROFICIENCY = ["Proficient", "Practice", "Refresh", "Lapsed"]
 
 
@@ -87,14 +97,21 @@ def seed(n_som=2, n_om_per_som=3, n_am_per_om=6, n_assoc_per_am=25, weeks=10):
     for am_login, _role, _rt, dept, shift in ams:
         for i in range(n_assoc_per_am):
             emp = f"{am_login}e{i:03d}"
+            # A nine-digit badge number, as the upload carries it. Stable
+            # per login, because the console learns the login-to-id
+            # mapping and a seed that reshuffled it every run would make
+            # that look broken.
+            emp_id = str(100000000 + (zlib.crc32(emp.encode()) % 99999999))
             for p in PROCESSES[: 3 + (i % 3)]:
                 status = PROFICIENCY[(i + len(p)) % len(PROFICIENCY)]
                 cur.execute(
-                    "INSERT INTO xt_hours (fc, employee_login, full_name, supervisor_login, "
+                    "INSERT INTO xt_hours (fc, fclm_mapped, employee_id, employee_login, "
+                    "full_name, supervisor_login, "
                     "proficiency_status, merged_function, active_status, trained_status, "
                     "fclm_area, shift, hours_60, hours_90, hours_180, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    ("SCN2", emp, emp.upper(), am_login, status, p, "Active", "Trained",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("SCN2", FCLM_MAPPED.get(p), emp_id, emp, emp.upper(), am_login,
+                     status, p, "Active", "Trained",
                      dept, shift, 25.0, 40.0, 80.0, now),
                 )
                 n_xt += 1
