@@ -116,14 +116,19 @@
             var span = parseInt(cell.getAttribute('colspan') || '1', 10) || 1;
             var label = (cell.textContent || '').trim();
             if (span === 1) {
-                if (label) map[label.toLowerCase()] = flat;
+                /* First occurrence wins. The attendance report repeats
+                   In and Out for a second session, and keeping the last
+                   one made the reader start at the second pair and see
+                   only the people who had taken a break. */
+                if (label && !(label.toLowerCase() in map)) map[label.toLowerCase()] = flat;
                 flat += 1;
             } else {
                 var group = label.toLowerCase();
                 for (var s = 0; s < span; s++) {
                     var subLabel = subAt < sub.length ? (sub[subAt].textContent || '').trim() : '';
                     subAt += 1;
-                    if (subLabel) map[(group + ' ' + subLabel).toLowerCase()] = flat;
+                    var key = (group + ' ' + subLabel).toLowerCase();
+                    if (subLabel && !(key in map)) map[key] = flat;
                     flat += 1;
                 }
             }
@@ -131,19 +136,32 @@
         return map;
     }
 
-    /* The function a table is reporting on is in the heading above it,
-       written "RF Pick [4300000184]" — the id is FCLM's, not something
-       the console has any use for. */
+    /* The function a table reports on is in the heading above it, and
+       the heading always carries FCLM's own id for it in brackets:
+       "RF Pick [4300000184]". Anchoring on that rather than on "the
+       nearest text before the table" is the difference between reading
+       the function and reading whatever block happens to sit between
+       them — the first version read the report's freshness stamp, so
+       every row on the Staffing tab said the associate was working on
+       "Data last checked at 2026-10-30 14:02 CET". */
+    var FUNCTION_HEADING = /^\s*(.{2,80}?)\s*\[\s*\d{4,}\s*\]\s*$/;
+
     function functionNameFor(table) {
-        var node = table.previousElementSibling;
+        var node = table;
         var hops = 0;
-        while (node && hops < 4) {
-            var text = (node.textContent || '').trim();
-            if (text && text.length < 120) {
-                return text.replace(/\[[^\]]*\]/g, '').replace(/\s*(Small|Medium|Large|HeavyBulky|Total)\s*$/g, '').trim();
-            }
-            node = node.previousElementSibling;
+        while (node && hops < 40) {
+            node = node.previousElementSibling || node.parentElement;
+            if (!node || node.tagName === 'BODY' || node.tagName === 'HTML') break;
             hops += 1;
+            /* Only the element's own text, so a wrapper containing the
+               whole report does not match on something deep inside it. */
+            var own = '';
+            for (var i = 0; i < node.childNodes.length; i++) {
+                if (node.childNodes[i].nodeType === 3) own += node.childNodes[i].nodeValue;
+            }
+            var text = (own || node.textContent || '').trim().replace(/\s+/g, ' ');
+            var match = FUNCTION_HEADING.exec(text);
+            if (match) return match[1].trim();
         }
         return null;
     }
@@ -515,6 +533,105 @@
     }
 
     /* ---------------------------------------------------------------
+       PPA Employee Attendance: who is in the building, for the whole
+       site, in one request.
+
+       This is the right tool for "punched in or not" and the per-person
+       Time Details pass is not — that one answers for one person at a
+       time, so it only ever covered a manager's own team and only the
+       people whose employee id was already known. This covers
+       everybody, and it hands back the ids and names, which is how the
+       people nobody could look up before become lookupable.
+       --------------------------------------------------------------- */
+
+    function attendanceUrl(warehouseId, when) {
+        var next = new Date(when.getTime() + 86400000);
+        return 'https://fclm-portal.amazon.com/reports/ppaAttendance'
+            + '?reportFormat=HTML'
+            + '&warehouseId=' + encodeURIComponent(warehouseId)
+            + '&spanType=Day'
+            + '&startDateDay=' + encodeURIComponent(fclmDate(when))
+            + '&maxIntradayDays=30'
+            + '&startDateIntraday=' + encodeURIComponent(fclmDate(when))
+            + '&startHourIntraday=0&startMinuteIntraday=0'
+            + '&endDateIntraday=' + encodeURIComponent(fclmDate(next))
+            + '&endHourIntraday=0&endMinuteIntraday=0';
+    }
+
+    function parseClockTime(text, day) {
+        var m = /^\s*(\d{1,2}):(\d{2})/.exec(String(text || ''));
+        if (!m) return null;
+        var when = new Date(day.getTime());
+        when.setHours(Number(m[1]), Number(m[2]), 0, 0);
+        return when;
+    }
+
+    function parseAttendance(html, now) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var day = now || new Date();
+        var out = [];
+        var tables = doc.querySelectorAll('table');
+        for (var t = 0; t < tables.length; t++) {
+            var map = headerIndex(tables[t]);
+            if (!map || !('employee id' in map) || !('employee name' in map)) continue;
+
+            /* The In and Out columns repeat, and headerIndex keeps only
+               the first of each name, so the pairs are read by position
+               from where the first In sits. */
+            var firstIn = map['in'];
+            if (firstIn === undefined) continue;
+            var rows = tables[t].querySelectorAll('tbody tr');
+            for (var r = 0; r < rows.length; r++) {
+                var cells = rows[r].children;
+                if (!cells || cells.length <= firstIn) continue;
+                var id = (cells[map['employee id']].textContent || '').trim();
+                var name = (cells[map['employee name']].textContent || '').trim();
+                if (!id || !name) continue;
+
+                var lastIn = null;
+                var lastOut = null;
+                var open = false;
+                for (var c = firstIn; c + 1 < cells.length; c += 2) {
+                    var inAt = parseClockTime(cells[c].textContent, day);
+                    var outAt = parseClockTime(cells[c + 1].textContent, day);
+                    if (inAt) { lastIn = inAt; open = !outAt; }
+                    if (outAt) { lastOut = outAt; if (!inAt || outAt > inAt) open = false; }
+                }
+                if (!lastIn && !lastOut) continue;
+
+                out.push({
+                    employee_id: id,
+                    full_name: name,
+                    manager_name: 'manager' in map && cells[map.manager]
+                        ? (cells[map.manager].textContent || '').trim() : null,
+                    shift_code: 'shift' in map && cells[map.shift]
+                        ? (cells[map.shift].textContent || '').trim() : null,
+                    clock_state: open ? 'in' : 'out',
+                    clocked_in_at: open && lastIn ? lastIn.toISOString() : null,
+                    clocked_out_at: !open && lastOut ? lastOut.toISOString() : null
+                });
+            }
+            if (out.length) break;
+        }
+        return out;
+    }
+
+    function attendancePass(config) {
+        return fetchText(attendanceUrl(config.warehouse_id, new Date()))
+            .then(function (html) {
+                var entries = parseAttendance(html, new Date());
+                if (!entries.length) return { stored: 0, source: 'attendance' };
+                announce({ phase: 'clock', done: entries.length, total: entries.length });
+                return fetch(config.clock_url, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entries: entries, source: 'attendance' })
+                }).then(function (r) { return r.json(); });
+            });
+    }
+
+    /* ---------------------------------------------------------------
        The clock pass. One request per person, so it is deliberately
        limited to the team the page asked about and run a few at a time:
        the point is to answer "punched in or not" without making FCLM
@@ -625,13 +742,23 @@
                 }).then(function (result) {
                     log('swept', result);
                     if (!config.clock) return result;
-                    var marker = document.getElementById('ldisFloorMarker');
-                    var scope = marker ? marker.dataset.scope : null;
-                    return clockPass(config, scope)
-                        .catch(function (e) { log('clock pass failed', e); return null; })
-                        .then(function (clock) {
-                            result.clock = clock;
-                            return result;
+                    announce({ phase: 'attendance' });
+                    return attendancePass(config)
+                        .catch(function (e) { log('attendance failed', e); return null; })
+                        .then(function (attendance) {
+                            result.attendance = attendance;
+                            /* Attendance says who is in the building;
+                               Time Details says what they are doing. The
+                               second only covers the team on screen, so
+                               it runs after and only adds detail. */
+                            var marker = document.getElementById('ldisFloorMarker');
+                            var scope = marker ? marker.dataset.scope : null;
+                            return clockPass(config, scope)
+                                .catch(function (e) { log('clock pass failed', e); return null; })
+                                .then(function (clock) {
+                                    result.clock = clock;
+                                    return result;
+                                });
                         });
                 }).then(function (result) {
                     state.lastRun = Date.now();

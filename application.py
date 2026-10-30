@@ -4381,27 +4381,35 @@ def _floor_where(found, punch):
     Preference order is about freshness and completeness: a task read
     from Time Details is this minute and covers everything; the sweep is
     up to a window old and covers only the processes it was given. The
-    station only ever comes from the sweep, so it is carried across."""
+    station only ever comes from the sweep, so it is carried across.
+
+    `label` is what a manager wants to read, and that is the function,
+    not the process above it: Each TSI tells them nothing, Stow Each
+    Nike and Stow Each Nike Light are two different jobs and the
+    difference is the point. The process is kept as `area` for the
+    cases where the function is missing or where the wider grouping is
+    what is being asked for."""
     station = (found or {}).get("station")
     punch = punch or {}
     state = punch.get("clock_state")
 
+    def shape(kind, area, function, source, since=None, also=None):
+        return {"kind": kind, "area": area, "function": function,
+                "label": function or area, "process": area,
+                "station": station, "source": source, "since": since,
+                "also_in": also or []}
+
     if state == "in" and punch.get("current_kind") in FLOOR_IDLE_KINDS:
-        return {"kind": punch["current_kind"], "process": punch.get("current_title"),
-                "function": None, "station": station, "source": "time-details",
-                "since": punch.get("task_started_at")}
-    if state == "in" and punch.get("current_process"):
-        return {"kind": "work", "process": punch["current_process"],
-                "function": punch.get("current_function"), "station": station,
-                "source": "time-details", "since": punch.get("task_started_at")}
+        return shape(punch["current_kind"], punch.get("current_title"), None,
+                     "time-details", punch.get("task_started_at"))
+    if state == "in" and (punch.get("current_process") or punch.get("current_function")):
+        return shape("work", punch.get("current_process"), punch.get("current_function"),
+                     "time-details", punch.get("task_started_at"))
     if found:
-        return {"kind": "work", "process": found.get("process_name"),
-                "function": found.get("function_name"), "station": station,
-                "source": "sweep", "since": None,
-                "also_in": found.get("also_in") or []}
+        return shape("work", found.get("process_name"), found.get("function_name"),
+                     "sweep", None, found.get("also_functions") or found.get("also_in") or [])
     if state == "in":
-        return {"kind": "unknown-task", "process": None, "function": None,
-                "station": None, "source": "time-details", "since": None}
+        return shape("unknown-task", None, None, "time-details")
     return None
 
 
@@ -4497,8 +4505,8 @@ def build_staffing_view(am_logins, fc=None, filters=None):
     role_options = sorted({r for person in people for r in person["role_names"]},
                           key=str.lower)
     floor_options = sorted(
-        {p["where"]["process"] for p in people
-         if p.get("where") and p["where"].get("process")},
+        {p["where"]["label"] for p in people
+         if p.get("where") and p["where"].get("label")},
         key=str.lower)
 
     on_site = [p for p in people if p["floor_state"] == FLOOR_PRESENT]
@@ -4513,7 +4521,7 @@ def build_staffing_view(am_logins, fc=None, filters=None):
     by_process = {}
     for person in on_site:
         where = person.get("where") or {}
-        name = where.get("process") or "Not recorded"
+        name = where.get("label") or "Not recorded"
         by_process.setdefault(name, []).append(person)
 
     trained_for = _as_list(filters.get("trained_for"))
@@ -4550,8 +4558,11 @@ def build_staffing_view(am_logins, fc=None, filters=None):
 
     if working_named:
         wanted = {w.lower() for w in working_named}
+        # Matched on either name, so a link saved when these tiles were
+        # grouped by process still finds the same people.
         shown = [p for p in shown
-                 if ((p.get("where") or {}).get("process") or "").lower() in wanted]
+                 if {((p.get("where") or {}).get("label") or "").lower(),
+                     ((p.get("where") or {}).get("area") or "").lower()} & wanted]
 
     if elsewhere:
         # The move a manager is looking for: trained on something, here,
@@ -4576,13 +4587,13 @@ def build_staffing_view(am_logins, fc=None, filters=None):
                  or any(query in t.lower() for t in p["trained_processes"])
                  or any(query in r.lower() for r in p["role_names"])
                  or query in ((p.get("where") or {}).get("station") or "").lower()
-                 or query in ((p.get("where") or {}).get("process") or "").lower()
-                 or query in ((p.get("where") or {}).get("function") or "").lower()]
+                 or query in ((p.get("where") or {}).get("area") or "").lower()
+                 or query in ((p.get("where") or {}).get("label") or "").lower()]
 
     shown.sort(key=lambda p: (p["clock_state"] != "in",
                               p["floor_state"] != FLOOR_PRESENT,
                               (p.get("where") or {}).get("kind") in FLOOR_IDLE_KINDS,
-                              (p.get("where") or {}).get("process") or "",
+                              (p.get("where") or {}).get("label") or "",
                               (p.get("full_name") or "").lower()))
 
     clock_ages = [c["age_minutes"] for c in clock.values()

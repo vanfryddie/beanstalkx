@@ -55,20 +55,32 @@ from playwright.sync_api import sync_playwright
 
 script = open(os.path.join(ROOT, "static/floor_provider.user.js"), encoding="utf-8").read()
 fixture = open(os.path.join(ROOT, "perf/fixtures/function_rollup_pick.html"), encoding="utf-8").read()
-parts = []
-for fn in ("headerIndex", "functionNameFor", "parseRollup", "cleanStation", "numberAt"):
-    m = re.search(r"(?ms)^    function " + fn + r"\(.*?\n    \}\n", script)
-    if not m:
-        check(f"the script still defines {fn}", False)
-    else:
-        parts.append(m.group(0).replace("    function", "function"))
+
+
+def harness(*names):
+    """The reader's pure functions, lifted out of its IIFE so they can be
+    run against a fixture. Every top-level constant comes with them —
+    forgetting one is a ReferenceError inside the browser rather than a
+    failed check, which is a confusing way to find out."""
+    out = [m.group(0).strip() for m in
+           re.finditer(r"(?m)^    var [A-Z][A-Z0-9_]* = .*$", script)]
+    for fn in names:
+        m = re.search(r"(?ms)^    function " + fn + r"\(.*?\n    \}\n", script)
+        if not m:
+            check(f"the reader still defines {fn}", False)
+        else:
+            out.append(m.group(0).replace("    function", "function"))
+    return "\n".join(out)
+
+
+parts = [harness("headerIndex", "functionNameFor", "parseRollup", "cleanStation", "numberAt")]
 
 rows = []
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
     pg = b.new_context().new_page()
     pg.goto("about:blank")
-    pg.add_script_tag(content="\n".join(parts))
+    pg.add_script_tag(content=parts[0])
     rows = pg.evaluate("(html) => parseRollup(html, {key: 'pick', label: 'Pick'})", fixture)
     b.close()
 
@@ -93,8 +105,69 @@ check("an em-dash placeholder is not read as a station",
       not [r for r in rows if r["station"] in ("-", "–")])
 check("a table with no Station column still parses",
       len([r for r in rows if r["function_name"] == "RF Pick"]) == 3)
+# The heading is found by its bracketed id, not by proximity, because
+# the real report puts its freshness stamp between the heading and the
+# table — and reading that instead put "Data last checked at 2026-10-30
+# 14:02 CET" in the column that is supposed to say what somebody is
+# doing.
+check("the freshness stamp is never read as a function name",
+      not [r for r in rows if "last checked" in (r["function_name"] or "").lower()],
+      str({r["function_name"] for r in rows}))
+check("nor are the size tabs beside it",
+      not [r for r in rows if "HeavyBulky" in (r["function_name"] or "")],
+      str({r["function_name"] for r in rows}))
+check("the function names are the real ones",
+      {r["function_name"] for r in rows} == {"MultiLowDensityPick", "RF Pick"},
+      str({r["function_name"] for r in rows}))
 check("somebody in two functions is reported in both",
       len([r for r in rows if r["employee_id"] == "100356745"]) == 2)
+
+print("\n1b. Who is in the building, for the whole site, in one request")
+# Employee Time Details answers for one person per request, so it only
+# ever covered a manager's own team and only the people whose employee
+# id was already known — which is why the clock column stayed empty.
+# PPA Employee Attendance answers for everybody at once.
+att_parts = harness("pad", "fclmDate", "headerIndex", "parseClockTime",
+                    "attendanceUrl", "parseAttendance")
+
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
+    pg = b.new_context().new_page()
+    pg.goto("about:blank")
+    pg.add_script_tag(content=att_parts)
+    att_html = open(os.path.join(ROOT, "perf/fixtures/ppa_attendance.html"), encoding="utf-8").read()
+    attendance = pg.evaluate("([h, iso]) => parseAttendance(h, new Date(iso))",
+                             [att_html, "2026-10-30T13:02:00"])
+    att_url = pg.evaluate("(iso) => attendanceUrl('SCN2', new Date(iso))", "2026-10-30T13:02:00")
+    b.close()
+
+check("every attendance row is read", len(attendance) == 6, str(len(attendance)))
+att = {row["employee_id"]: row for row in attendance}
+check("an In with no Out is on the clock",
+      att.get("112949854", {}).get("clock_state") == "in",
+      str(att.get("112949854")))
+check("an In and an Out is not",
+      att.get("113141014", {}).get("clock_state") == "out",
+      str(att.get("113141014")))
+check("an Out with no In is a night shift that has ended, not somebody present",
+      att.get("110386105", {}).get("clock_state") == "out",
+      str(att.get("110386105")))
+check("a second session reopens the clock",
+      att.get("206276953", {}).get("clock_state") == "in",
+      str(att.get("206276953")))
+check("and it is the second In that is reported",
+      (att.get("206276953", {}).get("clocked_in_at") or "")[11:16] == "10:15",
+      str(att.get("206276953", {}).get("clocked_in_at")))
+check("the blank row at the end is not a person",
+      not [r for r in attendance if not r["full_name"]])
+check("names and managers come across",
+      att.get("112949854", {}).get("full_name") == "Scurtu,Dorel"
+      and att.get("112949854", {}).get("manager_name") == "Radchenko,Dmytro",
+      str(att.get("112949854")))
+check("so does the shift code", att.get("112949854", {}).get("shift_code") == "D58F88KL")
+check("the report is asked for as HTML, for this site, for today",
+      "ppaAttendance" in att_url and "reportFormat=HTML" in att_url
+      and "warehouseId=SCN2" in att_url and "2026%2F10%2F30" in att_url, att_url)
 
 print("\n2. Attributing a row to somebody the console knows")
 check("FCLM's name order and the uploads' agree once normalised",
@@ -346,24 +419,16 @@ for label, url in (("the Staffing tab", f"/overview?tab=staffing&am={am}"),
 print("\n9b. Punched in is a different fact from booked to a process")
 # Somebody on a break is on the clock and on no process at all. Merging
 # the two would have the console report they had gone home.
-td_parts = []
-for fn in ("fclmDate", "pad", "parseSessionTime", "infoField", "splitTaskTitle",
-           "taskKind", "parseTimeDetails"):
-    m = re.search(r"(?ms)^    function " + fn + r"\(.*?\n    \}\n", script)
-    if not m:
-        check(f"the reader still defines {fn}", False)
-    else:
-        td_parts.append(m.group(0).replace("    function", "function"))
-separator = re.search(r"(?m)^    var TITLE_SEPARATOR = .*$", script)
-check("the reader knows how FCLM separates process from function", bool(separator))
-if separator:
-    td_parts.insert(0, separator.group(0).strip())
+td_parts = harness("fclmDate", "pad", "parseSessionTime", "infoField",
+                   "splitTaskTitle", "taskKind", "parseTimeDetails")
+check("the reader knows how FCLM separates process from function",
+      "TITLE_SEPARATOR" in td_parts)
 
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path=chromium_path(), args=["--no-sandbox"])
     pg = b.new_context().new_page()
     pg.goto("about:blank")
-    pg.add_script_tag(content="\n".join(td_parts))
+    pg.add_script_tag(content=td_parts)
     def read(name):
         html = open(os.path.join(ROOT, "perf/fixtures", name), encoding="utf-8").read()
         return pg.evaluate("([h, iso]) => parseTimeDetails(h, new Date(iso))",
@@ -656,12 +721,32 @@ check("the here-but-not-on-a-process filter finds them",
       [p["employee_login"] for p in idle_view["people"]] == [idle_one["employee_login"]],
       str([p["employee_login"] for p in idle_view["people"]]))
 
-elsewhere = application.build_staffing_view([am], None, {"working_in": ["Transfer In Support"]})
-check("an unswept process is offered as a place to filter on",
-      "Transfer In Support" in view["floor_options"], str(view["floor_options"]))
+# What a manager reads is the function, not the process above it: Each
+# TSI tells them nothing, Stow Each Nike and Stow Each Nike Light are
+# two different jobs. So the row, the tiles and the filter all speak in
+# functions — and the process still matches, so a saved link keeps
+# working.
+row = by_login[unswept["employee_login"]]
+check("the row is labelled with the function, not the process",
+      (row["where"] or {}).get("label") == "Cart/Pallet Builder",
+      str((row["where"] or {}).get("label")))
+check("the process is kept beside it for context",
+      (row["where"] or {}).get("area") == "Transfer In Support",
+      str((row["where"] or {}).get("area")))
+check("the filter offers the function",
+      "Cart/Pallet Builder" in view["floor_options"], str(view["floor_options"]))
+by_function = application.build_staffing_view([am], None,
+                                              {"working_in": ["Cart/Pallet Builder"]})
 check("and filtering on it finds the person",
-      [p["employee_login"] for p in elsewhere["people"]] == [unswept["employee_login"]],
-      str([p["employee_login"] for p in elsewhere["people"]]))
+      [p["employee_login"] for p in by_function["people"]] == [unswept["employee_login"]],
+      str([p["employee_login"] for p in by_function["people"]]))
+by_area = application.build_staffing_view([am], None, {"working_in": ["Transfer In Support"]})
+check("filtering by the process still works, so a saved link does not break",
+      [p["employee_login"] for p in by_area["people"]] == [unswept["employee_login"]],
+      str([p["employee_login"] for p in by_area["people"]]))
+check("the tiles group by function too",
+      "Cart/Pallet Builder" in dict(view["by_process"]),
+      str([name for name, _n in view["by_process"]]))
 
 # Posted through the route, not straight into the store: the first
 # version of /floor/clock read every other field by name and quietly
@@ -682,6 +767,48 @@ check("with its function", through_route.get("current_function") == "Cart/Pallet
       str(through_route.get("current_function")))
 check("and its kind", through_route.get("current_kind") == "work",
       str(through_route.get("current_kind")))
+
+print("\n9f2. Attendance names people by id, and must not wipe what they are doing")
+# The two clock sources disagree about how much they know. Time Details
+# knows the task; the attendance report knows only whether somebody is
+# in the building and names them by employee id. Letting the second
+# overwrite the first would turn every task back into "no task
+# recorded" a second after it was read.
+resolved = db.record_floor_clock([{
+    "employee_id": "330002", "full_name": unswept["full_name"],
+    "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00"}], checked_by=am)
+check("an attendance row with no login is resolved by its id",
+      resolved["stored"] == 1 and resolved["unresolved"] == 0, json.dumps(resolved))
+kept = db.get_floor_clock()[unswept["employee_login"].lower()]
+check("and the task read a moment earlier survives it",
+      kept.get("current_function") == "Cart/Pallet Builder",
+      str(kept.get("current_function")))
+check("while the punch time it brought is taken",
+      (kept.get("clocked_in_at") or "").startswith("2026-10-30T06:00"),
+      str(kept.get("clocked_in_at")))
+
+stranger = db.record_floor_clock([{
+    "employee_id": "999999999", "full_name": "Nobody,Known Here", "clock_state": "in"}],
+    checked_by=am)
+check("somebody the console does not know is counted, not invented",
+      stranger["stored"] == 0 and stranger["unresolved"] == 1, json.dumps(stranger))
+
+db.record_floor_clock([{"employee_id": "330002", "clock_state": "out",
+                        "clocked_out_at": "2026-10-30T14:00:00"}], checked_by=am)
+after = db.get_floor_clock()[unswept["employee_login"].lower()]
+check("punching out clears the task, because it has stopped",
+      not after.get("current_function"), str(after.get("current_function")))
+check("and they are no longer on site",
+      application.build_staffing_view([am], None, {})["people"]
+      and by_login is not None)
+
+# Put them back for the sections below.
+db.record_floor_clock([{
+    "employee_login": unswept["employee_login"], "employee_id": "330002",
+    "clock_state": "in", "clocked_in_at": "2026-10-30T06:00:00",
+    "current_title": "Transfer In Support\u25c6Cart/Pallet Builder",
+    "current_process": "Transfer In Support", "current_function": "Cart/Pallet Builder",
+    "current_kind": "work", "task_started_at": "2026-10-30T10:15:00"}], checked_by=am)
 
 print("\n9g. An out-of-date reader is called out rather than left to look like no data")
 check("a sweep from the current reader is not flagged",

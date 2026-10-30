@@ -1,0 +1,46 @@
+<!doctype html>
+<!--
+  PPA Employee Attendance, reduced to the grid the reader takes from it.
+  Structure copied from the real report at SCN2 on 2026/10/30.
+
+  This is the report that answers "who is in the building", for everyone
+  at once, in a single request — where Employee Time Details answers for
+  one person at a time. The columns repeat: a shift can have two
+  in/out pairs, and the rule is the only subtle part of it.
+
+    * an In with no Out after it  -> on the clock now
+    * In and Out both filled      -> came and went
+    * an Out with no In           -> a night shift that started
+                                     yesterday and ended this morning
+
+  The people are invented. The columns, the duplicate In/Out pair and
+  the shift codes are as the report writes them.
+-->
+<html><head><title> PPA Employee Attendance | FCLMPortal</title></head>
+<body>
+<table role="presentation" style="width: 545px;"><tr><td>controls</td></tr></table>
+
+<table class="attendance sortable result-table" role="grid">
+  <thead>
+    <tr>
+      <th>Employee ID</th><th>Employee Name</th><th>Manager</th><th>Shift</th>
+      <th>In</th><th>Out</th><th>In</th><th>Out</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>112949854</td><td>Scurtu,Dorel</td><td>Radchenko,Dmytro</td><td>D58F88KL</td>
+        <td>06:00</td><td></td><td></td><td></td></tr>
+    <tr><td>113141014</td><td>Keller,Patrick</td><td>Kunen,Marcel</td><td>D08A5CPY</td>
+        <td>08:02</td><td>12:57</td><td></td><td></td></tr>
+    <tr><td>110386105</td><td>Luak,Sudan</td><td>Aldulaimi,Luma Mohammed Abduljabba</td><td>N57F6SEO</td>
+        <td></td><td>06:00</td><td></td><td></td></tr>
+    <tr><td>206276953</td><td>Altoma,Abdoullah</td><td>Salhi,Hichem</td><td>D58F8W3Z</td>
+        <td>06:00</td><td>09:30</td><td>10:15</td><td></td></tr>
+    <tr><td>208070746</td><td>Al Khatba,Mahmoud</td><td>Deevi,Lakshman Sriraj</td><td>D58F89AV</td>
+        <td>06:00</td><td></td><td></td><td></td></tr>
+    <tr><td>113530775</td><td>Garcia,Brian</td><td>Wampler,Stefan</td><td>D08A5CPY</td>
+        <td>07:25</td><td></td><td></td><td></td></tr>
+    <tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+  </tbody>
+</table>
+</body></html>

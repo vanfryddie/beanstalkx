@@ -7695,6 +7695,16 @@ def get_floor_presence():
         entry["process_name"] = top.get("process_name")
         entry["function_name"] = top.get("function_name")
         entry["paid_hours"] = round(entry["paid_hours"], 2)
+        # "Also" is listed by function for the same reason the headline
+        # is: Each TSI twice tells a manager nothing, Stow Each Nike and
+        # Stow Each Nike Light are two different jobs.
+        seen = {(top.get("function_name") or top.get("process_name") or "").lower()}
+        entry["also_functions"] = []
+        for other in entry["processes"][1:]:
+            name = other.get("function_name") or other.get("process_name")
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                entry["also_functions"].append(name)
         entry["also_in"] = [p["process_name"] for p in entry["processes"][1:]
                             if p["process_name"] and p["process_name"] != entry["process_name"]]
     return people, meta
@@ -7761,6 +7771,30 @@ def get_floor_window_minutes():
 FLOOR_CLOCK_STALE_MINUTES = 30
 
 
+def _floor_task_assignment(state, entry):
+    """How an incoming reading should treat the task already stored.
+
+    Three different things arrive at this table. Employee Time Details
+    knows what somebody is doing and says so. The attendance report
+    knows only whether they are in the building — it has no idea what
+    they are on, and must not wipe a task read a moment earlier. And a
+    punch-out means whatever they were doing has stopped, so that one
+    does clear it."""
+    if state == "out":
+        return ("current_title=NULL, current_process=NULL, current_function=NULL, "
+                "current_kind=NULL, task_started_at=NULL, ")
+    if not (entry.get("current_title") or entry.get("current_process")
+            or entry.get("current_function")):
+        return ("current_title=COALESCE(excluded.current_title, floor_clock.current_title), "
+                "current_process=COALESCE(excluded.current_process, floor_clock.current_process), "
+                "current_function=COALESCE(excluded.current_function, floor_clock.current_function), "
+                "current_kind=COALESCE(excluded.current_kind, floor_clock.current_kind), "
+                "task_started_at=COALESCE(excluded.task_started_at, floor_clock.task_started_at), ")
+    return ("current_title=excluded.current_title, current_process=excluded.current_process, "
+            "current_function=excluded.current_function, current_kind=excluded.current_kind, "
+            "task_started_at=excluded.task_started_at, ")
+
+
 def record_floor_clock(entries, checked_by=None):
     """Store what Employee Time Details said about a handful of people.
 
@@ -7770,15 +7804,32 @@ def record_floor_clock(entries, checked_by=None):
     own freshness. Merging them would make a figure taken ten minutes
     ago look as current as one taken now."""
     stored = 0
+    unresolved = 0
     now = _now()
+    # The attendance report names people by employee id, not by login,
+    # so the same matcher the sweep uses resolves them. Anything it
+    # cannot place is counted and dropped rather than invented.
+    identity = _floor_identity_map()
+    by_id, by_login, by_name = _floor_known_people()
     conn = get_db()
     for entry in entries or []:
         login = (entry.get("employee_login") or "").strip()
         if not login:
+            login, _method = _floor_match(entry, identity, by_id, by_login, by_name)
+            login = (login or "").strip()
+        if not login:
+            unresolved += 1
             continue
         state = entry.get("clock_state")
         if state not in ("in", "out", "unknown", None):
             state = "unknown"
+        task = {
+            "title": entry.get("current_title") if state == "in" else None,
+            "process": entry.get("current_process") if state == "in" else None,
+            "function": entry.get("current_function") if state == "in" else None,
+            "kind": entry.get("current_kind") if state == "in" else None,
+            "started": entry.get("task_started_at") if state == "in" else None,
+        }
         conn.execute(
             "INSERT INTO floor_clock (employee_login, employee_id, clock_state, "
             "clocked_in_at, clocked_out_at, photo_url, shift_code, home_location, "
@@ -7792,22 +7843,13 @@ def record_floor_clock(entries, checked_by=None):
             "photo_url=COALESCE(excluded.photo_url, floor_clock.photo_url), "
             "shift_code=COALESCE(excluded.shift_code, floor_clock.shift_code), "
             "home_location=COALESCE(excluded.home_location, floor_clock.home_location), "
-            "current_title=excluded.current_title, current_process=excluded.current_process, "
-            "current_function=excluded.current_function, current_kind=excluded.current_kind, "
-            "task_started_at=excluded.task_started_at, "
+            + _floor_task_assignment(state, entry) +
             "checked_at=excluded.checked_at, checked_by=excluded.checked_by",
             (login, entry.get("employee_id"), state or "unknown",
              entry.get("clocked_in_at"), entry.get("clocked_out_at"),
              entry.get("photo_url"), entry.get("shift_code"),
              entry.get("home_location"),
-             # A task only means anything while somebody is on the clock.
-             # Keeping the last one against a punched-out person would
-             # read as though they were still doing it.
-             entry.get("current_title") if state == "in" else None,
-             entry.get("current_process") if state == "in" else None,
-             entry.get("current_function") if state == "in" else None,
-             entry.get("current_kind") if state == "in" else None,
-             entry.get("task_started_at") if state == "in" else None,
+             task["title"], task["process"], task["function"], task["kind"], task["started"],
              now, checked_by))
         if entry.get("employee_id"):
             conn.execute(
@@ -7820,7 +7862,7 @@ def record_floor_clock(entries, checked_by=None):
         stored += 1
     conn.commit()
     conn.close()
-    return {"stored": stored}
+    return {"stored": stored, "unresolved": unresolved}
 
 
 def get_floor_clock():

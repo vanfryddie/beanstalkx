@@ -238,20 +238,22 @@
         <td>
           {% set w = p.where %}
           {% if w and w.kind == 'work' %}
-          <span class="st-now">
+          {#- The function is the headline, because that is the job. The
+              process above it only earns a line when it is not already
+              obvious from the function's name. -#}
+          <span class="st-now"
+                title="{{ w.area }}{{ ' · from the Function Rollup sweep, up to ' ~ floor_staffing.window_minutes ~ ' minutes old' if w.source == 'sweep' else ' · read from their own time details' }}">
             <i class="dash-dot dash-dot-good"></i>
             <span>
-              <strong>{{ w.process or 'Unattributed' }}</strong>
-              {% if w.function and w.function != w.process %}<em>{{ w.function }}</em>{% endif %}
+              <strong>{{ w.label or 'Unattributed' }}</strong>
               {% if w.also_in %}<em>also {{ w.also_in | join(', ') }}</em>{% endif %}
-              {% if w.source == 'sweep' %}<em class="st-src" title="From the Function Rollup sweep, up to {{ floor_staffing.window_minutes }} minutes old">from the sweep</em>{% endif %}
             </span>
           </span>
           {% elif w and w.kind in ('break', 'off-task') %}
           <span class="st-now">
             <i class="dash-dot dash-dot-watch"></i>
             <span>
-              <strong>{{ w.process }}</strong>
+              <strong>{{ w.label }}</strong>
               {% if w.since %}<em>since {{ w.since[11:16] }}</em>{% endif %}
             </span>
           </span>

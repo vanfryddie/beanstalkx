@@ -16,7 +16,19 @@
 <body>
 <div class="report-header">SCN2 &nbsp; FCLM &nbsp; PPR Labor Metrics &nbsp; Function Rollup</div>
 
+<!--
+  The real report puts this between the controls and the first table,
+  and a parser that simply walks back from a table looking for text
+  finds it instead of the function heading. It did: every row on the
+  Staffing tab read "Each TSI / Data last checked at 2026-10-30 14:02
+  CET 2026-10-30 13:02 UTC". The heading that matters is the one with
+  the function's id in brackets after it.
+-->
+<div class="displayPreferences">[+]Display Preferences</div>
+
 <h3>MultiLowDensityPick [4300016826]</h3>
+<div class="lastChecked">Data last checked at<br>2026-10-30 14:02 CET<br>2026-10-30 13:02 UTC</div>
+<div class="sizeTabs">Small Medium Large HeavyBulky Total</div>
 <table class="sortable result-table align-left">
   <thead>
     <tr>
@@ -65,6 +77,8 @@
 </table>
 
 <h3>RF Pick [4300000184]</h3>
+<div class="lastChecked">Data last checked at<br>2026-10-30 14:02 CET<br>2026-10-30 13:02 UTC</div>
+<div class="sizeTabs">Small Medium Large HeavyBulky Total</div>
 <table class="sortable result-table align-left">
   <thead>
     <tr>
