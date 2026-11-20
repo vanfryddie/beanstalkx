@@ -116,7 +116,7 @@
   {% endif %}
 </div>
 
-<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+<script src="{{ asset('dragdrop.js') }}"></script>
 <script>
 function ldocOpenEscalationSenior(login) {
   var panel = Ldoc.slidePanel({ title: (login === 'other' ? 'Other' : login), body: '<div class="empty-state" style="padding:24px;">Loading…</div>' });

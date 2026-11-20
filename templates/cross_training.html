@@ -647,7 +647,7 @@
 
 {% endif %}
 
-<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+<script src="{{ asset('dragdrop.js') }}"></script>
 <script>
 var LDOC_SHIFT_LABELS = { early: 'Early', late: 'Late', night: 'Night' };
 var LDOC_XT_SCENARIO = '{{ scenario }}';

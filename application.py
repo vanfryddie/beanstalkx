@@ -1730,6 +1730,56 @@ def _seed_if_empty():
     db.add_ops_role("Area Manager", None, "L&D Operations Lead", "Consumes the AM Overview for their area", 3)
 
 
+# ------------------------------------------------------- static assets ----
+#
+# Every static URL carries a short hash of the file behind it, so the
+# browser can be told to keep it for a year and a deploy still reaches
+# everyone the moment they reload: a changed file is a changed URL.
+#
+# This replaces a hand-typed ?v= on each tag, which had drifted — two of
+# the scripts carried no version at all, so a browser holding an old
+# copy had no reason to ask for the new one, and the stylesheet's
+# version had to be remembered and bumped by hand on every change.
+
+ASSET_CACHE_SECONDS = 31536000          # a year; the URL changes, not the file
+_asset_versions = {}
+
+
+def asset_version(filename):
+    """A short content hash for one file under static/.
+
+    Recomputed when the file's modification time changes, so editing a
+    stylesheet during development is picked up on the next reload
+    without restarting anything. A file that cannot be read falls back
+    to the app's own start time rather than failing to render a page
+    over a missing icon."""
+    path = os.path.join(application.static_folder or "", filename)
+    try:
+        stamp = os.path.getmtime(path)
+    except OSError:
+        return "0"
+    cached = _asset_versions.get(filename)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    try:
+        with open(path, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()[:10]
+    except OSError:
+        digest = "0"
+    _asset_versions[filename] = (stamp, digest)
+    return digest
+
+
+@application.template_global("asset")
+def asset(filename):
+    return url_for("static", filename=filename, v=asset_version(filename))
+
+
+# Safe only because of asset() above: a URL here names one exact version
+# of one file, so nothing a browser keeps can go stale.
+application.config["SEND_FILE_MAX_AGE_DEFAULT"] = ASSET_CACHE_SECONDS
+
+
 # --------------------------------------------------- sticky filters ----
 #
 # The complaint this exists for: set up the Staffing filters, go and look

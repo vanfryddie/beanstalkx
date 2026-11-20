@@ -221,7 +221,7 @@
 
 {% if can_edit_plan %}
 <script>window.LDOC_CAN_CREATE_SLOTS = {{ 'true' if can_create_slots else 'false' }};</script>
-<script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
-<script src="{{ url_for('static', filename='weekly_plan.js') }}"></script>
+<script src="{{ asset('dragdrop.js') }}"></script>
+<script src="{{ asset('weekly_plan.js') }}"></script>
 {% endif %}
 {% endblock %}
