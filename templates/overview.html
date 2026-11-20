@@ -49,6 +49,7 @@
   <a href="{{ url_for('overview', tab='training', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='training' }}">My Trainings</a>
   <a href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='directory' }}">My Associates</a>
   <a href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='staffing' }}">Staffing</a>
+  <a href="{{ url_for('overview', tab='adhoc_refresher', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='adhoc_refresher' }}">Adhoc-Refresher Trainings</a>
   <a href="{{ url_for('overview', tab='shiftpulse', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='shiftpulse' }}">Shift Pulse</a>
   <a href="{{ url_for('overview', tab='olr', am=am_scope, fc=fc_scope) }}" class="{{ 'active' if tab=='olr' }}">OLR</a>
 </div>
@@ -262,6 +263,9 @@
 
 {% elif tab == 'staffing' %}
 {% include "_staffing.html" %}
+
+{% elif tab == 'adhoc_refresher' %}
+{% include "_adhoc_refresher.html" %}
 
 {% elif tab == 'olr' %}
   {% if not olr_data %}

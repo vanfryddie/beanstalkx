@@ -1,0 +1,201 @@
+{% set ar = adhoc_refresher %}
+{% import "_filters.html" as xf %}
+<section class="dash-panel ar-panel">
+  <header class="ar-header">
+    <div class="ar-title-block">
+      <p class="ar-eyebrow">OPERATIONS MANAGEMENT <span>/</span> REFRESHER PLANNER</p>
+      <h1>Adhoc refresher planning</h1>
+      <p class="ar-intro">Choose a training group to see who is due and where associates are working now.</p>
+    </div>
+    <div class="ar-header-controls">
+      <nav class="ar-shifts" aria-label="Shift">
+        {% for key, label in db_shifts.items() %}
+        <a href="{{ url_for('overview', tab='adhoc_refresher', shift=key, until=ar.until, am=am_scope, fc=fc_scope) }}"
+           data-ar-shift="{{ key }}" class="{{ 'active' if ar.shift == key }}">{{ label|replace(' Shift', '') }}</a>
+        {% endfor %}
+      </nav>
+      <form class="ar-date-form" method="get" action="{{ url_for('overview') }}">
+        {% for key, values in request.args.lists() %}{% if key not in ['tab', 'until', 'people'] %}{% for value in values %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}{% endif %}{% endfor %}
+        <input type="hidden" name="tab" value="adhoc_refresher">
+        <label for="arPeople">People</label>
+        <select id="arPeople" name="people" onchange="this.form.requestSubmit()">
+          <option value="onsite" {% if ar.people_scope != 'everyone' %}selected{% endif %}>On site · badged in</option>
+          <option value="everyone" {% if ar.people_scope == 'everyone' %}selected{% endif %}>Everyone</option>
+        </select>
+        <label for="arUntil">Due through</label>
+        <input id="arUntil" type="date" name="until" value="{{ ar.until }}">
+        <button type="submit" class="ar-date-apply" aria-label="Apply due-through date">Apply</button>
+      </form>
+    </div>
+  </header>
+
+  <div class="ar-summary" aria-label="Shift refresher summary">
+    <div class="ar-stat"><strong>{{ ar.count }}</strong><span>Associates due</span></div>
+    <div class="ar-stat"><strong>{{ ar.not_compliant_count }}</strong><span>Not compliant</span></div>
+    <div class="ar-stat"><strong>{{ ar.compliant_count }}</strong><span>Compliant · expiring</span></div>
+    <div class="ar-stat"><strong>{{ ar.multi_group_count }}</strong><span>In 2+ sessions</span></div>
+    <div class="ar-summary-meta">{{ ar.clock_count }} punched in{% if ar.meta and ar.meta.taken_at %}<span>·</span>Floor snapshot {{ ar.meta.taken_at[11:16] }}{% endif %}</div>
+  </div>
+  {% if ar.safety_upload and ar.safety_upload.last_uploaded_at %}
+    <div class="ar-source-note">Using latest Safety Compliance import: <strong>{{ ar.safety_upload.last_filename }}</strong><span>·</span>{{ ar.safety_upload.last_uploaded_at[:16]|replace('T', ' ') }}</div>
+  {% else %}
+    <div class="ar-source-note is-warning">No Safety Compliance import is available. The planner is not showing older saved records.</div>
+  {% endif %}
+
+  <div class="ar-workspace">
+    <aside class="ar-group-pane">
+      <div class="ar-pane-heading">
+        <h2>Training groups</h2>
+        <p>Choose a session to plan</p>
+      </div>
+      <nav class="ar-group-list" aria-label="Training groups">
+        {% for group in ar.training_groups %}
+          <a class="ar-group-option {{ 'is-selected' if ar.selected_group and ar.selected_group.id == group.id }} {{ 'is-unassigned' if group.unassigned }}"
+             href="{{ url_for('overview', tab='adhoc_refresher', shift=ar.shift, until=ar.until, group=group.id, am=am_scope, fc=fc_scope) }}"
+             data-ar-group="{{ group.id }}" aria-current="{{ 'page' if ar.selected_group and ar.selected_group.id == group.id else 'false' }}">
+            <span class="ar-group-initial {{ 'ar-group-initial-warn' if group.unassigned }}">{{ '!' if group.unassigned else group.name[:1]|upper }}</span>
+            <span class="ar-group-copy">
+              <strong>{{ 'Needs group setup' if group.unassigned else group.name }}</strong>
+              <span>{{ group.count }} associates due</span>
+              <small>{{ group.not_compliant_count }} not compliant <i>·</i> {{ group.compliant_count }} expiring</small>
+              {% if group.unassigned %}<em>Review L&amp;D Settings links</em>{% endif %}
+            </span>
+            {% if group.multi_group_count %}<span class="ar-shared-pill">{{ group.multi_group_count }} shared</span>{% endif %}
+          </a>
+        {% else %}
+          <div class="ar-group-empty">No training groups have due associates for this shift and date.</div>
+        {% endfor %}
+      </nav>
+      <div class="ar-group-help"><strong>Group rules</strong><span>Groups follow active L&amp;D Settings links. An associate can appear in more than one session.</span></div>
+    </aside>
+
+    <section class="ar-roster-pane" aria-labelledby="arSelectedGroupTitle">
+      {% if ar.selected_group %}
+        {% set group = ar.selected_group %}
+        <div class="ar-roster-heading">
+          <div class="ar-roster-title">
+            <h2 id="arSelectedGroupTitle">{{ 'Needs group setup' if group.unassigned else group.name }}</h2>
+            <p>{{ 'Review the safety topics below and add an active session link in L&D Settings.' if group.unassigned else 'Training Group · L&D Settings' }}</p>
+            <span class="ar-count-pill">{{ group.count }} associates</span>
+          </div>
+          <div class="ar-roster-actions">
+            <button class="ar-button ar-button-secondary" type="button" data-copy-kind="all">Copy all due</button>
+            <button class="ar-button ar-button-primary" type="button" data-copy-kind="group" {% if not group.visible_count %}disabled{% endif %}>Copy {{ group.visible_count }} group logins</button>
+          </div>
+        </div>
+        {% if group.unassigned %}<div class="ar-setup-note"><strong>Session setup needed</strong><span>These safety topics have no active training-group link. Review their existing links in L&amp;D Settings before planning.</span></div>{% endif %}
+        <div class="ar-roster-toolbar">
+          <div><h3>Associate refresher records</h3><p>{% if ar.meta and ar.meta.taken_at %}Floor snapshot {{ ar.meta.taken_at[11:16] }}{% else %}Current staffing snapshot{% endif %} · <span data-ar-visible-count>{{ group.visible_count }}</span> shown</p></div>
+          <form class="ar-filter-form" method="get" action="{{ url_for('overview') }}">
+            {% for key, values in request.args.lists() %}{% if key not in ['tab', 'q', 'compliance', 'department', 'manager', 'working_in', 'training', 'trained_for', 'role', 'presence'] %}{% for value in values %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}{% endif %}{% endfor %}
+            <input type="hidden" name="tab" value="adhoc_refresher">
+            <label class="ar-search"><span class="sr-only">Search this group</span><input type="search" name="q" value="{{ ar.filters.q }}" placeholder="Search name, login or topic"><span aria-hidden="true">⌕</span></label>
+            <select class="ar-quick-filter" name="compliance" aria-label="Compliance status" onchange="this.form.requestSubmit()">
+              <option value="">All statuses</option><option value="not_compliant" {% if ar.filters.compliance == 'not_compliant' %}selected{% endif %}>Not compliant</option><option value="compliant" {% if ar.filters.compliance == 'compliant' %}selected{% endif %}>Compliant</option>
+            </select>
+            <details class="ar-more-filters">
+              <summary>More filters</summary>
+              <div class="ar-filter-drawer">
+                <label class="field"><span>Department</span><select name="department"><option value="">All departments</option>{% for d in ar.departments %}<option value="{{ d }}" {% if ar.filters.department==d %}selected{% endif %}>{{ d }}</option>{% endfor %}</select></label>
+                <label class="field"><span>Manager</span><select name="manager"><option value="">All managers</option>{% for login, name in ar.managers %}<option value="{{ login }}" {% if ar.filters.manager==login %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+                <label class="field"><span>Currently doing</span><select name="working_in"><option value="">Anywhere</option>{% for p in ar.processes %}<option value="{{ p }}" {% if ar.filters.working_in==p %}selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+                <label class="field"><span>Safety topic</span><select name="training"><option value="">Any topic</option>{% for t in ar.trainings %}<option value="{{ t }}" {% if ar.filters.training==t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+                {{ xf.multiselect('trained_for', 'Trained for', ar.trained_options, ar.filters.trained_for, 'Any process') }}
+                {{ xf.multiselect('role', 'Indirect role', ar.role_options, ar.filters.role, 'Any role') }}
+                <label class="field"><span>Floor status</span><select name="presence"><option value="">Any status</option><option value="on_site" {% if ar.filters.presence=='on_site' %}selected{% endif %}>Booked to a process</option><option value="idle" {% if ar.filters.presence=='idle' %}selected{% endif %}>On clock, no process</option><option value="off_site" {% if ar.filters.presence=='off_site' %}selected{% endif %}>Not on a process</option></select></label>
+                <button class="ar-button ar-button-primary" type="submit">Apply filters</button>
+              </div>
+            </details>
+          </form>
+        </div>
+        <div class="ar-table-scroll">
+          <table class="ar-roster-table">
+            <thead>
+              <tr class="ar-table-labels"><th>Associate</th><th>Manager</th><th>Department</th><th>Safety topic</th><th>Compliance</th><th>Due on</th><th>Current function / station</th></tr>
+              <tr class="ar-table-filters">
+                <th><input type="search" data-ar-column-filter="0" aria-label="Filter associate" placeholder="Filter name or login"></th>
+                <th><input type="search" data-ar-column-filter="1" aria-label="Filter manager" placeholder="Filter manager"></th>
+                <th><input type="search" data-ar-column-filter="2" aria-label="Filter department" placeholder="Filter department"></th>
+                <th><input type="search" data-ar-column-filter="3" aria-label="Filter safety topic" placeholder="Filter topic"></th>
+                <th><select data-ar-column-filter="4" aria-label="Filter compliance"><option value="">All</option><option value="compliant">Compliant</option><option value="not compliant">Not compliant</option></select></th>
+                <th><input type="search" data-ar-column-filter="5" aria-label="Filter due date" placeholder="Filter date"></th>
+                <th><input type="search" data-ar-column-filter="6" aria-label="Filter current assignment" placeholder="Filter function or station"></th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for p in group.people %}{% for item in p.refresher_items %}
+              {% set assignment = (p.where.label ~ ' · Station ' ~ p.where.station) if p.where and p.where.label and p.where.station else ((p.where.label ~ ' · ' ~ p.where.area) if p.where and p.where.label and p.where.area else (p.where.label if p.where and p.where.label else 'No current task recorded')) %}
+              {% set compliance_label = 'Compliant' if item.bucket=='ok' else 'Not compliant' %}
+              <tr data-ar-filter-0="{{ (p.full_name or p.employee_login) ~ ' ' ~ p.employee_login }}" data-ar-filter-1="{{ p.manager_name }}" data-ar-filter-2="{{ p.department or 'Department not recorded' }}" data-ar-filter-3="{{ item.subcategory or 'Safety training' }}" data-ar-filter-4="{{ compliance_label|lower }}" data-ar-filter-5="{{ item.due_date_display }}" data-ar-filter-6="{{ assignment }}">
+                <td class="ar-person"><strong>{{ p.full_name or p.employee_login }}</strong><span class="ar-person-login">{{ p.employee_login }}</span>{% if p.training_group_count >= 2 %}<span class="ar-person-shared" title="Also assigned to: {{ p.training_group_names|join(', ') }}">Also in {{ p.training_group_names|reject('equalto', group.name)|join(', ') }}</span>{% endif %}</td>
+                <td>{{ p.manager_name }}</td><td>{{ p.department or 'Department not recorded' }}</td>
+                <td>{{ item.subcategory or 'Safety training' }}</td>
+                <td><span class="ar-status-tag {{ 'is-compliant' if item.bucket=='ok' else 'is-not-compliant' }}">{{ compliance_label }}</span></td>
+                <td>{{ item.due_date_display }}</td>
+                <td class="ar-assignment">{{ assignment }}</td>
+              </tr>
+            {% endfor %}{% else %}<tr><td colspan="7" class="ar-no-results">No associates match these filters for this training group.</td></tr>{% endfor %}
+            <tr class="ar-filter-empty" hidden><td colspan="7" class="ar-no-results">No refresher records match these column filters.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        {% if group.multi_group_count %}<div class="ar-overlap-note"><strong>{{ group.multi_group_count }} associates in this session also appear in another training group.</strong><span>Coordinate the sessions to avoid repeating training.</span></div>{% endif %}
+      {% else %}
+        <div class="ar-no-selection"><h2>No session to plan</h2><p>No Safety Compliance refreshers match this shift and due-through date.</p></div>
+      {% endif %}
+    </section>
+  </div>
+  <span id="copyRefresherStatus" class="sr-only" role="status" aria-live="polite"></span>
+</section>
+
+<script>
+(function () {
+  var allLogins = {{ ar.login_list | tojson }};
+  var groupLogins = {{ ar.selected_group.login_list | tojson if ar.selected_group else '""' }};
+  document.querySelectorAll('[data-copy-kind]').forEach(function (button) {
+    button.addEventListener('click', async function () {
+      var logins = button.dataset.copyKind === 'group' ? groupLogins : allLogins;
+      var status = document.getElementById('copyRefresherStatus');
+      try { await navigator.clipboard.writeText(logins); }
+      catch (e) {
+        var field = document.createElement('textarea'); field.value = logins;
+        field.style.position = 'fixed'; field.style.opacity = '0'; document.body.appendChild(field);
+        field.select(); var copied = document.execCommand('copy'); field.remove();
+        if (!copied) { status.textContent = 'Could not copy. Select the logins manually.'; return; }
+      }
+      status.textContent = 'Copied ' + logins.split('\n').filter(Boolean).length + ' logins';
+    });
+  });
+  function preserveQuery(event, key, value) {
+    event.preventDefault();
+    var url = new URL(window.location.href);
+    url.searchParams.set(key, value);
+    window.location.href = url.toString();
+  }
+  document.querySelectorAll('[data-ar-group]').forEach(function (link) {
+    link.addEventListener('click', function (event) { preserveQuery(event, 'group', link.dataset.arGroup); });
+  });
+  document.querySelectorAll('[data-ar-shift]').forEach(function (link) {
+    link.addEventListener('click', function (event) { preserveQuery(event, 'shift', link.dataset.arShift); });
+  });
+  var columnFilters = Array.from(document.querySelectorAll('[data-ar-column-filter]'));
+  var rosterRows = Array.from(document.querySelectorAll('.ar-roster-table tbody tr[data-ar-filter-0]'));
+  var emptyRow = document.querySelector('.ar-filter-empty');
+  function applyColumnFilters() {
+    var visible = 0;
+    rosterRows.forEach(function (row) {
+      var matches = columnFilters.every(function (filter) {
+        var value = (row.getAttribute('data-ar-filter-' + filter.dataset.arColumnFilter) || '').toLocaleLowerCase();
+        return !filter.value || value.indexOf(filter.value.trim().toLocaleLowerCase()) !== -1;
+      });
+      row.hidden = !matches;
+      if (matches) visible += 1;
+    });
+    if (emptyRow) emptyRow.hidden = visible !== 0;
+    document.querySelectorAll('[data-ar-visible-count]').forEach(function (node) { node.textContent = visible; });
+  }
+  columnFilters.forEach(function (filter) {
+    filter.addEventListener(filter.tagName === 'SELECT' ? 'change' : 'input', applyColumnFilters);
+  });
+})();
+</script>

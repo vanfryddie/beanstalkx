@@ -1968,6 +1968,73 @@ def overview():
     if tab == "olr" and base_login:
         olr_data = _build_olr_tab_data(base_login)
 
+    adhoc_refresher = None
+    if tab == "adhoc_refresher":
+        until_raw = (request.args.get("until") or "").strip()
+        try:
+            refresher_until = date.fromisoformat(until_raw)
+        except ValueError:
+            refresher_until = date.today() + timedelta(days=30)
+        refresher_filters = {
+            "q": (request.args.get("q") or "").strip(),
+            "group": (request.args.get("group") or "").strip(),
+            "compliance": (request.args.get("compliance") or "").strip(),
+            "department": (request.args.get("department") or "").strip(),
+            "manager": (request.args.get("manager") or "").strip(),
+            "working_in": (request.args.get("working_in") or "").strip(),
+            "training": (request.args.get("training") or "").strip(),
+            "trained_for": request.args.getlist("trained_for"),
+            "role": request.args.getlist("role"),
+            "presence": (request.args.get("presence") or "").strip(),
+            "people": (request.args.get("people") or "onsite").strip(),
+        }
+        shift_key = request.args.get("shift", "early")
+        if shift_key not in db.SHIFTS:
+            shift_key = "early"
+        # Start from the full scoped associate directory; the planner's
+        # explicit People toggle decides whether to narrow this to clocked-in
+        # associates. Other Staffing filters still apply to the same snapshot.
+        floor_view = build_staffing_view(
+            query_am_scope, fc_scope,
+            {**_staffing_filters(), "clock": ""})
+        roles_by_login = {
+            (r.get("login") or "").lower(): r
+            for r in db.get_all_user_roles()
+        }
+        # Safety-compliance imports are full snapshots. tracked_items keeps
+        # unmatched rows for other parts of the app, so only rows refreshed
+        # by the latest upload belong in this planner. This prevents an old
+        # expiry/status from resurfacing when a person/topic disappeared or
+        # changed in a newer export.
+        safety_upload = (db.get_upload_status_by_section(["compliance_safety"]) or [{}])[0]
+        latest_safety_import = safety_upload.get("last_uploaded_at")
+        latest_safety_items = db.get_items(section="compliance_safety", am_login=query_am_scope, fc=fc_scope)
+        if latest_safety_import:
+            latest_safety_items = [item for item in latest_safety_items
+                                   if (item.get("updated_at") or "") == latest_safety_import]
+        else:
+            latest_safety_items = []
+        safety_items_by_login = {}
+        for item in latest_safety_items:
+            safety_items_by_login.setdefault((item.get("employee_login") or "").lower(), []).append(item)
+        # L&D Settings links catalog trainings to compliance topics. Include
+        # the legacy planning_compliance section as it is treated as the same
+        # safety metric by the training planner.
+        safety_training_config = {}
+        for training in db.get_trainings():
+            for section, topic in db.get_training_topics(training["id"]):
+                if section in ("compliance_safety", "planning_compliance"):
+                    topic_key = (topic or "").strip().lower()
+                    if topic_key:
+                        safety_training_config.setdefault(topic_key, []).append({
+                            "id": str(training.get("id") or training.get("name") or ""),
+                            "name": training.get("name"), "active": bool(training.get("active")),
+                        })
+        adhoc_refresher = build_adhoc_refresher_view(
+            floor_view, shift_key, refresher_until, refresher_filters,
+            roles_by_login, safety_items_by_login, safety_training_config,
+            safety_upload=safety_upload)
+
     return render_template(
         "overview.html",
         **_login_context(),
@@ -1999,10 +2066,11 @@ def overview():
         shift_slots=shift_slots,
         scorecard_categories=scorecard_categories,
         directory=directory,
-        floor_meta=db.get_latest_floor_snapshot() if tab in ("directory", "staffing") else None,
+        floor_meta=db.get_latest_floor_snapshot() if tab in ("directory", "staffing", "adhoc_refresher") else None,
         floor_staffing=(build_staffing_view(query_am_scope, fc_scope,
                                             _staffing_filters())
                         if tab == "staffing" else None),
+        adhoc_refresher=adhoc_refresher,
         db_shifts=db.SHIFTS,
         directory_roles=directory_roles,
         directory_q=directory_q,
@@ -4368,6 +4436,255 @@ def _staffing_filters():
         "trained_for": request.args.getlist("trained_for"),
         "role": request.args.getlist("role"),
         "working_in": request.args.getlist("working_in"),
+    }
+
+
+def _shift_matches_page(value, shift_key):
+    """Match the shift labels found in roster imports to the three pages."""
+    text = (value or "").strip().lower()
+    aliases = {
+        "early": {"early", "early shift", "f", "frueh", "früh", "frühschicht"},
+        "late": {"late", "late shift", "s", "spaet", "spät", "spätschicht"},
+        "night": {"night", "night shift", "n", "nachtschicht"},
+    }
+    return text in aliases.get(shift_key, {shift_key})
+
+
+def build_adhoc_refresher_view(floor_view, shift_key, until, filters, roles_by_login=None,
+                               safety_items_by_login=None, safety_training_config=None,
+                               safety_upload=None):
+    """Clocked-in associates with open Safety Compliance refreshers by a date."""
+    roles_by_login = roles_by_login or {}
+    safety_items_by_login = safety_items_by_login or {}
+    safety_training_config = safety_training_config or {}
+    until_iso = until.isoformat()
+    people_scope = filters.get("people") or "onsite"
+    candidates = []
+    for p in floor_view.get("people", []):
+        if people_scope != "everyone" and p.get("clock_state") != "in":
+            continue
+        safety_items = safety_items_by_login.get((p.get("employee_login") or "").lower(), [])
+        person_shift = p.get("shift") or next((i.get("shift") for i in safety_items if i.get("shift")), None)
+        if not _shift_matches_page(person_shift, shift_key):
+            continue
+        p = dict(p)
+        p["shift"] = person_shift
+        candidates.append(p)
+    rows = []
+    all_training_names = set()
+    for person in candidates:
+        requirements = []
+        for source_item in safety_items_by_login.get((person.get("employee_login") or "").lower(), []):
+            bucket = db.status_bucket(source_item.get("status"))
+            item = dict(source_item)
+            due = (item.get("due_date") or "")[:10]
+            # The compliance export's yes/no status can be stale even while
+            # its expiry is in the past. For this planner, an expired date is
+            # the deciding signal so the roster cannot label it compliant.
+            if due and due < date.today().isoformat():
+                bucket = "gap"
+            if bucket not in ("risk", "gap", "ok"):
+                continue
+            item["bucket"] = bucket
+            try:
+                item["due_date_display"] = date.fromisoformat(due).strftime("%d %b %Y") if due else "Date not recorded"
+            except ValueError:
+                item["due_date_display"] = due or "Date not recorded"
+            # Include both compliant and non-compliant safety records whose
+            # expiry is on or before the selected date. An undated gap is
+            # still a required training; other undated records cannot be
+            # placed on or before the selected date.
+            if (due and due <= until_iso) or (not due and bucket == "gap"):
+                topic = (item.get("subcategory") or "").strip()
+                item["training_config"] = safety_training_config.get(topic.lower(), [])
+                requirements.append(item)
+                if topic:
+                    all_training_names.add(topic)
+        if not requirements:
+            continue
+        login = person.get("employee_login") or ""
+        manager_login = person.get("manager") or ""
+        manager_record = roles_by_login.get(manager_login.lower(), {})
+        manager_name = manager_record.get("full_name") or manager_login or "—"
+        department = person.get("department") or ""
+        person = dict(person)
+        person.update({
+            "manager_login": manager_login,
+            "manager_name": manager_name,
+            "department": department,
+            "refresher_items": sorted(requirements,
+                key=lambda it: ((it.get("due_date") or "9999")[:10],
+                                (it.get("subcategory") or "").lower())),
+        })
+        rows.append(person)
+
+    departments = sorted({p.get("department") for p in candidates if p.get("department")}, key=str.lower)
+    manager_options = {}
+    for p in candidates:
+        manager_login = p.get("manager") or ""
+        if manager_login:
+            record = roles_by_login.get(manager_login.lower(), {})
+            manager_options[manager_login] = record.get("full_name") or manager_login
+    managers = sorted(manager_options.items(), key=lambda item: item[1].lower())
+    processes = sorted({((p.get("where") or {}).get("label") or "") for p in candidates
+                        if (p.get("where") or {}).get("label")}, key=str.lower)
+    trained_options = sorted({t for p in candidates for t in p.get("trained_processes", [])}, key=str.lower)
+    role_options = sorted({r for p in candidates for r in p.get("role_names", [])}, key=str.lower)
+    training_options = sorted(all_training_names, key=str.lower)
+    q = (filters.get("q") or "").lower()
+    if q:
+        rows = [p for p in rows if q in (p.get("full_name") or "").lower()
+                or q in (p.get("employee_login") or "").lower()
+                or q in (p.get("manager_name") or "").lower()
+                or any(q in (it.get("subcategory") or "").lower() for it in p["refresher_items"])]
+    if filters.get("department"):
+        rows = [p for p in rows if (p.get("department") or "") == filters["department"]]
+    if filters.get("manager"):
+        rows = [p for p in rows if (p.get("manager") or "") == filters["manager"]]
+    working_in = {value.lower() for value in _as_list(filters.get("working_in"))}
+    if working_in:
+        rows = [p for p in rows if ((p.get("where") or {}).get("label") or "").lower() in working_in]
+    if filters.get("training"):
+        wanted = filters["training"].lower()
+        rows = [p for p in rows if any((it.get("subcategory") or "").lower() == wanted
+                                       for it in p["refresher_items"])]
+    trained_for = {value.lower() for value in _as_list(filters.get("trained_for"))}
+    if trained_for:
+        rows = [p for p in rows if trained_for.intersection(
+            {value.lower() for value in p.get("trained_processes", [])})]
+    roles = {value.lower() for value in _as_list(filters.get("role"))}
+    if roles:
+        rows = [p for p in rows if roles.intersection(
+            {value.lower() for value in p.get("role_names", [])})]
+    presence = (filters.get("presence") or "").strip()
+    if presence == "on_site":
+        rows = [p for p in rows if p.get("on_process")]
+    elif presence == "off_site":
+        rows = [p for p in rows if not p.get("on_process")]
+    elif presence == "idle":
+        rows = [p for p in rows if p.get("clock_state") == "in" and
+                ((p.get("where") or {}).get("kind") in FLOOR_IDLE_KINDS + ("unknown-task",))]
+    rows.sort(key=lambda p: (((p.get("where") or {}).get("label") or "").lower(),
+                             (p.get("full_name") or "").lower()))
+    groups = {}
+    group_people = {}
+    unassigned_people = {}
+    person_groups = {}
+    person_by_login = {(p.get("employee_login") or "").lower(): p for p in rows}
+    for person in rows:
+        login_key = (person.get("employee_login") or "").lower()
+        person_groups[login_key] = set()
+        for item in person["refresher_items"]:
+            active_groups = [cfg for cfg in item.get("training_config", []) if cfg.get("active")]
+            if not active_groups:
+                unassigned_people.setdefault(login_key, {})
+                unassigned_people[login_key].setdefault(item.get("subcategory") or "Training", []).append(item)
+                continue
+            for config in active_groups:
+                group_id = config.get("id") or config.get("name") or ""
+                if not group_id:
+                    continue
+                groups[group_id] = config
+                person_groups[login_key].add(group_id)
+                group_people.setdefault(group_id, {}).setdefault(login_key, {})
+                group_people[group_id][login_key].setdefault(item.get("subcategory") or "Training", []).append(item)
+
+    group_counts = {login: len(keys) for login, keys in person_groups.items()}
+    group_names_by_login = {
+        login: sorted({groups[key].get("name") or "Training group" for key in keys}, key=str.lower)
+        for login, keys in person_groups.items()
+    }
+    multi_group_people = [
+        {**person_by_login[login], "training_group_names": group_names_by_login[login],
+         "training_group_count": group_counts[login]}
+        for login in person_by_login if group_counts.get(login, 0) >= 2
+    ]
+
+    def grouped_people(associations):
+        result = []
+        for login, topics in associations.items():
+            person = person_by_login.get(login)
+            if not person:
+                continue
+            person_copy = dict(person)
+            person_copy.update({
+                "refresher_items": sorted(
+                    [item for items in topics.values() for item in items],
+                    key=lambda it: ((it.get("due_date") or "9999")[:10],
+                                    (it.get("subcategory") or "").lower())),
+                "training_group_names": group_names_by_login.get(login, []),
+                "training_group_count": group_counts.get(login, 0),
+            })
+            result.append(person_copy)
+        result.sort(key=lambda p: (((p.get("where") or {}).get("label") or "").lower(),
+                                   (p.get("full_name") or "").lower()))
+        return result
+
+    training_groups = []
+    for group_id, config in groups.items():
+        people = grouped_people(group_people.get(group_id, {}))
+        not_ok = [p for p in people if any(it.get("bucket") != "ok" for it in p["refresher_items"])]
+        ok = [p for p in people if any(it.get("bucket") == "ok" for it in p["refresher_items"])]
+        training_groups.append({
+            "id": group_id, "name": config.get("name") or "Training group",
+            "people": people, "count": len(people),
+            "not_compliant_count": len(not_ok), "compliant_count": len(ok),
+            "multi_group_count": sum(1 for p in people if p.get("training_group_count", 0) >= 2),
+        })
+    training_groups.sort(key=lambda group: group["name"].lower())
+    unassigned = grouped_people(unassigned_people)
+    if unassigned:
+        training_groups.append({
+            "id": "__unassigned__", "name": "No active Training Group - L&D Settings link",
+            "people": unassigned, "count": len(unassigned),
+            "not_compliant_count": sum(1 for p in unassigned if any(it.get("bucket") != "ok" for it in p["refresher_items"])),
+            "compliant_count": sum(1 for p in unassigned if any(it.get("bucket") == "ok" for it in p["refresher_items"])),
+            "multi_group_count": 0, "unassigned": True,
+        })
+    not_compliant_count = len({login for login, p in person_by_login.items()
+                               if any(it.get("bucket") != "ok" for it in p["refresher_items"])})
+    compliant_count = len({login for login, p in person_by_login.items()
+                           if any(it.get("bucket") == "ok" for it in p["refresher_items"])})
+    multi_group_people.sort(key=lambda p: (p.get("full_name") or "").lower())
+    selected_group_id = filters.get("group")
+    selected_group_source = next(
+        (group for group in training_groups if str(group.get("id")) == str(selected_group_id)),
+        training_groups[0] if training_groups else None,
+    )
+    selected_group = None
+    if selected_group_source:
+        selected_group = dict(selected_group_source)
+        compliance_filter = filters.get("compliance")
+        selected_people = []
+        for person in selected_group_source.get("people", []):
+            if compliance_filter == "compliant":
+                items = [item for item in person["refresher_items"] if item.get("bucket") == "ok"]
+            elif compliance_filter == "not_compliant":
+                items = [item for item in person["refresher_items"] if item.get("bucket") != "ok"]
+            else:
+                items = person["refresher_items"]
+            if items:
+                selected_people.append({**person, "refresher_items": items})
+        selected_group["people"] = selected_people
+        selected_group["visible_count"] = len(selected_people)
+        selected_group["login_list"] = "\n".join(
+            person.get("employee_login", "") for person in selected_people
+            if person.get("employee_login"))
+    return {
+        "shift": shift_key, "shift_label": db.SHIFTS[shift_key], "until": until_iso,
+        "filters": filters, "people": rows, "count": len(rows),
+        "people_scope": people_scope,
+        "training_groups": training_groups,
+        "selected_group": selected_group,
+        "multi_group_people": multi_group_people,
+        "multi_group_count": len(multi_group_people),
+        "not_compliant_count": not_compliant_count, "compliant_count": compliant_count,
+        "login_list": "\n".join(p.get("employee_login", "") for p in rows if p.get("employee_login")),
+        "departments": departments, "managers": managers, "processes": processes,
+        "trained_options": trained_options, "role_options": role_options,
+        "trainings": training_options, "meta": floor_view.get("meta"),
+        "safety_upload": safety_upload or {},
+        "clock_count": sum(1 for p in candidates if p.get("clock_state") == "in"),
     }
 
 
