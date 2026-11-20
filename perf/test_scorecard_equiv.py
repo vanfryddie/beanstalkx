@@ -22,7 +22,7 @@ def original_scorecard(section_list, am_login=None, fc=None):
 db.set_current_site("SCN2")
 db.init_db()
 conn = db.get_db()
-conn.execute("DELETE FROM tracked_items WHERE am_login LIKE 'equiv%'")
+conn.execute("DELETE FROM tracked_items WHERE am_login LIKE ?", ("equiv%",))
 conn.commit()
 
 # Deliberately messy: known-ok, known-risk, known-gap, plus statuses the
@@ -76,11 +76,40 @@ for section_list, am_login, fc in cases:
         print(f"     new={got}")
         print(f"     old={want}")
 
+# The same cases again through the bulk path. A page that asks this
+# question often enough stops issuing one query per answer and reads the
+# grouped counts once instead, and the two have to agree on every scope
+# shape — including the ones where a filter means "everything" and the
+# ones where it means "nothing" — or a ranking page and a tile on the
+# same screen would disagree about the same manager.
+#
+# Forced on rather than waited for: the switch is a call count, and a
+# test that happened to stay under it would prove nothing.
+original_threshold = db.BULK_READ_AFTER
+db.BULK_READ_AFTER = 0
+db.begin_request_scope()
+bulk_fails = 0
+for section_list, am_login, fc in cases:
+    got = db.scorecard(section_list, am_login=am_login, fc=fc)
+    want = original_scorecard(section_list, am_login=am_login, fc=fc)
+    if got != want:
+        bulk_fails += 1
+        print(f"  BULK MISMATCH section={section_list!r} am={am_login!r} fc={fc!r}")
+        print(f"     bulk={got}")
+        print(f"      old={want}")
+if db.bulk_read_after("scorecard", lambda: None) is None:
+    bulk_fails += 1
+    print("  BULK NOT USED — the second pass tested nothing")
+db.end_request_scope()
+db.BULK_READ_AFTER = original_threshold
+fails += bulk_fails
+
 conn = db.get_db()
-conn.execute("DELETE FROM tracked_items WHERE am_login LIKE 'equiv%'")
+conn.execute("DELETE FROM tracked_items WHERE am_login LIKE ?", ("equiv%",))
 conn.commit()
 conn.close()
 
-print(f"\n{len(cases)} scope combinations over 900 rows with {len(STATUSES)} distinct statuses")
+print(f"\n{len(cases)} scope combinations over 900 rows with {len(STATUSES)} distinct statuses,")
+print("each answered by the targeted query and again by the grouped bulk read")
 print("ALL AGREE with the original implementation" if not fails else f"{fails} MISMATCHES")
 sys.exit(1 if fails else 0)

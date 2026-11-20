@@ -5,7 +5,7 @@ import uuid
 import csv
 import io
 import hashlib
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode, parse_qsl
 from datetime import date, datetime, timedelta
 
 from flask import (
@@ -939,18 +939,26 @@ def get_xt_gap_and_retention_for_login(login, scenario="general"):
     conn = db.get_db()
     ext_defs = [d for d in db.get_xt_standard_defs(scenario) if d["source"]]
     internal_defs = db.get_internal_xt_targets()
+    # On a page that asks this once, each lookup below is its own
+    # indexed query, which is the right shape for it. The ranking page
+    # asks it once per manager, and then the same handful of xt_hours
+    # columns are better read whole, once — see xt_rosters_if_worthwhile.
+    rosters = db.xt_rosters_if_worthwhile()
 
     total_gap = 0
     retained_count = 0
     trained_total = 0
 
     for department, shift in dept_shift_pairs:
-        am_emps = {
-            r["employee_login"] for r in conn.execute(
-                "SELECT employee_login FROM xt_hours WHERE fclm_mapped=? AND shift=? AND lower(supervisor_login)=?",
-                (department, shift, login.lower()),
-            ).fetchall()
-        }
+        if rosters is not None:
+            am_emps = set(rosters["by_manager"].get((department, shift, login.lower()), ()))
+        else:
+            am_emps = {
+                r["employee_login"] for r in conn.execute(
+                    "SELECT employee_login FROM xt_hours WHERE fclm_mapped=? AND shift=? AND lower(supervisor_login)=?",
+                    (department, shift, login.lower()),
+                ).fetchall()
+            }
         if not am_emps:
             continue
         dept_headcount = len(db._xt_source_employees(conn, [department], shift))
@@ -967,17 +975,23 @@ def get_xt_gap_and_retention_for_login(login, scenario="general"):
                 relevant.append((it["target_process"], round(fixed_target * am_share)))
 
         for process, am_target in relevant:
-            placeholders = ",".join("?" * len(am_emps))
-            trained_rows = conn.execute(
-                f"""SELECT employee_login, proficiency_status FROM xt_hours
-                    WHERE employee_login IN ({placeholders}) AND merged_function=?
-                      AND trained_status='Trained' AND shift=?""",
-                list(am_emps) + [process, shift],
-            ).fetchall()
+            if rosters is not None:
+                by_login = rosters["trained"].get((process, shift), {})
+                trained_rows = [(emp, by_login[emp]) for emp in am_emps if emp in by_login]
+            else:
+                placeholders = ",".join("?" * len(am_emps))
+                trained_rows = [
+                    (r["employee_login"], r["proficiency_status"]) for r in conn.execute(
+                        f"""SELECT employee_login, proficiency_status FROM xt_hours
+                            WHERE employee_login IN ({placeholders}) AND merged_function=?
+                              AND trained_status='Trained' AND shift=?""",
+                        list(am_emps) + [process, shift],
+                    ).fetchall()
+                ]
             am_actual = len(trained_rows)
             total_gap += max(0, am_target - am_actual)
             trained_total += am_actual
-            retained_count += sum(1 for r in trained_rows if r["proficiency_status"] != "Lapsed")
+            retained_count += sum(1 for _emp, status in trained_rows if status != "Lapsed")
 
     conn.close()
     retention_pct = round(100 * retained_count / trained_total, 1) if trained_total else None
@@ -1716,6 +1730,98 @@ def _seed_if_empty():
     db.add_ops_role("Area Manager", None, "L&D Operations Lead", "Consumes the AM Overview for their area", 3)
 
 
+# --------------------------------------------------- sticky filters ----
+#
+# The complaint this exists for: set up the Staffing filters, go and look
+# at something else, come back, and every box is empty again. The links
+# between pages carry the tab and the manager and nothing else, so simply
+# navigating threw away everything a manager had chosen, and they had to
+# pick it all again.
+#
+# What is remembered, per person and per page, is the query string they
+# last used there. Arriving with only part of it — from the left-hand
+# nav, from a tab, from the manager picker — merges what they just asked
+# for over what they had and redirects there, so the address bar ends up
+# holding the whole state: a refresh, a bookmark and a link sent to a
+# colleague all still work, which they would not if this were kept in
+# the page instead.
+
+# The session is a signed cookie, and a cookie over about 4KB is dropped
+# by the browser — which would log the person out rather than merely
+# forget a filter. These keep the whole of it comfortably under that,
+# and the oldest page is forgotten first.
+VIEW_MEMORY_PAGES = 6
+VIEW_MEMORY_CHARS = 300
+VIEW_MEMORY_TOTAL = 1400
+
+# Not filters: `reset` is the instruction to forget, and `_fields` is how
+# a form says which inputs it owns (see _sticky_filters).
+VIEW_MEMORY_CONTROLS = ("reset", "_fields")
+
+
+def _sticky_filters(name):
+    """Restore this page's remembered filters, or remember the ones in
+    use now. Returns a redirect to follow, or None to carry on.
+
+    `_fields` is the subtle part. A checkbox panel with nothing ticked
+    submits nothing at all, which looks exactly like not having been
+    asked — so without it, clearing a filter would never stick, because
+    the merge would helpfully put it back. A form therefore names the
+    inputs it is responsible for, and those are taken from the request
+    even when they are absent.
+
+    `reset=1` forgets the page and shows it bare, which is what the
+    Clear-all links send.
+    """
+    if request.method != "GET":
+        return None
+    memory = session.get("views") or {}
+
+    if request.args.get("reset"):
+        if memory.pop(name, None) is not None:
+            session["views"] = memory
+            session.modified = True
+        return None
+
+    incoming = [(k, v) for k, v in request.args.items(multi=True)
+                if k not in VIEW_MEMORY_CONTROLS]
+    owned = {f.strip() for f in (request.args.get("_fields") or "").split(",") if f.strip()}
+    owned |= {k for k, _ in incoming}
+    restored = [(k, v) for k, v in parse_qsl(memory.get(name, ""), keep_blank_values=True)
+                if k not in owned]
+
+    if restored:
+        # Everything restored is a key the request did not mention, so
+        # the merged URL is a superset of it and the request that
+        # follows this redirect has nothing left to restore. That is
+        # what stops this bouncing.
+        return redirect(request.path + "?" + urlencode(incoming + restored))
+
+    if incoming:
+        _remember_view(memory, name, urlencode(incoming))
+    return None
+
+
+def _remember_view(memory, name, query):
+    """Store one page's filters, newest last, inside the cookie budget."""
+    if len(query) > VIEW_MEMORY_CHARS:
+        # Too long to be worth a quarter of the cookie. Forget this page
+        # rather than evict every other one to hold it.
+        memory.pop(name, None)
+    else:
+        memory.pop(name, None)
+        memory[name] = query
+    while (len(memory) > VIEW_MEMORY_PAGES
+           or sum(len(k) + len(v) for k, v in memory.items()) > VIEW_MEMORY_TOTAL):
+        oldest = next(iter(memory))
+        del memory[oldest]
+        if not memory:
+            break
+    if session.get("views") != memory:
+        session["views"] = memory
+        session.modified = True
+
+
 def _require_login():
     return session.get("login")
 
@@ -1865,6 +1971,14 @@ def overview():
     if role is None:
         return _deny("Request a role to access AM Overview — you can still use Reporting and the Weekly training plan.")
 
+    # Each tab keeps its own filters: coming back to Staffing should find
+    # the Staffing filters, not the ones left on the refresher planner.
+    # Done before anything is read, so a restore costs a redirect rather
+    # than a page built with the wrong filters and thrown away.
+    restore = _sticky_filters("overview:" + (request.args.get("tab") or "myscorecard"))
+    if restore:
+        return restore
+
     base_login = login_id if role in OPS_SELF_ROLES else request.args.get("am")
     if role in OPS_MANAGER_ROLES and not base_login:
         # Default an OM/SOM to their own org tree once it's configured
@@ -1988,15 +2102,17 @@ def overview():
             "presence": (request.args.get("presence") or "").strip(),
             "people": (request.args.get("people") or "onsite").strip(),
         }
-        shift_key = request.args.get("shift", "early")
+        # The full scoped directory, with no filters applied yet: the
+        # planner has its own set below and applies them to this
+        # population. Handing the Staffing filters in as well applied
+        # `q` twice under two different meanings — the Staffing view
+        # searches names, logins and stations, this one also searches
+        # safety topics — so typing a topic into the planner's own
+        # search box emptied the page before the planner ever saw it.
+        floor_view = build_staffing_view(query_am_scope, fc_scope, {})
+        shift_key = request.args.get("shift") or _refresher_default_shift(floor_view, base_shift)
         if shift_key not in db.SHIFTS:
             shift_key = "early"
-        # Start from the full scoped associate directory; the planner's
-        # explicit People toggle decides whether to narrow this to clocked-in
-        # associates. Other Staffing filters still apply to the same snapshot.
-        floor_view = build_staffing_view(
-            query_am_scope, fc_scope,
-            {**_staffing_filters(), "clock": ""})
         roles_by_login = {
             (r.get("login") or "").lower(): r
             for r in db.get_all_user_roles()
@@ -2916,6 +3032,9 @@ def indirect_roles_overview():
     login_id = _require_login()
     if not login_id:
         return redirect(url_for("login"))
+    restore = _sticky_filters("indirect_roles")
+    if restore:
+        return restore
     role = _effective_role()
     if role is None:
         return _deny("Request a role to access Indirect Roles.")
@@ -3159,6 +3278,9 @@ def cross_training():
     login_id = _require_login()
     if not login_id:
         return redirect(url_for("login"))
+    restore = _sticky_filters("cross_training")
+    if restore:
+        return restore
     role = _effective_role()
     if role is None:
         return _deny("Request a role to access Cross Training.")
@@ -3607,6 +3729,10 @@ def scorecards():
     login_id = _require_login()
     if not login_id:
         return redirect(url_for("login"))
+
+    restore = _sticky_filters("scorecards:" + (request.args.get("tab") or "reporting"))
+    if restore:
+        return restore
 
     role = _effective_role()
     can_see_som_om = role in OPS_MANAGER_ROLES or role in ADMIN_TIER_ROLES
@@ -4437,6 +4563,26 @@ def _staffing_filters():
         "role": request.args.getlist("role"),
         "working_in": request.args.getlist("working_in"),
     }
+
+
+def _refresher_default_shift(floor_view, manager_shift):
+    """Which shift the refresher planner opens on.
+
+    The shift most of this team is actually on, because that is whose
+    records the page is about. Defaulting to Early meant a Late-shift
+    manager opened an empty planner every time and had to work out why;
+    defaulting to the manager's own shift is better but still wrong
+    wherever the roster and the console's own profile disagree, and they
+    do. The manager's shift is the fallback, and Early the fallback's
+    fallback, for a team whose shift nothing records."""
+    counts = {}
+    for person in floor_view.get("people", []):
+        shift = (person.get("shift") or "").strip().lower()
+        if shift in db.SHIFTS:
+            counts[shift] = counts.get(shift, 0) + 1
+    if counts:
+        return max(sorted(counts), key=lambda shift: counts[shift])
+    return manager_shift if manager_shift in db.SHIFTS else "early"
 
 
 def _shift_matches_page(value, shift_key):

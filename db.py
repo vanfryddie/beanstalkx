@@ -464,6 +464,24 @@ def _invalidate_request_memo():
         scope["memo"].clear()
 
 
+def _memo_key(value):
+    """A hashable stand-in for one memo argument.
+
+    Lists are how this app spells a manager scope and a section list, so
+    refusing to key on them meant the busiest lookups in the app — the
+    ones taking a scope — silently never cached at all. Order is kept
+    rather than sorted, because ["am1","am2"] and ["am2","am1"] are the
+    same question but a list whose order a caller cares about would be
+    wrong to flatten; keeping it only costs a duplicate entry."""
+    if isinstance(value, (list, tuple)):
+        return ("seq", tuple(_memo_key(v) for v in value))
+    if isinstance(value, (set, frozenset)):
+        return ("set", tuple(sorted(_memo_key(v) for v in value)))
+    if isinstance(value, dict):
+        return ("map", tuple(sorted((k, _memo_key(v)) for k, v in value.items())))
+    return value
+
+
 def request_memoize(fn):
     """Memoizes one read-only lookup for the duration of a single
     request, keyed by the current site plus the call's arguments.
@@ -481,11 +499,13 @@ def request_memoize(fn):
         if scope is None:
             return fn(*args, **kwargs)
         try:
-            key = (fn.__name__, get_current_site(), args,
-                   tuple(sorted(kwargs.items())) if kwargs else ())
+            key = (fn.__name__, get_current_site(),
+                   tuple(_memo_key(a) for a in args),
+                   tuple(sorted((k, _memo_key(v)) for k, v in kwargs.items()))
+                   if kwargs else ())
             hash(key)
         except TypeError:
-            # Unhashable argument (a list scope, say) — just don't cache.
+            # An argument nothing can be keyed on — just don't cache.
             return fn(*args, **kwargs)
         memo = scope["memo"]
         if key in memo:
@@ -782,18 +802,27 @@ def compute_xt_expiry(last_date_on_process, proficiency_status=None, threshold_d
 
 
 @request_memoize
+def _assigned_departments_by_login():
+    """The whole department-assignment table, by login — same reason as
+    _user_roles_by_login: the rankings ask once per manager."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT login, department FROM user_department_assignments ORDER BY login, department"
+    ).fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        out.setdefault(r["login"], []).append(normalize_department(r["department"]))
+    return out
+
+
 def get_assigned_departments(login):
     """Departments explicitly assigned to this login — used for Senior
     Operations Managers, who don't have one personal department the way
     an Area Manager does but still need real Indirect Roles, Cross-
     Training, and Ambassador metrics on their own scorecard. Returned
     in canonical form (aliases resolved)."""
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT department FROM user_department_assignments WHERE login=? ORDER BY department", (login,)
-    ).fetchall()
-    conn.close()
-    return [normalize_department(r["department"]) for r in rows]
+    return list(_assigned_departments_by_login().get(login, []))
 
 
 def add_assigned_department(login, department, assigned_by):
@@ -3036,12 +3065,55 @@ XT_STANDARDS_SEED = [
 ]
 
 def _xt_source_employees(conn, source_depts, shift):
+    rosters = xt_rosters_if_worthwhile()
+    if rosters is not None:
+        out = set()
+        for dept in source_depts:
+            out |= rosters["by_dept_shift"].get((dept, shift), set())
+        return out
     placeholders = ",".join("?" * len(source_depts))
     rows = conn.execute(
         f"SELECT DISTINCT employee_login FROM xt_hours WHERE fclm_mapped IN ({placeholders}) AND shift=?",
         list(source_depts) + [shift],
     ).fetchall()
     return {r["employee_login"] for r in rows}
+
+
+def xt_rosters_if_worthwhile():
+    """Who is in which department, on which shift, under which manager,
+    and who is trained on what — read once, when a request has asked
+    enough times to earn it.
+
+    The cross-training gap number is computed per manager, and for each
+    manager per department-and-shift, and for each of those per target
+    process. One manager's page is a handful of lookups; the ranking
+    page runs the whole thing forty-four times over and the lookups run
+    into the hundreds. None here means the caller keeps its own query,
+    which is still the right one for the single-manager case.
+
+    `by_dept_shift` answers "who works here", `by_manager` narrows that
+    to one manager's people, and `trained` answers "who is trained on
+    this process on this shift", which is the join the inner loop was
+    issuing one statement at a time."""
+    def load():
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT employee_login, fclm_mapped, shift, lower(supervisor_login) AS supervisor, "
+            "merged_function, trained_status, proficiency_status FROM xt_hours "
+            "WHERE employee_login IS NOT NULL").fetchall()
+        conn.close()
+        by_dept_shift, by_manager, trained = {}, {}, {}
+        for r in rows:
+            login = r["employee_login"]
+            key = (r["fclm_mapped"], r["shift"])
+            by_dept_shift.setdefault(key, set()).add(login)
+            by_manager.setdefault(key + (r["supervisor"],), set()).add(login)
+            if r["trained_status"] == "Trained":
+                trained.setdefault((r["merged_function"], r["shift"]), {})[login] = \
+                    r["proficiency_status"]
+        return {"by_dept_shift": by_dept_shift, "by_manager": by_manager, "trained": trained}
+
+    return bulk_read_after("xt_rosters", load)
 
 
 XT_SCENARIOS = [("general", "General"), ("q1", "Q1"), ("q2", "Q2"), ("q3", "Q3"), ("q4", "Q4")]
@@ -3670,6 +3742,10 @@ def get_items(section=None, am_login=None, fc=None, employee_login=None):
     if isinstance(employee_login, (list, tuple)) and len(employee_login) == 0:
         return []
 
+    rows = _items_if_worthwhile(section)
+    if rows is not None:
+        return _items_from_rows(rows, am_login, employee_login, fc)
+
     conn = get_db()
     q = "SELECT * FROM tracked_items WHERE 1=1"
     params = []
@@ -3700,6 +3776,59 @@ def get_items(section=None, am_login=None, fc=None, employee_login=None):
     rows = conn.execute(q, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def _items_if_worthwhile(section):
+    """Every tracked item in these sections, read once.
+
+    The Safety ranking asks for one section's items once per manager,
+    and those scopes overlap — an OM's rows are also their AMs' rows —
+    so forty-four queries move more of the table than reading the
+    section whole does, and pay forty-four round trips for it.
+
+    Keyed on the sections asked for rather than loading the table,
+    because a page wanting one section should not drag in nine others.
+    Only when a section is given: an unfiltered get_items is rare and
+    is the one case where reading everything would be a real cost."""
+    if not section:
+        return None
+    sections = tuple(sorted(section)) if isinstance(section, (list, tuple)) else (section,)
+
+    def load():
+        conn = get_db()
+        rows = conn.execute(
+            f"SELECT * FROM tracked_items WHERE section IN ({','.join('?' * len(sections))})",
+            list(sections)).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    return bulk_read_after(("items", sections), load)
+
+
+def _items_from_rows(rows, am_login, employee_login, fc):
+    """get_items()'s answer from already-read rows. Every filter is
+    applied exactly as the SQL applies it, and every row handed back is
+    a fresh dict — callers annotate what they are given, and these rows
+    are shared for the rest of the request."""
+    if am_login:
+        wanted_ams = (set(am_login) if isinstance(am_login, (list, tuple)) else {am_login})
+    else:
+        wanted_ams = None
+    if employee_login:
+        wanted_emps = (set(employee_login) if isinstance(employee_login, (list, tuple))
+                       else {employee_login})
+    else:
+        wanted_emps = None
+    out = []
+    for row in rows:
+        if wanted_ams is not None and row["am_login"] not in wanted_ams:
+            continue
+        if wanted_emps is not None and row["employee_login"] not in wanted_emps:
+            continue
+        if fc and row["fc"] != fc:
+            continue
+        out.append(dict(row))
+    return out
 
 
 # Sections that represent an individual's own training/compliance record
@@ -3779,6 +3908,10 @@ def scorecard(section_list, am_login=None, fc=None):
         params.append(fc)
     q += " GROUP BY status"
 
+    counts = _scorecard_counts_if_worthwhile()
+    if counts is not None:
+        return _scorecard_from_counts(counts, section_list, am_login, fc)
+
     conn = get_db()
     rows = conn.execute(q, params).fetchall()
     conn.close()
@@ -3787,6 +3920,96 @@ def scorecard(section_list, am_login=None, fc=None):
     for r in rows:
         n = r["n"]
         out[status_bucket(r["status"])] += n
+        out["total"] += n
+    out["pct_ok"] = round(100 * out["ok"] / out["total"], 1) if out["total"] else None
+    return out
+
+
+# How many times a request has to ask the same narrow question before
+# reading the whole table once becomes the cheaper way to answer it.
+#
+# One call is one indexed lookup and is hard to beat. A ranking page
+# makes two hundred, and on RDS each of those is a network round trip,
+# so two hundred lookups cost far more than one scan that answers all of
+# them at once. Neither number is right for the other page, so the first
+# few calls take the targeted query and anything past this switches over
+# for the rest of the request. A page that asks twice never pays for the
+# scan; a page that asks two hundred times pays for it once.
+BULK_READ_AFTER = 8
+
+
+def bulk_read_after(name, loader, threshold=None):
+    """The whole-table read for `name`, once this request has asked
+    often enough to earn it; None while the targeted query is still the
+    better buy.
+
+    Both the call count and the loaded rows live in the request memo, so
+    a write through a request-scoped connection drops them along with
+    everything else and the next call reads fresh rows (see
+    _invalidate_request_memo). Outside a request scope there is no
+    counting and no bulk read at all, so a script keeps the exact
+    behaviour it had."""
+    scope = _scope()
+    if scope is None:
+        return None
+    # Read at call time, not bound at import, so a test can force either
+    # path and an operator can turn the switch off entirely.
+    if threshold is None:
+        threshold = BULK_READ_AFTER
+    memo = scope["memo"]
+    rows_key = ("__bulk_rows__", name)
+    cached = memo.get(rows_key)
+    if cached is not None:
+        return cached
+    calls_key = ("__bulk_calls__", name)
+    calls = memo.get(calls_key, 0) + 1
+    memo[calls_key] = calls
+    if calls <= threshold:
+        return None
+    loaded = loader()
+    memo[rows_key] = loaded
+    return loaded
+
+
+def _scorecard_counts_if_worthwhile():
+    def load():
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT fc, am_login, section, status, COUNT(*) AS n FROM tracked_items "
+            "GROUP BY fc, am_login, section, status").fetchall()
+        conn.close()
+        return [(r["fc"], r["am_login"], r["section"], r["status"], r["n"]) for r in rows]
+
+    return bulk_read_after("scorecard", load)
+
+
+def _scorecard_from_counts(counts, section_list, am_login, fc):
+    """scorecard()'s answer, from the grouped counts rather than a query.
+
+    Every filter is applied exactly as the SQL applies it — sections and
+    am_logins compared as given, case and all, and a falsy filter
+    meaning "no filter" rather than "nothing" — because this and the
+    query above have to agree on every page, not merely on average."""
+    if section_list:
+        wanted_sections = (set(section_list) if isinstance(section_list, (list, tuple))
+                           else {section_list})
+    else:
+        wanted_sections = None
+    if am_login:
+        wanted_ams = (set(am_login) if isinstance(am_login, (list, tuple))
+                      else {am_login})
+    else:
+        wanted_ams = None
+
+    out = {"ok": 0, "risk": 0, "gap": 0, "total": 0}
+    for row_fc, row_am, section, status, n in counts:
+        if wanted_sections is not None and section not in wanted_sections:
+            continue
+        if wanted_ams is not None and row_am not in wanted_ams:
+            continue
+        if fc and row_fc != fc:
+            continue
+        out[status_bucket(status)] += n
         out["total"] += n
     out["pct_ok"] = round(100 * out["ok"] / out["total"], 1) if out["total"] else None
     return out
@@ -6406,6 +6629,16 @@ def get_ambassadors(shift, department=None, active_only=True, ambassador_type=No
     needs to show up when someone asks for 'AFE'). ambassador_type
     narrows to 'process' or 'indirect_roles' — an ambassador can be
     both, so this only excludes someone who is genuinely neither."""
+    raw = _ambassadors_by_department(shift, department, active_only, ambassador_type)
+    # A fresh copy per caller: the read behind it is memoized for the
+    # request (the ranking page asks for the same shift and department
+    # once per manager) and the Ambassador cards annotate what they are
+    # given.
+    return {dept: [dict(a) for a in people] for dept, people in raw.items()}
+
+
+@request_memoize
+def _ambassadors_by_department(shift, department=None, active_only=True, ambassador_type=None):
     conn = get_db()
     hp_group = department_group(normalize_department(department)) if department else None
     q = "SELECT * FROM ambassadors WHERE shift=?"
@@ -7094,14 +7327,30 @@ def get_xt_proficiency_counts(am_login=None, fc=None):
     lookup instead of scanning the whole hours table once per
     manager.
     """
+    if isinstance(am_login, (list, tuple)) and not am_login:
+        return {}
+
+    counts = _xt_proficiency_counts_if_worthwhile()
+    if counts is not None:
+        if am_login:
+            wanted = ({a.lower() for a in am_login}
+                      if isinstance(am_login, (list, tuple)) else {am_login.lower()})
+        else:
+            wanted = None
+        out = {}
+        for supervisor, row_fc, status, n in counts:
+            if wanted is not None and supervisor not in wanted:
+                continue
+            if fc and row_fc != fc:
+                continue
+            out[status] = out.get(status, 0) + n
+        return out
+
     conn = get_db()
     q = "SELECT proficiency_status, COUNT(*) as n FROM xt_hours WHERE proficiency_status IS NOT NULL"
     params = []
     if am_login:
         if isinstance(am_login, (list, tuple)):
-            if not am_login:
-                conn.close()
-                return {}
             q += f" AND lower(supervisor_login) IN ({','.join('?' * len(am_login))})"
             params += [a.lower() for a in am_login]
         else:
@@ -7114,6 +7363,24 @@ def get_xt_proficiency_counts(am_login=None, fc=None):
     rows = conn.execute(q, params).fetchall()
     conn.close()
     return {r["proficiency_status"]: r["n"] for r in rows}
+
+
+def _xt_proficiency_counts_if_worthwhile():
+    """Proficiency counts by supervisor and FC, in one grouped read.
+
+    Same bargain as the scorecard counts above: the Cross-Training tile
+    on one manager's page is a single indexed lookup, and the ranking
+    page is that same lookup once per manager."""
+    def load():
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT lower(supervisor_login) AS supervisor, fc, proficiency_status, "
+            "COUNT(*) AS n FROM xt_hours WHERE proficiency_status IS NOT NULL "
+            "GROUP BY lower(supervisor_login), fc, proficiency_status").fetchall()
+        conn.close()
+        return [(r["supervisor"], r["fc"], r["proficiency_status"], r["n"]) for r in rows]
+
+    return bulk_read_after("xt_proficiency", load)
 
 
 def get_xt_compliance_score(am_login=None, fc=None):
@@ -7288,6 +7555,11 @@ def get_olr_weekly_series(login, since=None):
     weeks in ascending order."""
     if not since:
         since = (date.today() - timedelta(days=365)).isoformat()
+
+    everyone = _olr_weekly_series_if_worthwhile(since)
+    if everyone is not None:
+        return {week: dict(values) for week, values in everyone.get(login, {}).items()}
+
     conn = get_db()
     rows = conn.execute(
         "SELECT week_start, metric_key, value FROM olr_weekly_metrics WHERE login=? AND week_start>=? ORDER BY week_start",
@@ -7298,6 +7570,26 @@ def get_olr_weekly_series(login, since=None):
     for r in rows:
         series.setdefault(r["week_start"], {})[r["metric_key"]] = r["value"]
     return series
+
+
+def _olr_weekly_series_if_worthwhile(since):
+    """Everybody's weekly metrics since a date, in one read.
+
+    The trend arrow beside a score is one person's history, and the
+    ranking page draws forty-four of them from the same few weeks of the
+    same table."""
+    def load():
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT login, week_start, metric_key, value FROM olr_weekly_metrics "
+            "WHERE week_start>=? ORDER BY week_start", (since,)).fetchall()
+        conn.close()
+        out = {}
+        for r in rows:
+            out.setdefault(r["login"], {}).setdefault(r["week_start"], {})[r["metric_key"]] = r["value"]
+        return out
+
+    return bulk_read_after(("olr_weekly", since), load)
 
 
 def _olr_composite(week_values):
@@ -8540,30 +8832,49 @@ def get_olr_escalation_counts(login, since=None):
     return counts
 
 
-def get_roster_by_roles(roles):
-    """user_roles rows whose role is in the given list, for grouping the
-    User Management roster by category (Admins/Trainers, SOM/OM, AM/Team
-    Lead, etc.)."""
-    if not roles:
-        return []
+@request_memoize
+def _roster_rows_by_roles(roles):
     conn = get_db()
     rows = conn.execute(
         f"SELECT * FROM user_roles WHERE role IN ({','.join('?' * len(roles))}) ORDER BY login",
-        roles,
+        list(roles),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
+def get_roster_by_roles(roles):
+    """user_roles rows whose role is in the given list, for grouping the
+    User Management roster by category (Admins/Trainers, SOM/OM, AM/Team
+    Lead, etc.).
+
+    Every caller gets its own copy of the rows. The read behind it is
+    memoized for the request — a ranking page asks for the same manager
+    list nine times — and handing nine callers the same dicts would mean
+    one of them annotating a row and the other eight finding it
+    annotated."""
+    if not roles:
+        return []
+    return [dict(r) for r in _roster_rows_by_roles(tuple(roles))]
+
+
 @request_memoize
-def get_ams_for_trainer(trainer_login):
+def _ams_by_trainer():
+    """The whole trainer-to-AM assignment table, by trainer login."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT am_login FROM trainer_am_assignments WHERE trainer_login=? ORDER BY am_login",
-        (trainer_login,),
+        "SELECT trainer_login, am_login FROM trainer_am_assignments "
+        "ORDER BY trainer_login, am_login"
     ).fetchall()
     conn.close()
-    return [r["am_login"] for r in rows]
+    out = {}
+    for r in rows:
+        out.setdefault(r["trainer_login"], []).append(r["am_login"])
+    return out
+
+
+def get_ams_for_trainer(trainer_login):
+    return list(_ams_by_trainer().get(trainer_login, []))
 
 
 def assign_am_to_trainer(trainer_login, am_login):
@@ -8615,22 +8926,35 @@ def unassign_am_from_trainer(trainer_login, am_login):
 # user and approved). Unassigned logins get None ("pending").
 
 @request_memoize
+def _user_roles_by_login():
+    """Every row of user_roles, by login, read once per request.
+
+    The ranking pages ask about one manager at a time, once per manager,
+    and each of those asks used to be its own statement — forty-four
+    round trips to RDS to answer forty-four questions about one small
+    table. This reads the table whole and every per-login lookup below
+    answers out of it. One row or all of them is the same single round
+    trip; the saving is the other forty-three.
+
+    Outside a request scope request_memoize is a pass-through, so a
+    script that asks about one login still only pays for one read."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM user_roles").fetchall()
+    conn.close()
+    return {r["login"]: dict(r) for r in rows}
+
+
 def get_user_role(login):
     if not login:
         return None
-    conn = get_db()
-    row = conn.execute("SELECT role FROM user_roles WHERE login=?", (login,)).fetchone()
-    conn.close()
+    row = _user_roles_by_login().get(login)
     return row["role"] if row else None
 
 
-@request_memoize
 def get_user_shift_and_department(login):
     if not login:
         return None, None
-    conn = get_db()
-    row = conn.execute("SELECT shift, department FROM user_roles WHERE login=?", (login,)).fetchone()
-    conn.close()
+    row = _user_roles_by_login().get(login)
     if not row:
         return None, None
     return row["shift"], row["department"]
@@ -8801,29 +9125,39 @@ def suggest_am_profile(login):
 
 
 @request_memoize
+def _reports_by_manager():
+    """Who reports directly to whom, for the whole org, read once.
+
+    The walk below used to issue one statement per level of the tree and
+    was itself called once per manager by the rankings, so an org three
+    deep cost a hundred and thirty round trips to read one small table.
+    The shape of the tree does not change between those calls."""
+    reports = {}
+    for row in _user_roles_by_login().values():
+        manager = row.get("reports_to")
+        if manager:
+            reports.setdefault(manager, []).append(row["login"])
+    return reports
+
+
 def get_descendant_ams(login):
     """Every login (direct or indirect) that reports up to this manager
     via the reports_to chain — {login: is_direct}. Empty dict for a leaf
     manager with nobody reporting to them."""
-    conn = get_db()
+    reports = _reports_by_manager()
     result = {}
     frontier = [login]
     seen = {login}
     while frontier:
-        placeholders = ",".join("?" * len(frontier))
-        rows = conn.execute(
-            f"SELECT login, reports_to FROM user_roles WHERE reports_to IN ({placeholders})", frontier
-        ).fetchall()
         next_frontier = []
-        for r in rows:
-            l = r["login"]
-            if l in seen:
-                continue
-            seen.add(l)
-            result[l] = (r["reports_to"] == login)
-            next_frontier.append(l)
+        for manager in frontier:
+            for report in reports.get(manager, []):
+                if report in seen:
+                    continue
+                seen.add(report)
+                result[report] = (manager == login)
+                next_frontier.append(report)
         frontier = next_frontier
-    conn.close()
     return result
 
 

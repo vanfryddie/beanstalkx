@@ -68,6 +68,9 @@
 
 <form class="ad-controls" method="get" action="{{ url_for('overview') }}">
   <input type="hidden" name="tab" value="directory">
+  {#- The inputs this form owns, so clearing one sticks — see
+      _sticky_filters. -#}
+  <input type="hidden" name="_fields" value="q,holds">
   {% if am_scope %}<input type="hidden" name="am" value="{{ am_scope if am_scope is string else '' }}">{% endif %}
   {% if fc_scope %}<input type="hidden" name="fc" value="{{ fc_scope }}">{% endif %}
   <label class="sr-only" for="adSearch">Search associates</label>
@@ -88,7 +91,7 @@
   </select>
   <button class="btn btn-ghost" type="submit">Search</button>
   {% if directory_q or directory_filter %}
-  <a class="btn btn-ghost" href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope) }}">Clear</a>
+  <a class="btn btn-ghost" href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope, reset=1) }}">Clear</a>
   {% endif %}
 </form>
 
@@ -207,7 +210,7 @@
 <div class="dash-empty dash-empty-page">
   {% if directory_q or directory_filter %}
     Nobody matches that search.
-    <a href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope) }}">Show everyone</a>
+    <a href="{{ url_for('overview', tab='directory', am=am_scope, fc=fc_scope, reset=1) }}">Show everyone</a>
   {% else %}
     No associates are attributed to this scope yet.
   {% endif %}

@@ -145,6 +145,11 @@
 
 <form class="st-filters" method="get" action="{{ url_for('overview') }}">
   <input type="hidden" name="tab" value="staffing">
+  {#- Which inputs this form is responsible for. A checkbox panel with
+      nothing ticked submits nothing at all, so without this the server
+      cannot tell "cleared" from "not asked" and would put the old
+      selection back — see _sticky_filters. -#}
+  <input type="hidden" name="_fields" value="q,trained_for,role,working_in,clock,presence">
   {% if am_scope %}<input type="hidden" name="am" value="{{ am_scope if am_scope is string else '' }}">{% endif %}
   {% if fc_scope %}<input type="hidden" name="fc" value="{{ fc_scope }}">{% endif %}
 
@@ -164,7 +169,7 @@
 
     <button class="btn btn-ghost" type="submit">Search</button>
     {% if floor_staffing.filters.q or floor_staffing.active_filters %}
-    <a class="btn btn-ghost" href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope) }}">Clear all</a>
+    <a class="btn btn-ghost" href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope, reset=1) }}">Clear all</a>
     {% endif %}
   </div>
 
@@ -317,7 +322,7 @@
 {% else %}
 <div class="dash-empty dash-empty-page">
   Nobody matches those filters.
-  <a href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope) }}">Show everyone</a>
+  <a href="{{ url_for('overview', tab='staffing', am=am_scope, fc=fc_scope, reset=1) }}">Show everyone</a>
 </div>
 {% endif %}
 

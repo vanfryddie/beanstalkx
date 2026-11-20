@@ -15,8 +15,9 @@
         {% endfor %}
       </nav>
       <form class="ar-date-form" method="get" action="{{ url_for('overview') }}">
-        {% for key, values in request.args.lists() %}{% if key not in ['tab', 'until', 'people'] %}{% for value in values %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}{% endif %}{% endfor %}
+        {% for key, values in request.args.lists() %}{% if key not in ['tab', 'until', 'people', 'reset', '_fields'] %}{% for value in values %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}{% endif %}{% endfor %}
         <input type="hidden" name="tab" value="adhoc_refresher">
+        <input type="hidden" name="_fields" value="until,people">
         <label for="arPeople">People</label>
         <select id="arPeople" name="people" onchange="this.form.requestSubmit()">
           <option value="onsite" {% if ar.people_scope != 'everyone' %}selected{% endif %}>On site · badged in</option>
@@ -87,8 +88,12 @@
         <div class="ar-roster-toolbar">
           <div><h3>Associate refresher records</h3><p>{% if ar.meta and ar.meta.taken_at %}Floor snapshot {{ ar.meta.taken_at[11:16] }}{% else %}Current staffing snapshot{% endif %} · <span data-ar-visible-count>{{ group.visible_count }}</span> shown</p></div>
           <form class="ar-filter-form" method="get" action="{{ url_for('overview') }}">
-            {% for key, values in request.args.lists() %}{% if key not in ['tab', 'q', 'compliance', 'department', 'manager', 'working_in', 'training', 'trained_for', 'role', 'presence'] %}{% for value in values %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}{% endif %}{% endfor %}
+            {% for key, values in request.args.lists() %}{% if key not in ['tab', 'q', 'compliance', 'department', 'manager', 'working_in', 'training', 'trained_for', 'role', 'presence', 'reset', '_fields'] %}{% for value in values %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}{% endif %}{% endfor %}
             <input type="hidden" name="tab" value="adhoc_refresher">
+            {#- See _sticky_filters: a checkbox panel with nothing ticked
+                submits nothing, so the form names what it owns and those
+                keys are taken from the request even when absent. -#}
+            <input type="hidden" name="_fields" value="q,compliance,department,manager,working_in,training,trained_for,role,presence">
             <label class="ar-search"><span class="sr-only">Search this group</span><input type="search" name="q" value="{{ ar.filters.q }}" placeholder="Search name, login or topic"><span aria-hidden="true">⌕</span></label>
             <select class="ar-quick-filter" name="compliance" aria-label="Compliance status" onchange="this.form.requestSubmit()">
               <option value="">All statuses</option><option value="not_compliant" {% if ar.filters.compliance == 'not_compliant' %}selected{% endif %}>Not compliant</option><option value="compliant" {% if ar.filters.compliance == 'compliant' %}selected{% endif %}>Compliant</option>
@@ -148,10 +153,21 @@
   <span id="copyRefresherStatus" class="sr-only" role="status" aria-live="polite"></span>
 </section>
 
+{#- The checkbox panels above are plain markup until this binds them.
+    Without it their buttons do nothing at all: "Trained for" and
+    "Indirect role" rendered, and could not be opened. Each tab that
+    uses the macros carries it, the same way the Staffing tab does. -#}
+{{ xf.filter_script() }}
+
 <script>
 (function () {
+  {#- Both through tojson. The fallback used to be the literal string
+      '""', which Jinja then escaped to &#34;&#34; — a syntax error that
+      killed this whole script, and with it the copy buttons, the column
+      filters and the group links, on exactly the page where there is
+      nothing to plan. -#}
   var allLogins = {{ ar.login_list | tojson }};
-  var groupLogins = {{ ar.selected_group.login_list | tojson if ar.selected_group else '""' }};
+  var groupLogins = {{ (ar.selected_group.login_list if ar.selected_group else '') | tojson }};
   document.querySelectorAll('[data-copy-kind]').forEach(function (button) {
     button.addEventListener('click', async function () {
       var logins = button.dataset.copyKind === 'group' ? groupLogins : allLogins;

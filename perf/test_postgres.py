@@ -226,7 +226,9 @@ check("identities learned on the sweep are stored",
       db._floor_identity_map().get("8800000") in {p["employee_login"] for p in floor_team}
       or len(db._floor_identity_map()) >= len(floor_team),
       str(len(db._floor_identity_map())))
-r = c.get(f"/overview?tab=staffing&am={ams[0]}")
+# follow_redirects: a page now restores the filters this person last
+# used on it, which arrives as a redirect to the full URL.
+r = c.get(f"/overview?tab=staffing&am={ams[0]}", follow_redirects=True)
 check("the staffing tab renders the sweep", r.status_code == 200 and b"on the floor" in r.get_data().lower(),
       str(r.status_code))
 
@@ -343,7 +345,7 @@ conn.close()
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()
 for i in range(40):
-    resp = c.get("/scorecards?tab=reporting")
+    resp = c.get("/scorecards?tab=reporting", follow_redirects=True)
     if resp.status_code != 200:
         check(f"request {i} ok", False, f"status {resp.status_code}")
         break
