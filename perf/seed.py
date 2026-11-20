@@ -20,15 +20,26 @@ SECTIONS = ["planning_compliance", "compliance_safety", "planning_de_tech",
 STATUSES = ["Compliant", "Overdue", "Due Soon", "Not Started", "In Progress", "Complete"]
 TOPICS = ["FSRI", "Robotic Arm Palletizer", "Powered Industrial Truck", "Fire Safety",
           "Manual Handling", "Lockout Tagout", "Conveyor Safety", "First Aid"]
-PROCESSES = ["Pack", "Pick", "Stow", "Receive", "Water Spider", "Problem Solve", "Decant"]
-# What FCLM calls the process these are trained in. The real upload has
-# this column and the console reads the floor through it — a seed without
-# it cannot show a job name or a face, so dev looked broken in exactly
-# the two ways the live site did.
+# The processes the cross-training standards actually target, not a
+# generic list. A seed whose process names nothing in the standards
+# recognises makes every Cross-Training page read zero, which is a
+# development database that hides the bugs it exists to show.
+PROCESSES = ["Pick", "Pack Singles", "Pack Multis", "Stow Each Nike",
+             "Pick To Rebin", "Chutings", "Rebin", "Decant"]
+
+# The "FCLM Mapped" column is the department somebody belongs to —
+# _xt_source_employees matches a standard's source departments against
+# it — so these are the department names the standards name as sources.
+# Each process is seeded into the department it would really sit in.
 FCLM_MAPPED = {
-    "Pack": "Pack Single", "Pick": "Pick", "Stow": "Each TSI",
-    "Receive": "Each Receive", "Water Spider": "Transfer In Support",
-    "Problem Solve": "Problem Solve", "Decant": "Decant",
+    "Pick": "RSP",
+    "Pack Singles": "Pack Singles",
+    "Pack Multis": "Pack Multis",
+    "Stow Each Nike": "RSP",
+    "Pick To Rebin": "Pack Multis",
+    "Chutings": "Chutings",
+    "Rebin": "Chutings",
+    "Decant": "Receive",
 }
 PROFICIENCY = ["Proficient", "Practice", "Refresh", "Lapsed"]
 

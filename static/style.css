@@ -4595,3 +4595,99 @@ html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }
   .ar-date-form { flex-wrap: wrap; }
   .ar-date-form select { flex: 1 1 190px; }
 }
+
+/* Cross-Training Insights — scoped to the one tab, built from the same
+   tokens as the rest so it inherits both themes for free. */
+.xi-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin: 4px 0 18px; flex-wrap: wrap; }
+.xi-title { margin: 0; font-size: clamp(20px, 1.7vw, 25px); font-weight: 680; letter-spacing: -.03em; color: var(--ink); }
+.xi-sub { margin: 6px 0 0; max-width: 70ch; font-size: 13px; line-height: 1.5; color: var(--text-lo); }
+.xi-periods { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--hairline); border-radius: 11px; background: var(--surface); flex: none; }
+.xi-periods a { display: inline-flex; align-items: center; min-height: 32px; padding: 0 14px; border-radius: 8px; font-size: 12px; font-weight: 560; color: var(--text-lo); text-decoration: none; }
+.xi-periods a:hover { color: var(--ink); background: rgba(127,138,153,.08); text-decoration: none; }
+.xi-periods a.active { color: var(--ink); background: var(--surface-solid); box-shadow: 0 1px 3px rgba(20,32,48,.13); }
+
+.xi-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0; margin: 0 0 20px; padding: 14px 2px; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
+.xi-stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 2px 18px; border-right: 1px solid var(--hairline); }
+.xi-stat:last-child { border-right: 0; }
+.xi-stat-label { font-size: 10.5px; font-weight: 620; letter-spacing: .06em; text-transform: uppercase; color: var(--text-lo); }
+.xi-stat strong { font-size: 25px; font-weight: 680; letter-spacing: -.035em; line-height: 1.1; color: var(--ink); font-variant-numeric: tabular-nums; }
+.xi-stat strong.is-risk { color: var(--red); }
+.xi-stat-sub { font-size: 11.5px; color: var(--text-lo); }
+
+.xi-signals { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.xi-signal { display: flex; gap: 11px; align-items: flex-start; padding: 12px 15px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.xi-signal > i { margin-top: 5px; flex: none; }
+.xi-signal strong { display: block; font-size: 13.5px; margin-bottom: 2px; color: var(--ink); }
+.xi-signal span { font-size: 12.5px; line-height: 1.5; color: var(--text-lo); }
+.xi-signal-risk { border-color: rgba(255,69,58,.3); background: rgba(255,69,58,.07); }
+.xi-signal-watch { border-color: rgba(255,159,10,.3); background: rgba(255,159,10,.07); }
+
+.xi-table th[scope="row"] { font-weight: 600; }
+.xi-table th[scope="row"] .mono { display: block; font-size: 10.5px; font-weight: 400; color: var(--text-lo); }
+.xi-table td.num em { font-style: normal; font-size: 10.5px; color: var(--text-lo); }
+.xi-table .is-up { color: var(--green); }
+.xi-table .is-down { color: var(--red); }
+.xi-nodata th[scope="row"] { color: var(--text-lo); font-weight: 500; }
+.xi-chronic th[scope="row"] { box-shadow: inset 2px 0 0 var(--red); }
+.xi-note { margin: 10px 2px 18px; max-width: 86ch; font-size: 12px; line-height: 1.55; color: var(--text-lo); }
+.xi-why { font-size: 11.5px; line-height: 1.5; color: var(--text-lo); max-width: 46ch; }
+.xi-lowconf { display: block; margin-top: 3px; font-style: normal; color: var(--orange, #ff9f0a); }
+.xi-recs td.num strong { font-size: 14px; }
+
+.xi-changes { display: flex; flex-direction: column; gap: 7px; margin-bottom: 20px; }
+.xi-change { border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.xi-change > summary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 15px; cursor: pointer; list-style: none; font-size: 12.5px; }
+.xi-change > summary::-webkit-details-marker { display: none; }
+.xi-change > summary:hover { background: rgba(127,138,153,.05); }
+.xi-change-when { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.xi-change-who { color: var(--text-lo); }
+.xi-change-count { color: var(--text-lo); }
+.xi-change-note-pill { margin-left: auto; padding: 3px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 600; color: var(--green); background: rgba(48,209,88,.12); }
+.xi-change-note-pill.is-missing { color: var(--text-lo); background: rgba(127,138,153,.14); }
+.xi-change-body { padding: 0 15px 14px; border-top: 1px solid var(--hairline); }
+.xi-change-table { margin-top: 12px; }
+.xi-note-form { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.xi-note-form label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 320px; text-transform: none; letter-spacing: normal; font-weight: 400; margin-bottom: 0; }
+.xi-note-form label span { font-size: 10.5px; font-weight: 620; letter-spacing: .06em; text-transform: uppercase; color: var(--text-lo); }
+.xi-note-form input { width: 100%; }
+
+.xt-change-note { display: flex; flex-direction: column; gap: 5px; margin-top: 14px; max-width: 70ch; text-transform: none; letter-spacing: normal; font-weight: 400; }
+.xt-change-note span { font-size: 11px; font-weight: 620; letter-spacing: .04em; color: var(--text-lo); text-transform: uppercase; }
+.xt-change-note em { font-style: normal; font-weight: 400; text-transform: none; letter-spacing: normal; opacity: .75; }
+.xt-change-note input { width: 100%; }
+
+.xi-empty-source { padding: 18px 20px; margin-bottom: 16px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.xi-empty-source strong { display: block; font-size: 14px; color: var(--ink); margin-bottom: 6px; }
+.xi-empty-source p { margin: 0 0 10px; max-width: 76ch; font-size: 12.5px; line-height: 1.55; color: var(--text-lo); }
+.xi-columns-intro { font-weight: 560; color: var(--ink); }
+.xi-columns { max-width: 760px; }
+.xi-upload { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 4px 0 20px; padding: 14px 16px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.xi-upload label { display: flex; flex-direction: column; gap: 5px; text-transform: none; letter-spacing: normal; font-weight: 400; margin-bottom: 0; }
+.xi-upload label span { font-size: 10.5px; font-weight: 620; letter-spacing: .06em; text-transform: uppercase; color: var(--text-lo); }
+.xi-upload-note { flex: 1 1 320px; font-size: 11.5px; line-height: 1.5; color: var(--text-lo); }
+
+.xi-costs { margin-top: 4px; }
+.xi-cost-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.xi-cost-row label { display: flex; flex-direction: column; gap: 5px; text-transform: none; letter-spacing: normal; font-weight: 400; margin-bottom: 0; }
+.xi-cost-row label span { font-size: 10.5px; font-weight: 620; letter-spacing: .06em; text-transform: uppercase; color: var(--text-lo); }
+.xi-cost-row input { width: 140px; }
+.xi-costs table input { width: 100px; }
+
+@media (max-width: 720px) {
+  .xi-head { flex-direction: column; align-items: stretch; }
+  .xi-periods { width: 100%; }
+  .xi-periods a { flex: 1; justify-content: center; }
+  .xi-stat { border-right: 0; border-bottom: 1px solid var(--hairline); padding: 10px 2px; }
+  .xi-stat:last-child { border-bottom: 0; }
+  .xi-change > summary { gap: 8px; }
+  .xi-change-note-pill { margin-left: 0; }
+}
+.xi-more { margin: 4px 0 20px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.xi-more > summary { padding: 13px 16px; cursor: pointer; list-style: none; font-size: 12.5px; font-weight: 580; color: var(--ink); }
+.xi-more > summary::-webkit-details-marker { display: none; }
+.xi-more > summary::before { content: "▸ "; color: var(--text-lo); }
+.xi-more[open] > summary::before { content: "▾ "; }
+.xi-more > summary:hover { background: rgba(127,138,153,.05); }
+.xi-more[open] > summary { border-bottom: 1px solid var(--hairline); }
+.xi-more > *:not(summary) { padding: 0 16px 16px; }
+.xi-more .dash-table-scroll { padding-top: 14px; }

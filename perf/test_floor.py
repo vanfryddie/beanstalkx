@@ -246,11 +246,20 @@ print("\n5. The staffing view, and the move it exists for")
 wipe()
 team = db.get_associate_directory(am_logins=[am])
 others = db.get_associate_directory(am_logins=[other_am])
+# The process names come from the data rather than being written in
+# here: the cross-training seed spells them the way the standards do,
+# and a test that hard-codes one breaks the day that changes without
+# anything being wrong.
+TRAINED = next((p["process"] for person in team for p in person["processes"]
+                if (p["process"] or "").lower().startswith("pack")), "Pack")
+# What FCLM calls the same work. Deliberately not identical: the whole
+# point of floor_process_matches is that the two vocabularies differ.
+ON_FLOOR = "Pack Single"
 rows = []
 for i, person in enumerate(team):
     if i % 4 == 3:
         continue
-    process = ("Pick", "RF Pick") if i % 3 == 0 else ("Pack Single", "Slam At Pack")
+    process = ("Pick", "RF Pick") if i % 3 == 0 else (ON_FLOOR, "Slam At Pack")
     rows.append({"employee_id": f"44{i:04d}", "employee_login": person["employee_login"],
                  "full_name": person["full_name"], "process_key": process[0].lower().replace(" ", "_"),
                  "process_name": process[0], "function_name": process[1],
@@ -281,27 +290,27 @@ check("filtering to a process returns only people in it",
       str([(p["employee_login"], (p.get("where") or {}).get("process"))
            for p in on_pick["people"][:3]]))
 
-trained_pack = application.build_staffing_view([am], None, {"trained_for": "Pack"})
-check("filtering to trained-for returns only people trained on it",
-      all("Pack" in p["trained_processes"] for p in trained_pack["people"]),
+trained_pack = application.build_staffing_view([am], None, {"trained_for": TRAINED})
+check(f"filtering to trained-for returns only people trained on {TRAINED}",
+      all(TRAINED in p["trained_processes"] for p in trained_pack["people"]),
       str(len(trained_pack["people"])))
 
 move = application.build_staffing_view([am], None,
-                                       {"trained_for": "Pack", "working_in": "__elsewhere__"})
+                                       {"trained_for": TRAINED, "working_in": "__elsewhere__"})
 check("the staffing move returns somebody", len(move["people"]) > 0, str(len(move["people"])))
-check("everybody it returns is trained for Pack",
-      all("Pack" in p["trained_processes"] for p in move["people"]))
+check(f"everybody it returns is trained for {TRAINED}",
+      all(TRAINED in p["trained_processes"] for p in move["people"]))
 check("everybody it returns is on the floor",
       all(p["floor_state"] == "present" for p in move["people"]))
-check("and nobody it returns is already on Pack",
-      not [p for p in move["people"] if "Pack" in p["doing_trained"]],
+check(f"and nobody it returns is already on {TRAINED}",
+      not [p for p in move["people"] if TRAINED in p["doing_trained"]],
       str([(p["employee_login"], p["floor"]["process_name"]) for p in move["people"][:3]]))
 packers = [p for p in view["people"]
-           if p["floor"] and p["floor"]["process_name"] == "Pack Single"]
-check("the people already on Pack are excluded from the move",
+           if p["floor"] and p["floor"]["process_name"] == ON_FLOOR]
+check("the people already on it are excluded from the move",
       not ({p["employee_login"] for p in move["people"]} & {p["employee_login"] for p in packers}))
-check("somebody on Pack is shown as doing what they are trained for",
-      all("Pack" in p["doing_trained"] for p in packers), str(len(packers)))
+check(f"somebody on {ON_FLOOR} is shown as doing what they are trained for",
+      all(TRAINED in p["doing_trained"] for p in packers), str(len(packers)))
 
 off = application.build_staffing_view([am], None, {"presence": "off_site"})
 check("the on-none filter returns only people the sweep did not see",

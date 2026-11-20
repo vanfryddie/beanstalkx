@@ -20,6 +20,7 @@
   <a href="{{ url_for('cross_training', tab='exclusions') }}" class="{{ 'active' if tab=='exclusions' }}">Exclusions</a>
   {% endif %}
   {% if can_manage_xt %}
+  <a href="{{ url_for('cross_training', tab='insights') }}" class="{{ 'active' if tab=='insights' }}">Insights</a>
   <a href="{{ url_for('cross_training', tab='definitions') }}" class="{{ 'active' if tab=='definitions' }}">Definitions</a>
   {% endif %}
 </div>
@@ -440,6 +441,9 @@
 })();
 </script>
 
+{% elif tab == 'insights' %}
+{% include "_xt_insights.html" %}
+
 {% elif tab == 'definitions' %}
 
 <div class="panel" id="xtDefinitionsExplainer">
@@ -527,6 +531,15 @@
       </tbody>
     </table>
     </div>
+    {#- Optional, and asked for every time the targets move: when these
+        get reviewed a quarter later, "it used to say 25" is the easy
+        half of the question and "why did we change it" is the half
+        nobody can answer. Both end up on the Insights tab. -#}
+    <label class="xt-change-note">
+      <span>Why are you changing this? <em>optional — shows on the Insights tab</em></span>
+      <input type="text" name="change_note" maxlength="400"
+             placeholder="e.g. Peak ramp: Pick nights needs deeper cover until week 52">
+    </label>
     <div style="margin-top:14px;">
       <button class="btn btn-gold btn-sm" type="submit">Save all changes</button>
     </div>
@@ -606,6 +619,15 @@
     </div>
     <datalist id="xtHomeDeptSuggestions">{% for d in home_departments %}<option value="{{ d }}">{% endfor %}</datalist>
     <datalist id="xtProcessSuggestions">{% for p in xt_processes %}<option value="{{ p }}">{% endfor %}</datalist>
+    {#- Optional, and asked for every time the targets move: when these
+        get reviewed a quarter later, "it used to say 25" is the easy
+        half of the question and "why did we change it" is the half
+        nobody can answer. Both end up on the Insights tab. -#}
+    <label class="xt-change-note">
+      <span>Why are you changing this? <em>optional — shows on the Insights tab</em></span>
+      <input type="text" name="change_note" maxlength="400"
+             placeholder="e.g. Peak ramp: Pick nights needs deeper cover until week 52">
+    </label>
     <div style="margin-top:14px;">
       <button class="btn btn-gold btn-sm" type="submit">Save all changes</button>
     </div>

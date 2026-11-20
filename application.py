@@ -3345,8 +3345,11 @@ def cross_training():
         tab = "standards"
     if tab == "exclusions" and not can_manage_xt_exclusions:
         tab = "standards"
+    if tab == "insights" and not can_manage_xt:
+        tab = "standards"
     matrix_shift = request.args.get("matrix_shift") or "early"
     matrix = db.get_xt_dept_process_matrix(shift=matrix_shift) if tab == "directory" else None
+    insights_period = request.args.get("period") or "week"
     try:
         xt_drop_days = int(request.args.get("drop_days", 30))
     except ValueError:
@@ -3387,7 +3390,563 @@ def cross_training():
         xt_proficiency_expiry_days=db.get_xt_proficiency_expiry_days(),
         xt_drop_days=xt_drop_days,
         xt_retention_report=db.get_xt_retention_report() if tab == "retention" else None,
+        xt_periods=db.XT_PERIODS,
+        xt_change_fields=db.XT_CHANGE_FIELDS,
+        insights=(build_xt_insights(insights_period, scenario=scenario)
+                  if tab == "insights" else None),
     )
+
+
+# ====================================================================
+# Cross-Training Insights
+#
+# Everything here reads history and says what it means. The storage is
+# in db.py; this is the arithmetic, and it has one rule: a number on
+# this page has to be able to say where it came from. A recommendation
+# nobody can argue with is a recommendation nobody will act on, so every
+# one of them carries the figures it was built from and an honest note
+# about how much data stood behind it.
+# ====================================================================
+
+# How far back each period view looks. A quarter view wants years; a
+# week view wants a trading quarter and no more, because a target set
+# from last January is not a target.
+XT_INSIGHT_PERIODS = {"week": 13, "month": 13, "quarter": 8}
+
+# Below this many periods with data, a trend is a line through noise.
+# Recommendations still appear — a manager with six weeks of data wants
+# the best read of six weeks — but they say so.
+XT_CONFIDENT_PERIODS = 4
+
+# A pool this far above what the volume asks for is money spent keeping
+# a qualification current that nothing needs. Below 1.0 would flag
+# normal variation, so the bar is deliberately above the cover factor.
+XT_SURPLUS_MARGIN = 1.25
+# A path missing its target in this share of recent periods is not
+# having a bad week.
+XT_CHRONIC_SHARE = 0.6
+# Lapsed records as a share of trained ones, past which the problem is
+# retention rather than recruitment into the path.
+XT_LAPSE_CONCERN = 0.15
+
+
+def _xt_trend_per_period(values):
+    """Average change per period, as a fraction, from a least-squares
+    line through the series.
+
+    A straight line is the right amount of model here: it can be
+    explained in a sentence on the page, it does not invent seasonality
+    out of ten weeks of data, and when it is wrong it is wrong in a way
+    a manager can see. Returns None when there is nothing to fit."""
+    points = [(i, v) for i, v in enumerate(values) if v is not None]
+    if len(points) < 2:
+        return None
+    n = len(points)
+    mean_x = sum(x for x, _ in points) / n
+    mean_y = sum(y for _, y in points) / n
+    denominator = sum((x - mean_x) ** 2 for x, _ in points)
+    if not denominator or not mean_y:
+        return None
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in points) / denominator
+    return slope / mean_y
+
+
+def _xt_round_up(value):
+    return int(value) + (1 if value > int(value) else 0)
+
+
+def _xt_population_series(period, keys):
+    """Trained and lapsed records at the end of each period.
+
+    The census is a full replace on every upload, so what is stored is a
+    rollup of each one (db.record_xt_rollup). The state "at the end of a
+    period" is the last upload inside it; a period with no upload has no
+    state of its own and says so rather than borrowing the one before,
+    because a flat line drawn through missing data is a lie about a
+    period nobody measured."""
+    snapshots = db.get_xt_rollup_snapshots()
+    by_period = {}
+    for snapshot in snapshots:
+        key = db.period_key(snapshot["taken_at"], period)
+        if key:
+            by_period[key] = snapshot      # later uploads overwrite earlier
+    series = []
+    previous_trained = None
+    for key in keys:
+        snapshot = by_period.get(key)
+        entry = {"key": key, "label": db.period_label(key),
+                 "start": db.period_start(key), "has_data": snapshot is not None,
+                 "trained": None, "lapsed": None, "proficient": None,
+                 "practice": None, "refresh": None,
+                 "delta": None, "lapse_pct": None, "taken_at": None}
+        if snapshot:
+            counts = snapshot["counts"]
+            trained = sum(c["n"] for c in counts if c["trained_status"] == "Trained")
+            by_proficiency = {}
+            for c in counts:
+                if c["trained_status"] != "Trained":
+                    continue
+                by_proficiency[c["proficiency_status"]] = \
+                    by_proficiency.get(c["proficiency_status"], 0) + c["n"]
+            entry.update({
+                "trained": trained,
+                "lapsed": by_proficiency.get("Lapsed", 0),
+                "proficient": by_proficiency.get("Proficient", 0),
+                "practice": by_proficiency.get("Practice", 0),
+                "refresh": by_proficiency.get("Refresh", 0),
+                "taken_at": snapshot["taken_at"],
+            })
+            entry["lapse_pct"] = round(100 * entry["lapsed"] / trained, 1) if trained else None
+            if previous_trained is not None:
+                entry["delta"] = trained - previous_trained
+            previous_trained = trained
+        series.append(entry)
+    return series
+
+
+def _xt_change_batches(period, keys):
+    """The target change log, grouped the way it was written: one batch
+    per save, because one reason covers one save."""
+    earliest = db.period_start(keys[0]) if keys else None
+    changes = db.get_xt_target_changes(since=earliest.isoformat() if earliest else None)
+    batches = {}
+    for change in changes:
+        batch = batches.setdefault(change["batch"] or f"row-{change['id']}", {
+            "batch": change["batch"], "changed_at": change["changed_at"],
+            "changed_by": change["changed_by"], "note": change["note"],
+            "period": db.period_key(change["changed_at"], period), "rows": [],
+        })
+        batch["rows"].append(change)
+        if change["note"] and not batch["note"]:
+            batch["note"] = change["note"]
+    ordered = sorted(batches.values(), key=lambda b: b["changed_at"], reverse=True)
+    for batch in ordered:
+        batch["label"] = db.period_label(batch["period"])
+        batch["moves"] = [r for r in batch["rows"] if r["delta"] is not None]
+        batch["raised"] = sum(1 for r in batch["moves"] if r["delta"] > 0)
+        batch["lowered"] = sum(1 for r in batch["moves"] if r["delta"] < 0)
+        batch["targets"] = len({(r["kind"], r["target_id"]) for r in batch["rows"]})
+    return ordered
+
+
+def _xt_volume_series(period, keys, shift_hours):
+    """Volume and hours per period, and per process and shift within it.
+
+    `peak_heads` is the busiest single day of the period expressed in
+    people: the daily hours booked to that process divided by a shift.
+    That, not the average, is what a trained pool has to cover — an
+    average day never happens."""
+    rows = db.get_process_volume()
+    wanted = set(keys)
+    per_period = {key: {"units": 0.0, "hours": 0.0, "days": set()} for key in keys}
+    per_path = {}
+    for row in rows:
+        key = db.period_key(row["work_date"], period)
+        if key not in wanted:
+            continue
+        units = row.get("units") or 0.0
+        hours = row.get("hours") or 0.0
+        bucket = per_period[key]
+        bucket["units"] += units
+        bucket["hours"] += hours
+        bucket["days"].add(row["work_date"])
+        path = per_path.setdefault((row["process"], row["shift"]), {})
+        entry = path.setdefault(key, {"units": 0.0, "hours": 0.0, "by_day": {}})
+        entry["units"] += units
+        entry["hours"] += hours
+        entry["by_day"][row["work_date"]] = entry["by_day"].get(row["work_date"], 0.0) + hours
+
+    for entries in per_path.values():
+        for entry in entries.values():
+            busiest = max(entry["by_day"].values()) if entry["by_day"] else 0.0
+            entry["peak_heads"] = (busiest / shift_hours) if shift_hours else None
+            entry["rate"] = (entry["units"] / entry["hours"]) if entry["hours"] else None
+    return {
+        "per_period": [{"key": key, "label": db.period_label(key),
+                        "units": round(per_period[key]["units"]),
+                        "hours": round(per_period[key]["hours"]),
+                        "days": len(per_period[key]["days"])} for key in keys],
+        "per_path": per_path,
+    }
+
+
+def _xt_defined_paths(scenario):
+    """Every defined cross-training path, per shift, as it stands today:
+    what the target is and how many are actually trained.
+
+    Both kinds of target in one list, because the question "are we short
+    on Pick nights" does not care whether the number came from the
+    approved standards or this site's own internal table."""
+    paths = []
+    # get_xt_standards() computes the numbers but does not carry the
+    # process each standard trains people on — and that name is the only
+    # thing a volume file can be matched against, so it comes from the
+    # definitions the numbers were computed from.
+    process_by_id = {d["id"]: d.get("target") for d in db.get_xt_standard_defs(scenario)}
+    for standard in db.get_xt_standards(scenario=scenario):
+        for shift, state in standard["shifts"].items():
+            paths.append({
+                "kind": "standard", "id": standard["id"], "key": standard["key"],
+                "label": standard["label"], "process": process_by_id.get(standard["id"]),
+                "shift": shift, "target": state["target"], "trained": state["actual"],
+                "gap": state["gap"], "headcount": state["headcount"],
+                "expiring": len(state.get("expiring_records") or []),
+            })
+    for direction, rows in (db.get_internal_xt_overview() or {}).items():
+        for row in rows:
+            for shift, state in row["shifts"].items():
+                paths.append({
+                    "kind": "internal", "id": row["key"], "key": row["key"],
+                    "label": row["label"], "process": row.get("target_process"),
+                    "shift": shift, "target": state["target"], "trained": state["actual"],
+                    "gap": state["gap"], "headcount": state["headcount"],
+                    "expiring": len(state.get("expiring_records") or []),
+                    "direction": direction,
+                })
+    paths.sort(key=lambda p: ((p["label"] or "").lower(), p["shift"]))
+    return paths
+
+
+def _xt_process_target(process):
+    """What a standard calls its target process, normalised enough to
+    meet a volume file halfway. The two vocabularies are typed by
+    different people and will not always agree; a path whose process
+    name nothing in the volume file matches simply gets no volume-based
+    recommendation, and the page says which ones those are."""
+    return (process or "").strip().lower()
+
+
+def _xt_recommendation(path, history, cost_model, period):
+    """One path's recommended target, and the reasoning behind it.
+
+    The chain is deliberately short enough to print:
+      the busiest day of the last period, in people          -> on shift
+      times what volume is doing                             -> forecast
+      times cover, for absence and the other process         -> pool
+    and the pool is the recommendation. Everything that went into it
+    comes back with it, because a recommendation a manager cannot check
+    is one they will ignore."""
+    periods_with_data = [entry for entry in history if entry.get("units")]
+    if not periods_with_data:
+        return None
+    # The period we are standing in is not over, so its total is not a
+    # total. Including it drags every trend downwards by however far
+    # through the week we happen to be, which would have the page
+    # recommending cuts every Monday morning. Its busiest day is still
+    # the best read of what a day looks like, so that part is kept.
+    current_key = db.period_key(date.today(), period)
+    complete = [entry for entry in periods_with_data if entry["key"] != current_key]
+    trend = _xt_trend_per_period([entry["units"] for entry in complete])
+    latest = (complete or periods_with_data)[-1]
+    busiest = max(periods_with_data, key=lambda entry: entry.get("peak_heads") or 0)
+
+    # One period ahead. Further than that is extrapolating a straight
+    # line past where it is honest, and nobody plans training further
+    # out than the next period anyway.
+    growth = 1.0 + (trend or 0.0)
+    growth = max(0.5, min(growth, 2.0))
+
+    peak_heads = busiest.get("peak_heads")
+    if not peak_heads:
+        return None
+    needed_on_shift = peak_heads * growth
+    cover = cost_model["cover_factor"]
+    recommended = _xt_round_up(needed_on_shift * cover)
+
+    # There is no point recommending a pool bigger than the departments
+    # it would be drawn from. Where that bites, the recommendation is
+    # the pool and the page says the real answer is more people, not
+    # more training.
+    pool = path.get("headcount")
+    pool_limited = pool is not None and pool > 0 and recommended > pool
+    if pool_limited:
+        recommended = pool
+    no_pool = pool == 0
+
+    process = path.get("process") or ""
+    per_process = cost_model["per_process"].get(process) or {}
+    train_hours = per_process.get("train_hours") or cost_model["default_train_hours"]
+    hourly = cost_model["hourly_cost"]
+    trained = path.get("trained") or 0
+    short_by = max(0, recommended - trained)
+    spare = max(0, trained - _xt_round_up(recommended * XT_SURPLUS_MARGIN))
+
+    return {
+        "recommended": recommended,
+        "current_target": path.get("target"),
+        "trained": trained,
+        "target_move": (recommended - path["target"]) if path.get("target") is not None else None,
+        "short_by": short_by,
+        "spare": spare,
+        "pool": pool,
+        "pool_limited": pool_limited,
+        "no_pool": no_pool,
+        "peak_heads": round(peak_heads, 1),
+        "peak_period": db.period_label(busiest["key"]),
+        "needed_on_shift": round(needed_on_shift, 1),
+        "cover_factor": cover,
+        "trend_pct": round(100 * trend, 1) if trend is not None else None,
+        "latest_units": round(latest["units"]),
+        "latest_hours": round(latest["hours"]),
+        "latest_label": db.period_label(latest["key"]),
+        "rate": round(latest["rate"], 1) if latest.get("rate") else None,
+        "periods_used": len(complete),
+        "confident": len(complete) >= XT_CONFIDENT_PERIODS,
+        "train_hours": train_hours,
+        "hourly_cost": hourly,
+        "cost_to_close": round(short_by * train_hours * hourly),
+        "cost_of_spare": round(spare * train_hours * hourly),
+        "period": period,
+    }
+
+
+def _xt_signals(paths, population, volume, cost_model):
+    """What the numbers are trying to say.
+
+    Each one is a pattern worth a manager's attention that no single
+    figure on the page states on its own — a gap that is not this week's
+    bad luck, a pool being kept current that nothing needs, training
+    that is not sticking. Ordered by what it costs to ignore."""
+    signals = []
+
+    with_data = [entry for entry in population if entry["has_data"]]
+    if len(with_data) >= 2:
+        first, last = with_data[0], with_data[-1]
+        move = last["trained"] - first["trained"]
+        if move:
+            signals.append({
+                "severity": "watch" if move < 0 else "good",
+                "title": ("Trained records are down "
+                          if move < 0 else "Trained records are up ") + f"{abs(move)}",
+                "detail": (f"{first['trained']} at {first['label']} to {last['trained']} "
+                           f"at {last['label']}. One record is one person on one process."),
+            })
+        if last.get("lapse_pct") is not None and last["lapse_pct"] >= 100 * XT_LAPSE_CONCERN:
+            lapsed = last["lapsed"]
+            retrain = round(lapsed * cost_model["default_train_hours"] * cost_model["hourly_cost"])
+            signals.append({
+                "severity": "risk",
+                "title": f"{last['lapse_pct']}% of trained records have lapsed",
+                "detail": (f"{lapsed} qualifications are no longer current. Bringing them all "
+                           f"back costs about {retrain:,} at the default training hours — "
+                           f"the cheapest training is the kind you do not repeat."),
+            })
+
+    chronic = [p for p in paths if p.get("chronic_gap")]
+    if chronic:
+        worst = sorted(chronic, key=lambda p: p["gap"])[:3]
+        signals.append({
+            "severity": "risk",
+            "title": f"{len(chronic)} path(s) have been short for most of the window",
+            "detail": "Worst: " + ", ".join(
+                f"{p['label']} ({p['shift']}, {p['gap']})" for p in worst)
+            + ". A gap that persists is a target nobody is staffing to, or a target that is wrong.",
+        })
+
+    spare_paths = [p for p in paths if (p.get("recommendation") or {}).get("spare")]
+    if spare_paths:
+        total = sum(p["recommendation"]["cost_of_spare"] for p in spare_paths)
+        signals.append({
+            "severity": "watch",
+            "title": f"{len(spare_paths)} path(s) are trained well beyond what the volume asks for",
+            "detail": (f"About {total:,} of training is being kept current for capacity the "
+                       "volume does not call for. That is not automatically waste — it is "
+                       "flexibility — but it is worth knowing you are buying it."),
+        })
+
+    no_pool = [p for p in paths if (p.get("recommendation") or {}).get("no_pool")]
+    if no_pool:
+        signals.append({
+            "severity": "watch",
+            "title": f"{len(no_pool)} path(s) have volume but nobody to train",
+            "detail": ("The volume says these processes are being worked, and the source "
+                       "departments for them hold nobody at all. Either the source "
+                       "departments on the standard are wrong, or the work is being done by "
+                       "people this path does not cover: "
+                       + ", ".join(sorted({p["label"] for p in no_pool})[:6])),
+        })
+
+    limited = [p for p in paths if (p.get("recommendation") or {}).get("pool_limited")]
+    if limited:
+        signals.append({
+            "severity": "risk",
+            "title": f"{len(limited)} path(s) need more people than the source has",
+            "detail": ("The volume asks for a bigger trained pool than the source departments "
+                       "hold, so training everybody available still would not cover it. That "
+                       "is a headcount conversation, not a training one: "
+                       + ", ".join(sorted({p["label"] for p in limited})[:6])),
+        })
+
+    unmatched = [p for p in paths if p.get("volume_matched") is False]
+    if unmatched:
+        signals.append({
+            "severity": "info",
+            "title": f"{len(unmatched)} path(s) have no volume to work from",
+            "detail": ("No row in the volume data names these processes, so their targets are "
+                       "still set by headcount percentage alone: "
+                       + ", ".join(sorted({p["process"] or p["label"] for p in unmatched})[:6])),
+        })
+    return signals
+
+
+def build_xt_insights(period="week", scenario="general"):
+    """The Insights tab: what the targets did, what the trained
+    population did, what the floor actually processed, and what the
+    three of them together suggest the targets should be."""
+    if period not in db.XT_PERIODS:
+        period = "week"
+    keys = db.recent_periods(period, XT_INSIGHT_PERIODS[period])
+    cost_model = db.get_xt_cost_model()
+
+    population = _xt_population_series(period, keys)
+    batches = _xt_change_batches(period, keys)
+    volume = _xt_volume_series(period, keys, cost_model["shift_hours"])
+    coverage = db.process_volume_coverage()
+    paths = _xt_defined_paths(scenario)
+
+    changes_by_period = {}
+    for batch in batches:
+        changes_by_period.setdefault(batch["period"], []).append(batch)
+    for entry in population:
+        entry["change_batches"] = len(changes_by_period.get(entry["key"], []))
+        entry["target_moves"] = sum(len(b["moves"]) for b in changes_by_period.get(entry["key"], []))
+
+    volume_by_process = {}
+    for (process, shift), entries in volume["per_path"].items():
+        volume_by_process.setdefault(_xt_process_target(process), {})[shift] = entries
+
+    for path in paths:
+        history_map = volume_by_process.get(_xt_process_target(path.get("process")), {})
+        entries = history_map.get(path["shift"]) or {}
+        path["volume_matched"] = bool(entries)
+        history = [dict(entries[key], key=key) for key in keys if key in entries]
+        path["volume_history"] = history
+        path["recommendation"] = _xt_recommendation(path, history, cost_model, period)
+        # "Chronic" needs history this console does not keep per path —
+        # what it has is today's gap and how long the path has been
+        # defined, so the honest version of the question is whether the
+        # gap is big relative to the target rather than how long it has
+        # been there.
+        target = path.get("target") or 0
+        path["chronic_gap"] = bool(target and path["gap"] < 0 and abs(path["gap"]) >= max(1, target * 0.25))
+
+    signals = _xt_signals(paths, population, volume, cost_model)
+
+    recommended = [p for p in paths if p.get("recommendation")]
+    recommended.sort(key=lambda p: (-(p["recommendation"]["short_by"]),
+                                    -(p["recommendation"]["cost_of_spare"]),
+                                    (p["label"] or "").lower()))
+
+    latest = next((entry for entry in reversed(population) if entry["has_data"]), None)
+    return {
+        "period": period, "period_label": db.XT_PERIODS[period],
+        "periods": population,
+        "latest": latest,
+        "batches": batches,
+        "batch_count": len(batches),
+        "moves": sum(len(b["moves"]) for b in batches),
+        "raised": sum(b["raised"] for b in batches),
+        "lowered": sum(b["lowered"] for b in batches),
+        "with_note": sum(1 for b in batches if b["note"]),
+        "paths": paths,
+        "recommended": recommended,
+        "signals": signals,
+        "volume": volume,
+        "volume_coverage": coverage,
+        "volume_columns": db.PROCESS_VOLUME_COLUMNS,
+        "cost_model": cost_model,
+        "scenario": scenario,
+        "confident_after": XT_CONFIDENT_PERIODS,
+        "snapshots": len([entry for entry in population if entry["has_data"]]),
+    }
+
+
+@application.route("/ld-management/cross-training/volume/upload", methods=["POST"])
+def xt_volume_upload():
+    """Load processed volume per process, per shift, per day.
+
+    No export this console has been given carries this, so the file
+    shape is the one printed on the Insights tab beside this button —
+    see db.PROCESS_VOLUME_COLUMNS, which is the single place that shape
+    is written down."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers "
+                     "can load cross-training volume data.")
+    period = request.form.get("period") or "week"
+    f = request.files.get("file")
+    if not f or not f.filename:
+        flash("Choose a CSV file first.", "warning")
+        return redirect(url_for("cross_training", tab="insights", period=period))
+    try:
+        result = db.ingest_process_volume_csv(f.read(), f.filename, uploaded_by=login_id)
+    except Exception as e:
+        flash(f"Import failed: {e}", "danger")
+        return redirect(url_for("cross_training", tab="insights", period=period))
+    if result["skipped"]:
+        flash(f"Loaded {result['loaded']} row(s). {result['skipped']} were skipped for "
+              "want of a readable date, shift or process name.", "warning")
+    else:
+        flash(f"Loaded {result['loaded']} volume row(s).", "success")
+    return redirect(url_for("cross_training", tab="insights", period=period))
+
+
+@application.route("/ld-management/cross-training/insights/note", methods=["POST"])
+def xt_change_note():
+    """Add or correct the reason on a change already saved.
+
+    The note is the part people skip in the moment and want back when
+    the quarter is reviewed, and a log nobody can annotate afterwards is
+    a log nobody annotates."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers "
+                     "can annotate target changes.")
+    batch = (request.form.get("batch") or "").strip()
+    period = request.form.get("period") or "week"
+    if batch:
+        db.set_xt_change_note(batch, request.form.get("note"), changed_by=login_id)
+        flash("Reason saved against that change.", "success")
+    return redirect(url_for("cross_training", tab="insights", period=period))
+
+
+@application.route("/ld-management/cross-training/insights/cost-model", methods=["POST"])
+def xt_cost_model_save():
+    """What a trained head costs to create, which is what turns a gap
+    into a decision rather than a complaint."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers "
+                     "can change the training cost model.")
+    period = request.form.get("period") or "week"
+    for key, field in (("xt_training_hourly_cost", "hourly_cost"),
+                       ("xt_shift_hours", "shift_hours"),
+                       ("xt_cover_factor", "cover_factor"),
+                       ("xt_default_train_hours", "default_train_hours")):
+        raw = (request.form.get(field) or "").strip()
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            flash(f"{field.replace('_', ' ').capitalize()} must be a number.", "warning")
+            return redirect(url_for("cross_training", tab="insights", period=period))
+        if value <= 0:
+            flash(f"{field.replace('_', ' ').capitalize()} must be greater than zero.", "warning")
+            return redirect(url_for("cross_training", tab="insights", period=period))
+        db.set_app_setting(key, value, updated_by=login_id)
+    for process, hours in zip(request.form.getlist("cost_process"),
+                              request.form.getlist("cost_hours")):
+        if (hours or "").strip():
+            db.set_xt_training_cost(process, hours, updated_by=login_id)
+    flash("Training cost model saved.", "success")
+    return redirect(url_for("cross_training", tab="insights", period=period))
 
 
 @application.route("/ld-management/cross-training/definitions/expiry-days", methods=["POST"])
@@ -3537,7 +4096,8 @@ def xt_definitions_add():
         flash("Percentages must be numbers.", "warning")
         return redirect(url_for("cross_training", tab="definitions", scenario=scenario))
     db.add_xt_standard(scenario, key, label, request.form.get("group") or "ib", source_depts,
-                        request.form.get("target") or "", pct_early, pct_late, pct_night)
+                        request.form.get("target") or "", pct_early, pct_late, pct_night,
+                        changed_by=login_id, note=request.form.get("change_note"))
     flash(f"Added '{label}' to {dict(db.XT_SCENARIOS)[scenario]}.", "success")
     return redirect(url_for("cross_training", tab="definitions", scenario=scenario))
 
@@ -3574,8 +4134,13 @@ def xt_definitions_bulk_update():
     except (ValueError, IndexError):
         flash("Something in the table didn't parse right — check the percentage columns are numbers.", "warning")
         return redirect(url_for("cross_training", tab="definitions", scenario=scenario))
-    db.bulk_update_xt_standards(rows)
-    flash(f"Saved {len(rows)} standard(s).", "success")
+    logged = db.bulk_update_xt_standards(rows, changed_by=login_id,
+                                         note=request.form.get("change_note"))
+    if logged["stored"]:
+        flash(f"Saved {len(rows)} standard(s) — {logged['stored']} change(s) recorded on "
+              "the Insights tab.", "success")
+    else:
+        flash(f"Saved {len(rows)} standard(s). Nothing had changed.", "info")
     return redirect(url_for("cross_training", tab="definitions", scenario=scenario))
 
 
@@ -3604,8 +4169,13 @@ def internal_xt_targets_bulk_update():
     except (ValueError, IndexError):
         flash("Something in the table didn't parse right — check the target columns are whole numbers.", "warning")
         return redirect(url_for("cross_training", tab="definitions"))
-    db.bulk_update_internal_xt_targets(rows)
-    flash(f"Saved {len(rows)} row(s).", "success")
+    logged = db.bulk_update_internal_xt_targets(rows, changed_by=login_id,
+                                                note=request.form.get("change_note"))
+    if logged["stored"]:
+        flash(f"Saved {len(rows)} row(s) — {logged['stored']} change(s) recorded on "
+              "the Insights tab.", "success")
+    else:
+        flash(f"Saved {len(rows)} row(s). Nothing had changed.", "info")
     return redirect(url_for("cross_training", tab="definitions"))
 
 
@@ -3617,8 +4187,8 @@ def xt_definitions_delete(row_id):
     if not _can_manage_xt_definitions(login_id, _effective_role()):
         return _deny("Only admins, trainers, learning managers, and Senior Operations Managers can edit Cross-Training definitions.")
     scenario = request.form.get("scenario", "general")
-    db.delete_xt_standard(row_id)
-    flash("Standard removed.", "info")
+    db.delete_xt_standard(row_id, changed_by=login_id, note=request.form.get("change_note"))
+    flash("Standard removed — recorded on the Insights tab.", "info")
     return redirect(url_for("cross_training", tab="definitions", scenario=scenario))
 
 
@@ -6603,7 +7173,7 @@ def data_upload():
             elif section == "planning_bts":
                 n = db.ingest_bts_csv(f.read(), f.filename)
             elif section == "xt_hours":
-                n = db.ingest_xt_hours_csv(f.read(), f.filename)
+                n = db.ingest_xt_hours_csv(f.read(), f.filename, uploaded_by=login_id)
             else:
                 n = db.ingest_items_csv(section, f.read(), f.filename)
             flash(f"Imported {n} rows into {db.SECTIONS[section]}.", "success")

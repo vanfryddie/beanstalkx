@@ -170,6 +170,8 @@ _TABLES_WITH_ID_PK = {
     "floor_snapshots", "floor_presence",
     # floor_clock and floor_identity key on a natural column, not an id.
     "xt_exclusions", "ambassador_process_definitions", "ambassador_training_sessions",
+    "xt_target_changes", "xt_rollup_snapshots", "xt_rollup_counts", "process_volume",
+    # xt_training_costs keys on the process name, not an id.
 }
 _INSERT_TABLE_RE = re.compile(r"INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 
@@ -2301,6 +2303,70 @@ def init_db():
             uploaded_by TEXT,
             uploaded_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS xt_target_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            changed_at TEXT NOT NULL,
+            changed_by TEXT,
+            batch TEXT,
+            kind TEXT NOT NULL,
+            scenario TEXT,
+            target_id INTEGER,
+            target_key TEXT,
+            label TEXT,
+            field TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            delta REAL,
+            note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_xt_target_changes_at ON xt_target_changes(changed_at);
+        CREATE INDEX IF NOT EXISTS idx_xt_target_changes_batch ON xt_target_changes(batch);
+
+        CREATE TABLE IF NOT EXISTS xt_rollup_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            taken_at TEXT NOT NULL,
+            filename TEXT,
+            row_count INTEGER,
+            taken_by TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_xt_rollup_snapshots_at ON xt_rollup_snapshots(taken_at);
+
+        CREATE TABLE IF NOT EXISTS xt_rollup_counts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL REFERENCES xt_rollup_snapshots(id),
+            department TEXT,
+            process TEXT,
+            shift TEXT,
+            trained_status TEXT,
+            proficiency_status TEXT,
+            n INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_xt_rollup_counts_snap ON xt_rollup_counts(snapshot_id);
+
+        CREATE TABLE IF NOT EXISTS process_volume (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fc TEXT,
+            work_date TEXT NOT NULL,
+            shift TEXT NOT NULL,
+            process TEXT NOT NULL,
+            units REAL,
+            hours REAL,
+            source TEXT,
+            uploaded_by TEXT,
+            uploaded_at TEXT,
+            UNIQUE(fc, work_date, shift, process)
+        );
+        CREATE INDEX IF NOT EXISTS idx_process_volume_date ON process_volume(work_date);
+        CREATE INDEX IF NOT EXISTS idx_process_volume_process ON process_volume(process, shift);
+
+        CREATE TABLE IF NOT EXISTS xt_training_costs (
+            process TEXT PRIMARY KEY,
+            train_hours REAL,
+            note TEXT,
+            updated_by TEXT,
+            updated_at TEXT
+        );
         """
     )
         # Safe migrations for columns added after the tables above first
@@ -2856,7 +2922,7 @@ def ingest_de_tech_csv(file_bytes, filename):
 # since it's about proven proficiency across many processes at once
 # rather than a single compliance status.
 
-def ingest_xt_hours_csv(file_bytes, filename):
+def ingest_xt_hours_csv(file_bytes, filename, uploaded_by=None):
     """Full-replace ingest — each upload is a fresh census, not an
     incremental delta, so the table is cleared and reloaded each time.
     Column lookups are case-insensitive (via _ci_row) — the source
@@ -2919,6 +2985,10 @@ def ingest_xt_hours_csv(file_bytes, filename):
         "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
         (filename, "xt_hours", now, n),
     )
+    # This import has just deleted the previous census, so the only
+    # record of what the trained population looked like before today is
+    # the rollup taken here. See record_xt_rollup.
+    record_xt_rollup(conn, filename=filename, taken_by=uploaded_by)
     conn.commit()
     conn.close()
     return n
@@ -3155,12 +3225,22 @@ def get_internal_xt_targets():
     return rows
 
 
-def bulk_update_internal_xt_targets(rows):
+def bulk_update_internal_xt_targets(rows, changed_by=None, note=None):
     """rows: list of dicts, each {id, label, source_dept, target_process,
     target_early, target_late, target_night} — one 'Save all changes'
     button for the whole table, matching the pattern used everywhere
-    else in this app."""
+    else in this app.
+
+    Logged the same way the standards are, and for the same reason:
+    these are the numbers a quarter gets reviewed against, and "it used
+    to say 25" is not something anybody should have to remember."""
     conn = get_db()
+    ids = [r["id"] for r in rows]
+    before = {}
+    if ids:
+        before = {r["id"]: dict(r) for r in conn.execute(
+            f"SELECT * FROM internal_xt_targets WHERE id IN ({','.join('?' * len(ids))})",
+            ids).fetchall()}
     for r in rows:
         conn.execute(
             """UPDATE internal_xt_targets SET label=?, source_dept=?, target_process=?,
@@ -3170,6 +3250,21 @@ def bulk_update_internal_xt_targets(rows):
         )
     conn.commit()
     conn.close()
+
+    entries = []
+    for r in rows:
+        old_row = before.get(r["id"])
+        if not old_row:
+            continue
+        for field in ("label", "source_dept", "target_process",
+                      "target_early", "target_late", "target_night"):
+            entries.append({
+                "kind": "internal", "target_id": r["id"],
+                "target_key": old_row.get("label"),
+                "label": r.get("label") or old_row.get("label"), "field": field,
+                "old_value": old_row.get(field), "new_value": r.get(field),
+            })
+    return record_xt_target_changes(entries, changed_by=changed_by, note=note)
 
 
 def get_internal_xt_overview():
@@ -3286,7 +3381,32 @@ def get_xt_standard_defs(scenario="general"):
     return out
 
 
-def add_xt_standard(scenario, key, label, group, source_depts, target, pct_early, pct_late, pct_night):
+# Percentages are stored as fractions and read by people as percents, so
+# the change log keeps the percent: "Early % 20 -> 25, +5" is a sentence,
+# "0.2 -> 0.25, +0.05" is a puzzle.
+def _xt_standard_log_values(row):
+    return {
+        "label": row.get("label"),
+        "group": row.get("group") if "group" in row else row.get("xt_group"),
+        "source": ",".join(row["source"]) if isinstance(row.get("source"), list) else row.get("source"),
+        "target": row.get("target"),
+        "pct_early": round((row.get("pct_early") or 0) * 100, 2),
+        "pct_late": round((row.get("pct_late") or 0) * 100, 2),
+        "pct_night": round((row.get("pct_night") or 0) * 100, 2),
+    }
+
+
+def _xt_standard_rows_by_id(conn, ids):
+    if not ids:
+        return {}
+    rows = conn.execute(
+        f"SELECT * FROM xt_standards WHERE id IN ({','.join('?' * len(ids))})", list(ids)
+    ).fetchall()
+    return {r["id"]: dict(r) for r in rows}
+
+
+def add_xt_standard(scenario, key, label, group, source_depts, target, pct_early, pct_late, pct_night,
+                    changed_by=None, note=None):
     conn = get_db()
     max_sort = conn.execute("SELECT MAX(sort_order) as m FROM xt_standards WHERE scenario=?", (scenario,)).fetchone()
     sort_order = (max_sort["m"] or 0) + 1
@@ -3297,24 +3417,34 @@ def add_xt_standard(scenario, key, label, group, source_depts, target, pct_early
     )
     conn.commit()
     conn.close()
+    record_xt_target_changes(
+        [{"kind": "standard", "scenario": scenario, "target_key": key, "label": label,
+          "field": "created", "old_value": None,
+          "new_value": f"{round((pct_early or 0) * 100)}/{round((pct_late or 0) * 100)}/"
+                       f"{round((pct_night or 0) * 100)}% of {', '.join(source_depts) or 'nothing'}"}],
+        changed_by=changed_by, note=note)
 
 
-def update_xt_standard(row_id, label, group, source_depts, target, pct_early, pct_late, pct_night):
-    conn = get_db()
-    conn.execute(
-        "UPDATE xt_standards SET label=?, xt_group=?, source=?, target=?, pct_early=?, pct_late=?, pct_night=? WHERE id=?",
-        (label, group, ",".join(source_depts), target, pct_early, pct_late, pct_night, row_id),
-    )
-    conn.commit()
-    conn.close()
+def update_xt_standard(row_id, label, group, source_depts, target, pct_early, pct_late, pct_night,
+                       changed_by=None, note=None):
+    bulk_update_xt_standards([{
+        "id": row_id, "label": label, "group": group, "source": source_depts,
+        "target": target, "pct_early": pct_early, "pct_late": pct_late, "pct_night": pct_night,
+    }], changed_by=changed_by, note=note)
 
 
-def bulk_update_xt_standards(rows):
+def bulk_update_xt_standards(rows, changed_by=None, note=None):
     """rows: list of dicts, each {id, label, group, source (list),
     target, pct_early, pct_late, pct_night} — the single 'Save all
     changes' button on the Definitions table updates every row in one
-    request instead of needing a Save per row."""
+    request instead of needing a Save per row.
+
+    The old values are read before the write and the difference is
+    logged, so the record of what a target used to be does not depend on
+    anyone remembering to make one. A save that changes nothing logs
+    nothing (see record_xt_target_changes)."""
     conn = get_db()
+    before = _xt_standard_rows_by_id(conn, [r["id"] for r in rows])
     for r in rows:
         conn.execute(
             "UPDATE xt_standards SET label=?, xt_group=?, source=?, target=?, pct_early=?, pct_late=?, pct_night=? WHERE id=?",
@@ -3324,12 +3454,40 @@ def bulk_update_xt_standards(rows):
     conn.commit()
     conn.close()
 
+    entries = []
+    for r in rows:
+        old_row = before.get(r["id"])
+        if not old_row:
+            continue
+        old_values = _xt_standard_log_values(old_row)
+        new_values = _xt_standard_log_values(r)
+        for field in ("label", "group", "source", "target", "pct_early", "pct_late", "pct_night"):
+            entries.append({
+                "kind": "standard", "scenario": old_row.get("scenario"),
+                "target_id": r["id"], "target_key": old_row.get("std_key"),
+                "label": r.get("label") or old_row.get("label"), "field": field,
+                "old_value": old_values[field], "new_value": new_values[field],
+            })
+    return record_xt_target_changes(entries, changed_by=changed_by, note=note)
 
-def delete_xt_standard(row_id):
+
+def delete_xt_standard(row_id, changed_by=None, note=None):
     conn = get_db()
+    row = conn.execute("SELECT * FROM xt_standards WHERE id=?", (row_id,)).fetchone()
+    removed = dict(row) if row else None
     conn.execute("DELETE FROM xt_standards WHERE id=?", (row_id,))
     conn.commit()
     conn.close()
+    if removed:
+        values = _xt_standard_log_values(removed)
+        record_xt_target_changes(
+            [{"kind": "standard", "scenario": removed.get("scenario"), "target_id": row_id,
+              "target_key": removed.get("std_key"), "label": removed.get("label"),
+              "field": "removed",
+              "old_value": f"{values['pct_early']}/{values['pct_late']}/{values['pct_night']}% "
+                           f"of {removed.get('source') or 'nothing'}",
+              "new_value": None}],
+            changed_by=changed_by, note=note)
 
 
 def get_safety_compliance_health():
@@ -3642,6 +3800,446 @@ def get_xt_team(manager_login):
     logins = [r["employee_login"] for r in rows]
     return _xt_employee_profiles(logins)
 
+
+
+# ====================================================================
+# Cross-Training Insights
+#
+# Three things the rest of the cross-training pages cannot answer,
+# because each needs history and the live tables keep none:
+#
+#   * what the targets used to be, who changed them and why. The
+#     standards and internal targets are edited in place, so before
+#     this the only record of a change was that the number was
+#     different;
+#   * how the trained population moved. xt_hours is a full-replace
+#     census — every upload deletes the last one — so a rollup of each
+#     upload is kept here, small enough to keep for years;
+#   * how much work each process actually did, which lives in no export
+#     this console has ever been given, so it gets a table and an
+#     importer of its own and the page says plainly when it is empty.
+#
+# The recommendation engine on top of these lives in application.py;
+# everything here is storage and arithmetic over stored rows.
+# ====================================================================
+
+XT_PERIODS = {"week": "Week", "month": "Month", "quarter": "Quarter"}
+
+
+def period_key(day, period):
+    """The bucket one date falls in: '2026-W47', '2026-11' or '2026-Q4'.
+
+    Weeks are ISO weeks, so a week belongs to whichever year holds its
+    Thursday — which is why the year here comes from isocalendar() and
+    not from the date itself."""
+    if isinstance(day, str):
+        try:
+            day = date.fromisoformat(day[:10])
+        except ValueError:
+            return None
+    if not day:
+        return None
+    if period == "week":
+        iso = day.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    if period == "month":
+        return f"{day.year}-{day.month:02d}"
+    if period == "quarter":
+        return f"{day.year}-Q{(day.month - 1) // 3 + 1}"
+    return None
+
+
+def period_label(key):
+    """A bucket key as a person would say it."""
+    if not key:
+        return "Undated"
+    if "-W" in key:
+        year, week = key.split("-W")
+        start = date.fromisocalendar(int(year), int(week), 1)
+        return f"w/c {start.strftime('%d %b %Y')}"
+    if "-Q" in key:
+        return key.replace("-", " ")
+    try:
+        year, month = key.split("-")
+        return date(int(year), int(month), 1).strftime("%B %Y")
+    except ValueError:
+        return key
+
+
+def period_start(key):
+    """The first day of a bucket, for sorting and for date arithmetic."""
+    if not key:
+        return None
+    try:
+        if "-W" in key:
+            year, week = key.split("-W")
+            return date.fromisocalendar(int(year), int(week), 1)
+        if "-Q" in key:
+            year, quarter = key.split("-Q")
+            return date(int(year), (int(quarter) - 1) * 3 + 1, 1)
+        year, month = key.split("-")
+        return date(int(year), int(month), 1)
+    except (ValueError, TypeError):
+        return None
+
+
+def recent_periods(period, count, today=None):
+    """The last `count` buckets ending with the one we are in, oldest
+    first. Built by walking back from today rather than from whatever
+    the data happens to contain, so a period with nothing in it shows as
+    a period with nothing in it."""
+    today = today or date.today()
+    keys = []
+    cursor = today
+    while len(keys) < count:
+        key = period_key(cursor, period)
+        if key and key not in keys:
+            keys.append(key)
+        start = period_start(key)
+        if not start:
+            break
+        cursor = start - timedelta(days=1)
+    return list(reversed(keys))
+
+
+# -------------------------------------------------- target changes ----
+
+# Which fields are worth a line in the log, and what to call them. A
+# target moving is the point of the log; a label being corrected is
+# noise next to it but still belongs in the record, so both are kept and
+# the page separates them.
+XT_CHANGE_FIELDS = {
+    "target": "Target process",
+    "pct_early": "Early %",
+    "pct_late": "Late %",
+    "pct_night": "Night %",
+    "target_early": "Early target",
+    "target_late": "Late target",
+    "target_night": "Night target",
+    "label": "Name",
+    "source": "Source departments",
+    "group": "Group",
+    "source_dept": "Source department",
+    "target_process": "Target process",
+    "created": "Created",
+    "removed": "Removed",
+}
+XT_NUMERIC_CHANGE_FIELDS = {"pct_early", "pct_late", "pct_night",
+                            "target_early", "target_late", "target_night"}
+
+
+def _as_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def record_xt_target_changes(entries, changed_by=None, note=None, batch=None):
+    """Write one save's worth of target changes to the log.
+
+    `entries` are dicts of {kind, scenario, target_id, target_key,
+    label, field, old_value, new_value}. Entries whose value did not
+    actually move are dropped here rather than at every call site, so a
+    Save-all button that rewrites forty unchanged rows logs nothing.
+
+    One note covers one save, because that is how a person writes one:
+    they change three targets for one reason. The note is stored against
+    every row of the batch so a row can be read on its own, and the
+    batch id groups them back together on the page."""
+    batch = batch or uuid.uuid4().hex[:12]
+    now = _now()
+    note = (note or "").strip() or None
+    written = []
+    for entry in entries or []:
+        old_value = entry.get("old_value")
+        new_value = entry.get("new_value")
+        old_text = "" if old_value is None else str(old_value)
+        new_text = "" if new_value is None else str(new_value)
+        field = entry.get("field")
+        if field not in ("created", "removed") and old_text == new_text:
+            continue
+        old_number, new_number = _as_number(old_value), _as_number(new_value)
+        delta = (new_number - old_number) if (old_number is not None and new_number is not None) else None
+        written.append((now, changed_by, batch, entry.get("kind") or "standard",
+                        entry.get("scenario"), entry.get("target_id"),
+                        entry.get("target_key"), entry.get("label"),
+                        field, old_text or None, new_text or None, delta, note))
+    if not written:
+        return {"stored": 0, "batch": batch}
+    conn = get_db()
+    cur = conn.cursor()
+    for row in written:
+        cur.execute(
+            """INSERT INTO xt_target_changes
+               (changed_at, changed_by, batch, kind, scenario, target_id, target_key,
+                label, field, old_value, new_value, delta, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", row)
+    conn.commit()
+    conn.close()
+    return {"stored": len(written), "batch": batch}
+
+
+def set_xt_change_note(batch, note, changed_by=None):
+    """Attach or correct the reason on an already-saved batch.
+
+    Because the note is the part people forget in the moment and want
+    back when the quarter is reviewed, and a log you cannot annotate
+    afterwards is a log nobody annotates."""
+    conn = get_db()
+    conn.execute("UPDATE xt_target_changes SET note=? WHERE batch=?",
+                 ((note or "").strip() or None, batch))
+    conn.commit()
+    conn.close()
+
+
+def get_xt_target_changes(since=None, limit=2000):
+    """The target change log, newest first."""
+    conn = get_db()
+    if since:
+        rows = conn.execute(
+            "SELECT * FROM xt_target_changes WHERE changed_at >= ? "
+            "ORDER BY changed_at DESC, id DESC LIMIT ?", (since, limit)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM xt_target_changes ORDER BY changed_at DESC, id DESC LIMIT ?",
+            (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ------------------------------------------- the trained population ----
+
+def record_xt_rollup(conn, filename=None, taken_by=None):
+    """Keep a compact census of the cross-training table as it stands.
+
+    Called at the end of every xt_hours import, because that import
+    deletes everything that came before it: without this there is no way
+    to answer "did we gain or lose trained people this month", which is
+    the first question anyone asks of a training programme.
+
+    Counts, not people. One upload is at most a few hundred rows here
+    where the source is tens of thousands, so years of them cost less
+    than one census and the question this answers — how many, where,
+    trained and current — is a counting question."""
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO xt_rollup_snapshots (taken_at, filename, row_count, taken_by) "
+        "VALUES (?,?,?,?)",
+        (_now(), filename, 0, taken_by))
+    snapshot_id = cur.lastrowid
+    rows = conn.execute(
+        "SELECT fclm_mapped AS department, merged_function AS process, shift, "
+        "       trained_status, proficiency_status, COUNT(*) AS n "
+        "FROM xt_hours "
+        "GROUP BY fclm_mapped, merged_function, shift, trained_status, proficiency_status"
+    ).fetchall()
+    total = 0
+    for r in rows:
+        total += r["n"]
+        cur.execute(
+            "INSERT INTO xt_rollup_counts (snapshot_id, department, process, shift, "
+            "trained_status, proficiency_status, n) VALUES (?,?,?,?,?,?,?)",
+            (snapshot_id, r["department"], r["process"], r["shift"],
+             r["trained_status"], r["proficiency_status"], r["n"]))
+    cur.execute("UPDATE xt_rollup_snapshots SET row_count=? WHERE id=?", (total, snapshot_id))
+    return snapshot_id
+
+
+def get_xt_rollup_snapshots(since=None):
+    """Every stored census, oldest first, with its counts attached."""
+    conn = get_db()
+    if since:
+        snaps = conn.execute(
+            "SELECT * FROM xt_rollup_snapshots WHERE taken_at >= ? ORDER BY taken_at",
+            (since,)).fetchall()
+    else:
+        snaps = conn.execute(
+            "SELECT * FROM xt_rollup_snapshots ORDER BY taken_at").fetchall()
+    snaps = [dict(s) for s in snaps]
+    if not snaps:
+        conn.close()
+        return []
+    ids = [s["id"] for s in snaps]
+    counts = conn.execute(
+        f"SELECT * FROM xt_rollup_counts WHERE snapshot_id IN ({','.join('?' * len(ids))})",
+        ids).fetchall()
+    conn.close()
+    by_snapshot = {}
+    for c in counts:
+        by_snapshot.setdefault(c["snapshot_id"], []).append(dict(c))
+    for snap in snaps:
+        snap["counts"] = by_snapshot.get(snap["id"], [])
+    return snaps
+
+
+# ----------------------------------------------- volume per process ----
+
+# What the importer reads. Spelled out because no export the console has
+# been given carries this yet — the shape is this app's, so it has to be
+# stated somewhere a person can read it, and the Insights tab prints
+# exactly these names.
+PROCESS_VOLUME_COLUMNS = [
+    ("date", "The day the work was done — YYYY-MM-DD, or anything Excel writes as a date."),
+    ("shift", "early / late / night, or the D / L / N shift-code prefix this site already uses."),
+    ("process", "The process name as the cross-training data spells it, e.g. Pick or Stow Each Nike."),
+    ("units", "Units processed — whatever this site counts that process in."),
+    ("hours", "Paid hours worked on that process that day. Optional, but the recommendations need it."),
+    ("fc", "Optional, for a multi-site file."),
+]
+
+
+def _volume_shift(value):
+    """The three shift names, from any of the spellings this site uses."""
+    text = (value or "").strip().lower()
+    if not text:
+        return None
+    if text in SHIFTS:
+        return text
+    first = text[0].upper()
+    return {"D": "early", "L": "late", "N": "night",
+            "E": "early", "S": "late"}.get(first)
+
+
+def _volume_date(value):
+    """A date from the handful of shapes a spreadsheet exports."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    text = text.replace("/", "-")
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%m-%d-%Y", "%Y-%m-%d %H:%M:%S", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(text[:len(fmt) + 4].strip(), fmt).date().isoformat()
+        except ValueError:
+            continue
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def ingest_process_volume_csv(file_bytes, filename, uploaded_by=None):
+    """Load processed volume per process, per shift, per day.
+
+    Not a full replace, unlike the other imports here: this is a
+    history, and a file covering last week must not delete the week
+    before it. A row for a day and process already loaded replaces that
+    row, so re-uploading a corrected file does the right thing."""
+    text = file_bytes.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    conn = get_db()
+    cur = conn.cursor()
+    now = _now()
+    loaded, skipped = 0, 0
+    for raw in reader:
+        row = _ci_row(raw)
+        work_date = _volume_date(row.get("date") or row.get("work_date") or row.get("day"))
+        shift = _volume_shift(row.get("shift"))
+        process = _clean(row.get("process") or row.get("merged function") or row.get("function"))
+        if not work_date or not shift or not process:
+            skipped += 1
+            continue
+        units = _as_number(row.get("units") or row.get("volume") or row.get("quantity"))
+        hours = _as_number(row.get("hours") or row.get("paid hours") or row.get("paid_hours"))
+        # Never NULL: the unique key below includes fc, and in SQL one
+        # NULL does not equal another, so a file without an fc column
+        # would insert a fresh duplicate on every re-upload instead of
+        # replacing the day it covers.
+        fc = _clean(row.get("fc")) or get_current_site()
+        cur.execute(
+            """INSERT INTO process_volume (fc, work_date, shift, process, units, hours,
+                                           source, uploaded_by, uploaded_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT (fc, work_date, shift, process) DO UPDATE SET
+                 units=excluded.units, hours=excluded.hours, source=excluded.source,
+                 uploaded_by=excluded.uploaded_by, uploaded_at=excluded.uploaded_at""",
+            (fc, work_date, shift, process, units, hours, filename, uploaded_by, now))
+        loaded += 1
+    cur.execute(
+        "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
+        (filename, "process_volume", now, loaded))
+    conn.commit()
+    conn.close()
+    return {"loaded": loaded, "skipped": skipped}
+
+
+def get_process_volume(since=None):
+    """Volume rows, oldest first."""
+    conn = get_db()
+    if since:
+        rows = conn.execute(
+            "SELECT * FROM process_volume WHERE work_date >= ? ORDER BY work_date", (since,)
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM process_volume ORDER BY work_date").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def process_volume_coverage():
+    """What the volume table holds, for a page that has to say whether
+    it can answer the question being asked of it."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT COUNT(*) AS rows, MIN(work_date) AS first_day, MAX(work_date) AS last_day, "
+        "COUNT(DISTINCT process) AS processes, "
+        "SUM(CASE WHEN hours IS NULL THEN 1 ELSE 0 END) AS without_hours "
+        "FROM process_volume").fetchone()
+    conn.close()
+    return dict(row) if row else {"rows": 0}
+
+
+# ------------------------------------------------ what training costs ----
+
+# Defaults, not facts: a site sets its own on the Definitions tab. They
+# are here so the cost side of a recommendation says something from the
+# first day rather than nothing until somebody fills a form in.
+XT_DEFAULT_TRAIN_HOURS = 8.0
+XT_DEFAULT_HOURLY_COST = 20.0
+XT_DEFAULT_SHIFT_HOURS = 9.5
+# Trained people are not all available at once: holidays, absence, the
+# other process they are also trained on. The pool has to be bigger than
+# the heads needed on shift, and this is by how much.
+XT_DEFAULT_COVER_FACTOR = 1.3
+
+
+def get_xt_training_costs():
+    """Per-process training hours, by process name."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM xt_training_costs ORDER BY process").fetchall()
+    conn.close()
+    return {r["process"]: dict(r) for r in rows}
+
+
+def set_xt_training_cost(process, train_hours, note=None, updated_by=None):
+    process = (process or "").strip()
+    if not process:
+        return
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO xt_training_costs (process, train_hours, note, updated_by, updated_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT (process) DO UPDATE SET
+             train_hours=excluded.train_hours, note=excluded.note,
+             updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+        (process, _as_number(train_hours), (note or "").strip() or None, updated_by, _now()))
+    conn.commit()
+    conn.close()
+
+
+def get_xt_cost_model():
+    """The numbers the recommendations are priced with."""
+    def setting(key, fallback):
+        value = _as_number(get_app_setting(key))
+        return value if value and value > 0 else fallback
+
+    return {
+        "hourly_cost": setting("xt_training_hourly_cost", XT_DEFAULT_HOURLY_COST),
+        "shift_hours": setting("xt_shift_hours", XT_DEFAULT_SHIFT_HOURS),
+        "cover_factor": setting("xt_cover_factor", XT_DEFAULT_COVER_FACTOR),
+        "default_train_hours": setting("xt_default_train_hours", XT_DEFAULT_TRAIN_HOURS),
+        "per_process": get_xt_training_costs(),
+    }
 
 def get_xt_retention_report():
     """The Retention tab's data: for every shift, every process's

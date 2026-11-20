@@ -1,0 +1,413 @@
+{% set ins = insights %}
+{% import "_dashboard.html" as dash %}
+{#- Cross-Training Insights.
+
+    Three histories the rest of the cross-training pages cannot show,
+    because the live tables keep none of them: what the targets used to
+    be and why they moved, how the trained population moved, and what
+    the floor actually processed. The recommendations at the bottom are
+    the three read together.
+
+    Every number here says where it came from. A recommendation nobody
+    can check is a recommendation nobody will act on. -#}
+
+<div class="xi-head">
+  <div>
+    <h2 class="xi-title">Cross-training insights</h2>
+    <p class="xi-sub">
+      Target history, the trained population over time, and what the volume says the
+      targets should be. Recapped by {{ ins.period_label|lower }}.
+    </p>
+  </div>
+  <nav class="xi-periods" aria-label="Recap period">
+    {% for key, label in xt_periods.items() %}
+    <a href="{{ url_for('cross_training', tab='insights', scenario=scenario, period=key) }}"
+       class="{{ 'active' if ins.period == key }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+</div>
+
+<section class="xi-stats" aria-label="Headlines">
+  <div class="xi-stat">
+    <span class="xi-stat-label">Trained records</span>
+    <strong>{{ ins.latest.trained if ins.latest else '—' }}</strong>
+    <span class="xi-stat-sub">
+      {%- if ins.latest and ins.latest.delta is not none -%}
+        {{ '+' if ins.latest.delta > 0 }}{{ ins.latest.delta }} on the previous {{ ins.period }}
+      {%- elif ins.latest -%}
+        at {{ ins.latest.label }}
+      {%- else -%}
+        no census stored yet
+      {%- endif -%}
+    </span>
+  </div>
+  <div class="xi-stat">
+    <span class="xi-stat-label">Lapsed</span>
+    <strong class="{{ 'is-risk' if ins.latest and ins.latest.lapse_pct and ins.latest.lapse_pct >= 15 }}">
+      {{ ins.latest.lapsed if ins.latest else '—' }}</strong>
+    <span class="xi-stat-sub">
+      {% if ins.latest and ins.latest.lapse_pct is not none %}{{ ins.latest.lapse_pct }}% of trained records
+      {% else %}no census stored yet{% endif %}
+    </span>
+  </div>
+  <div class="xi-stat">
+    <span class="xi-stat-label">Targets changed</span>
+    <strong>{{ ins.moves }}</strong>
+    <span class="xi-stat-sub">
+      {{ ins.raised }} up, {{ ins.lowered }} down, across {{ ins.batch_count }} save(s)
+    </span>
+  </div>
+  <div class="xi-stat">
+    <span class="xi-stat-label">Changes with a reason</span>
+    <strong class="{{ 'is-risk' if ins.batch_count and ins.with_note < ins.batch_count }}">
+      {{ ins.with_note }}/{{ ins.batch_count }}</strong>
+    <span class="xi-stat-sub">a note can still be added below</span>
+  </div>
+</section>
+
+{% if ins.signals %}
+<h3 class="dash-section-label">What the numbers are saying</h3>
+<div class="xi-signals">
+  {% for signal in ins.signals %}
+  <div class="xi-signal xi-signal-{{ signal.severity }}">
+    <i class="dash-dot dash-dot-{{ 'bad' if signal.severity == 'risk' else ('watch' if signal.severity == 'watch' else ('good' if signal.severity == 'good' else 'none')) }}"></i>
+    <div><strong>{{ signal.title }}</strong><span>{{ signal.detail }}</span></div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<h3 class="dash-section-label">Recap by {{ ins.period }}</h3>
+{% if ins.snapshots %}
+<div class="dash-table-scroll">
+  <table class="dash-table xi-table">
+    <thead>
+      <tr>
+        <th scope="col">{{ ins.period_label }}</th>
+        <th scope="col" class="num">Trained</th>
+        <th scope="col" class="num">Net change</th>
+        <th scope="col" class="num">Lapsed</th>
+        <th scope="col" class="num">Proficient</th>
+        <th scope="col" class="num">Practice</th>
+        <th scope="col" class="num">Refresh</th>
+        <th scope="col" class="num">Target moves</th>
+        <th scope="col" class="num">Volume</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set volume_by_key = {} %}
+      {% for v in ins.volume.per_period %}{% set _ = volume_by_key.update({v.key: v}) %}{% endfor %}
+      {% for p in ins.periods|reverse %}
+      <tr class="{{ 'xi-nodata' if not p.has_data }}">
+        <th scope="row">{{ p.label }}</th>
+        {% if p.has_data %}
+        <td class="num mono">{{ p.trained }}</td>
+        <td class="num mono {{ 'is-up' if p.delta and p.delta > 0 }}{{ 'is-down' if p.delta and p.delta < 0 }}">
+          {%- if p.delta is none %}—{% else %}{{ '+' if p.delta > 0 }}{{ p.delta }}{% endif -%}
+        </td>
+        <td class="num mono">{{ p.lapsed }}{% if p.lapse_pct is not none %} <em>{{ p.lapse_pct }}%</em>{% endif %}</td>
+        <td class="num mono">{{ p.proficient }}</td>
+        <td class="num mono">{{ p.practice }}</td>
+        <td class="num mono">{{ p.refresh }}</td>
+        {% else %}
+        <td class="num dash-muted" colspan="6">No cross-training upload in this {{ ins.period }}</td>
+        {% endif %}
+        <td class="num mono">{{ p.target_moves or '—' }}</td>
+        <td class="num mono">
+          {%- set v = volume_by_key.get(p.key) -%}
+          {%- if v and v.units %}{{ '{:,}'.format(v.units) }}{% else %}—{% endif -%}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="xi-note">
+  One trained record is one person on one process, which is the unit the targets are set in.
+  The state shown for a {{ ins.period }} is the last cross-training upload inside it — a
+  {{ ins.period }} with no upload is left blank rather than carrying the one before it forward.
+</p>
+{% else %}
+<div class="dash-empty dash-empty-page">
+  <strong>No cross-training census has been stored yet.</strong>
+  <p style="margin:8px 0 0; font-size:13px; color:var(--text-lo); max-width:68ch;">
+    Each Hours-on-Function upload replaces the last one, so this page keeps a small rollup of
+    every import to measure movement against. The first one is taken on the next upload from
+    <a href="{{ url_for('ld_settings', tab='data') }}">Manage source data</a>, and the recap
+    fills in from there.
+  </p>
+</div>
+{% endif %}
+
+<h3 class="dash-section-label">Target changes</h3>
+{% if ins.batches %}
+<div class="xi-changes">
+  {% for batch in ins.batches %}
+  <details class="xi-change" {{ 'open' if loop.index <= 3 }}>
+    <summary>
+      <span class="xi-change-when">{{ batch.changed_at[:16]|replace('T', ' ') }}</span>
+      <span class="xi-change-who">{{ batch.changed_by or 'unknown' }}</span>
+      <span class="xi-change-count">
+        {{ batch.targets }} target(s){% if batch.moves %} ·
+        {{ batch.raised }}&uarr; {{ batch.lowered }}&darr;{% endif %}
+      </span>
+      {% if batch.note %}<span class="xi-change-note-pill">has a reason</span>
+      {% else %}<span class="xi-change-note-pill is-missing">no reason given</span>{% endif %}
+    </summary>
+    <div class="xi-change-body">
+      <table class="dash-table xi-change-table">
+        <thead><tr><th scope="col">Standard</th><th scope="col">What changed</th><th scope="col" class="num">From</th><th scope="col" class="num">To</th><th scope="col" class="num">Move</th></tr></thead>
+        <tbody>
+          {% for row in batch.rows %}
+          <tr>
+            <th scope="row">{{ row.label or row.target_key }}
+              <span class="mono">{{ 'internal' if row.kind == 'internal' else (row.scenario or 'general') }}</span></th>
+            <td>{{ xt_change_fields.get(row.field, row.field) }}</td>
+            <td class="num mono">{{ row.old_value if row.old_value is not none else '—' }}</td>
+            <td class="num mono">{{ row.new_value if row.new_value is not none else '—' }}</td>
+            <td class="num mono {{ 'is-up' if row.delta and row.delta > 0 }}{{ 'is-down' if row.delta and row.delta < 0 }}">
+              {%- if row.delta is none %}—{% else %}{{ '+' if row.delta > 0 }}{{ row.delta|round(2)|int if row.delta == row.delta|round(0) else row.delta|round(2) }}{% endif -%}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form class="xi-note-form" method="POST" action="{{ url_for('xt_change_note') }}">
+        <input type="hidden" name="batch" value="{{ batch.batch }}">
+        <input type="hidden" name="period" value="{{ ins.period }}">
+        <label>
+          <span>Reason</span>
+          <input type="text" name="note" maxlength="400" value="{{ batch.note or '' }}"
+                 placeholder="Why was this changed? Worth writing while you still remember.">
+        </label>
+        <button class="btn btn-ghost btn-sm" type="submit">Save reason</button>
+      </form>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% else %}
+<div class="dash-empty dash-empty-page">
+  <strong>No target changes recorded in this window.</strong>
+  <p style="margin:8px 0 0; font-size:13px; color:var(--text-lo); max-width:68ch;">
+    Every save on the <a href="{{ url_for('cross_training', tab='definitions', scenario=scenario) }}">Definitions</a>
+    tab is recorded here from now on, with whatever reason was given at the time. Only the
+    fields that actually moved are logged, so a Save-all that changes nothing records nothing.
+  </p>
+</div>
+{% endif %}
+
+<h3 class="dash-section-label">Volume per process</h3>
+{% if ins.volume_coverage.rows %}
+<p class="xi-note">
+  {{ '{:,}'.format(ins.volume_coverage.rows) }} day/process rows,
+  {{ ins.volume_coverage.first_day }} to {{ ins.volume_coverage.last_day }},
+  across {{ ins.volume_coverage.processes }} process(es).
+  {% if ins.volume_coverage.without_hours %}
+  <strong>{{ ins.volume_coverage.without_hours }} of them carry no hours</strong> — units alone
+  say how much work there was, not how many people it took, so those rows cannot drive a
+  recommendation.
+  {% endif %}
+</p>
+<div class="dash-table-scroll">
+  <table class="dash-table xi-table">
+    <thead><tr><th scope="col">{{ ins.period_label }}</th><th scope="col" class="num">Units</th><th scope="col" class="num">Hours</th><th scope="col" class="num">Units/hour</th><th scope="col" class="num">Days covered</th></tr></thead>
+    <tbody>
+      {% for v in ins.volume.per_period|reverse %}
+      {% if v.units or v.hours %}
+      <tr>
+        <th scope="row">{{ v.label }}</th>
+        <td class="num mono">{{ '{:,}'.format(v.units) }}</td>
+        <td class="num mono">{{ '{:,}'.format(v.hours) }}</td>
+        <td class="num mono">{{ (v.units / v.hours)|round(1) if v.hours else '—' }}</td>
+        <td class="num mono">{{ v.days }}</td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="xi-empty-source">
+  <strong>No volume data loaded yet — the recommendations below need it.</strong>
+  <p>
+    Nothing this console is given today carries units processed per process per shift, so it
+    has a table and an importer of its own. Until a file arrives, the targets are set by
+    headcount percentage alone and everything else on this page still works.
+  </p>
+  <p class="xi-columns-intro">A CSV with these columns, one row per day, process and shift:</p>
+  <table class="dash-table xi-columns">
+    <thead><tr><th scope="col">Column</th><th scope="col">What goes in it</th></tr></thead>
+    <tbody>
+      {% for name, meaning in ins.volume_columns %}
+      <tr><th scope="row" class="mono">{{ name }}</th><td>{{ meaning }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if can_manage_xt %}
+<form class="xi-upload" method="POST" action="{{ url_for('xt_volume_upload') }}" enctype="multipart/form-data">
+  <input type="hidden" name="period" value="{{ ins.period }}">
+  <label><span>Load volume CSV</span><input type="file" name="file" accept=".csv" required></label>
+  <button class="btn btn-gold btn-sm" type="submit">Upload</button>
+  <span class="xi-upload-note">
+    Loads alongside what is already there — a file covering last week does not delete the week
+    before it, and re-uploading a corrected file replaces only the days it covers.
+  </span>
+</form>
+{% endif %}
+
+<h3 class="dash-section-label">Recommended targets</h3>
+{% if ins.recommended %}
+<p class="xi-note">
+  Built from the busiest single day of the latest {{ ins.period }} — an average day never
+  happens — scaled by what volume is doing, then multiplied by
+  {{ ins.cost_model.cover_factor }}&times; for absence and for the other processes these
+  people are also trained on. A shift is {{ ins.cost_model.shift_hours }} hours.
+  Costs use {{ ins.cost_model.default_train_hours }} training hours at
+  {{ ins.cost_model.hourly_cost }} an hour unless a process says otherwise.
+</p>
+{% set acting = ins.recommended | selectattr('recommendation.short_by') | list %}
+{% set settled = ins.recommended | rejectattr('recommendation.short_by') | list %}
+{% macro rec_table(rows) %}
+<div class="dash-table-scroll">
+  <table class="dash-table xi-table xi-recs">
+    <thead>
+      <tr>
+        <th scope="col">Path</th><th scope="col">Shift</th>
+        <th scope="col" class="num">Trained</th><th scope="col" class="num">Target now</th>
+        <th scope="col" class="num">Recommended</th><th scope="col" class="num">Move</th>
+        <th scope="col" class="num">Cost to close</th><th scope="col">Why</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in rows %}
+      {% set r = p.recommendation %}
+      <tr>
+        <th scope="row">{{ p.label }}<span class="mono">{{ p.process }}</span></th>
+        <td>{{ shifts.get(p.shift, p.shift) }}</td>
+        <td class="num mono">{{ r.trained }}</td>
+        <td class="num mono">{{ r.current_target }}</td>
+        <td class="num mono"><strong>{{ r.recommended }}</strong></td>
+        <td class="num mono {{ 'is-up' if r.target_move and r.target_move > 0 }}{{ 'is-down' if r.target_move and r.target_move < 0 }}">
+          {%- if r.target_move is none %}—{% else %}{{ '+' if r.target_move > 0 }}{{ r.target_move }}{% endif -%}
+        </td>
+        <td class="num mono">
+          {%- if r.short_by %}{{ '{:,}'.format(r.cost_to_close) }}
+          {%- elif r.spare %}<span class="dash-muted">{{ '{:,}'.format(r.cost_of_spare) }} spare</span>
+          {%- else %}<span class="dash-muted">on it</span>{% endif -%}
+        </td>
+        <td class="xi-why">
+          {{ '{:,}'.format(r.latest_units) }} units over {{ '{:,}'.format(r.latest_hours) }} hours
+          in {{ r.latest_label }}; busiest day needed {{ r.peak_heads }} on shift;
+          volume {{ 'flat' if r.trend_pct is none or (r.trend_pct|abs) < 1 else (('up ' ~ r.trend_pct ~ '%') if r.trend_pct > 0 else ('down ' ~ (r.trend_pct|abs) ~ '%')) }}
+          per {{ ins.period }}; &times;{{ r.cover_factor }} cover.
+          {% if r.no_pool %}
+          <em class="xi-lowconf">Nobody is in this path's source departments — train whom?</em>
+          {% elif r.pool_limited %}
+          <em class="xi-lowconf">Capped at the {{ r.pool }} people the source departments hold; the volume asks for more than training can give.</em>
+          {% endif %}
+          {% if not r.confident %}
+          <em class="xi-lowconf">{{ r.periods_used }} complete {{ ins.period }}(s) of data — thin; needs {{ ins.confident_after }}.</em>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{{ rec_table(acting) }}
+{% if settled %}
+<details class="xi-more">
+  <summary>{{ settled | length }} path(s) where the pool already covers the volume</summary>
+  {{ rec_table(settled) }}
+</details>
+{% endif %}
+{% if not acting and not settled %}
+<div class="dash-empty dash-empty-page"><strong>Nothing to recommend yet.</strong></div>
+{% endif %}
+{% else %}
+<div class="dash-empty dash-empty-page">
+  <strong>Nothing to recommend yet.</strong>
+  <p style="margin:8px 0 0; font-size:13px; color:var(--text-lo); max-width:68ch;">
+    A recommendation needs volume and hours for a process whose name matches a defined path.
+    {% if not ins.volume_coverage.rows %}No volume has been loaded.
+    {% else %}Volume is loaded, but none of its process names match a defined cross-training
+    path — the two are typed by different people and will not always agree.{% endif %}
+  </p>
+</div>
+{% endif %}
+
+<details class="xi-more">
+  <summary>Every defined path, as it stands ({{ ins.paths | length }})</summary>
+<div class="dash-table-scroll">
+  <table class="dash-table xi-table">
+    <thead>
+      <tr><th scope="col">Path</th><th scope="col">Shift</th><th scope="col" class="num">Source HC</th>
+      <th scope="col" class="num">Target</th><th scope="col" class="num">Trained</th>
+      <th scope="col" class="num">Gap</th><th scope="col" class="num">Expiring</th>
+      <th scope="col">Volume</th></tr>
+    </thead>
+    <tbody>
+      {% for p in ins.paths %}
+      <tr class="{{ 'xi-chronic' if p.chronic_gap }}">
+        <th scope="row">{{ p.label }}<span class="mono">{{ 'internal' if p.kind == 'internal' else p.key }}</span></th>
+        <td>{{ shifts.get(p.shift, p.shift) }}</td>
+        <td class="num mono">{{ p.headcount }}</td>
+        <td class="num mono">{{ p.target }}</td>
+        <td class="num mono">{{ p.trained }}</td>
+        <td class="num mono {{ 'is-down' if p.gap < 0 }}{{ 'is-up' if p.gap > 0 }}">{{ '+' if p.gap > 0 }}{{ p.gap }}</td>
+        <td class="num mono">{{ p.expiring or '—' }}</td>
+        <td>{% if p.volume_matched %}<span class="dash-muted">matched</span>
+            {% else %}<span class="dash-muted">no volume for this process</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+</details>
+
+{% if can_manage_xt %}
+<details class="xi-more">
+  <summary>What training costs</summary>
+<form class="xi-costs" method="POST" action="{{ url_for('xt_cost_model_save') }}">
+  <input type="hidden" name="period" value="{{ ins.period }}">
+  <div class="xi-cost-row">
+    <label><span>Hourly cost</span>
+      <input type="number" step="0.01" min="0.01" name="hourly_cost" value="{{ ins.cost_model.hourly_cost }}"></label>
+    <label><span>Hours in a shift</span>
+      <input type="number" step="0.25" min="0.25" name="shift_hours" value="{{ ins.cost_model.shift_hours }}"></label>
+    <label><span>Cover factor</span>
+      <input type="number" step="0.05" min="1" name="cover_factor" value="{{ ins.cost_model.cover_factor }}"></label>
+    <label><span>Default training hours</span>
+      <input type="number" step="0.5" min="0.5" name="default_train_hours" value="{{ ins.cost_model.default_train_hours }}"></label>
+  </div>
+  <p class="xi-note">
+    The cover factor is how much bigger the trained pool has to be than the heads needed on
+    shift, for holidays, absence, and the other process somebody is also trained on. Set a
+    process's own training hours below where it differs from the default.
+  </p>
+  <div class="dash-table-scroll">
+    <table class="dash-table xi-table">
+      <thead><tr><th scope="col">Process</th><th scope="col" class="num">Training hours</th><th scope="col" class="num">Cost per head</th></tr></thead>
+      <tbody>
+        {% for process in (ins.paths | map(attribute='process') | select | unique | sort) %}
+        {% set cost = ins.cost_model.per_process.get(process) %}
+        <tr>
+          <th scope="row">{{ process }}<input type="hidden" name="cost_process" value="{{ process }}"></th>
+          <td class="num"><input type="number" step="0.5" min="0" name="cost_hours"
+                 value="{{ cost.train_hours if cost and cost.train_hours is not none else ins.cost_model.default_train_hours }}"></td>
+          <td class="num mono">{{ '{:,}'.format(((cost.train_hours if cost and cost.train_hours is not none else ins.cost_model.default_train_hours) * ins.cost_model.hourly_cost)|round|int) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div style="margin-top:14px;"><button class="btn btn-gold btn-sm" type="submit">Save cost model</button></div>
+</form>
+</details>
+{% endif %}
