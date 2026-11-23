@@ -4691,3 +4691,49 @@ html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }
 .xi-more[open] > summary { border-bottom: 1px solid var(--hairline); }
 .xi-more > *:not(summary) { padding: 0 16px 16px; }
 .xi-more .dash-table-scroll { padding-top: 14px; }
+
+/* Shift configuration — working times, rotations, codes. */
+.sh-coverage { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin: 2px 0 20px; padding: 14px 16px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.sh-coverage.is-thin { border-color: rgba(255,159,10,.32); background: rgba(255,159,10,.07); }
+.sh-coverage strong { display: block; font-size: 13.5px; color: var(--ink); margin-bottom: 3px; }
+.sh-coverage span { font-size: 12.5px; line-height: 1.5; color: var(--text-lo); }
+.sh-missing { flex: none; max-width: 42ch; font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
+.sh-sets { display: flex; flex-direction: column; gap: 7px; margin-bottom: 8px; }
+.sh-card { border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.sh-card > summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 13px 16px; cursor: pointer; list-style: none; font-size: 13px; }
+.sh-card > summary::-webkit-details-marker { display: none; }
+.sh-card > summary::before { content: "▸"; color: var(--text-lo); }
+.sh-card[open] > summary::before { content: "▾"; }
+.sh-card > summary:hover { background: rgba(127,138,153,.05); }
+.sh-card[open] > summary { border-bottom: 1px solid var(--hairline); }
+.sh-card.sh-add { margin-bottom: 22px; border-style: dashed; }
+.sh-chip { padding: 3px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 600; color: var(--text-lo); background: rgba(127,138,153,.14); }
+.sh-meta { font-size: 11.5px; color: var(--text-lo); }
+.sh-days { display: inline-flex; gap: 3px; margin-left: auto; }
+.sh-days i, .sh-days em { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 6px; font-style: normal; font-size: 10px; font-weight: 620; color: var(--text-lo); background: rgba(127,138,153,.13); }
+.sh-days i.is-on { color: var(--aws-blue); background: rgba(41,151,255,.16); }
+.sh-days em { width: auto; min-width: 20px; padding: 0 5px; color: var(--ink); }
+.sh-form { padding: 16px; }
+.sh-form-head { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.sh-form-head label { display: flex; flex-direction: column; gap: 5px; margin-bottom: 0; text-transform: none; letter-spacing: normal; font-weight: 400; }
+.sh-form-head label span { font-size: 10.5px; font-weight: 620; letter-spacing: .06em; text-transform: uppercase; color: var(--text-lo); }
+.sh-form-head .sh-grow { flex: 1 1 240px; }
+.sh-form-head .sh-grow input { width: 100%; }
+.sh-table input[type="time"], .sh-table input[type="number"] { width: 110px; }
+.sh-table th[scope="row"] { font-weight: 560; white-space: nowrap; }
+.sh-table th[scope="row"] .mono { display: block; font-size: 10px; font-weight: 400; color: var(--text-lo); }
+.sh-grid td { padding-top: 6px; padding-bottom: 6px; }
+.sh-tick { display: inline-flex; margin-bottom: 0; }
+.sh-tick input { width: 16px; height: 16px; accent-color: var(--aws-blue); }
+.sh-hint { margin: 10px 0 0; max-width: 80ch; font-size: 11.5px; line-height: 1.55; color: var(--text-lo); }
+.sh-actions { display: flex; gap: 10px; margin-top: 14px; }
+.sh-unmapped th[scope="row"] { box-shadow: inset 2px 0 0 rgba(255,159,10,.7); }
+.sh-preview th.num, .sh-preview td { padding-left: 4px; padding-right: 4px; font-size: 10.5px; }
+.sh-preview th.is-today, .sh-preview td.is-today { background: rgba(41,151,255,.1); }
+.sh-cell { color: transparent; }
+.sh-cell.is-on { color: var(--ink); background: rgba(48,209,88,.13); font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .sh-days { margin-left: 0; }
+  .sh-form-head label { flex: 1 1 100%; }
+  .sh-form-head input, .sh-form-head select { width: 100%; }
+}

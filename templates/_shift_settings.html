@@ -1,0 +1,264 @@
+{#- Shift configuration.
+
+    A shift code says two things about somebody, and until now the
+    console read only the first letter of it: which set of fixed working
+    times they are on, and which days they have off as those days rotate
+    through a cycle. Both are needed before "how many hours is this
+    person available this week" can be answered with anything but an
+    average. -#}
+
+{% macro shift_time_form(time_set) %}
+<form class="sh-form" method="POST" action="{{ url_for('shift_times_save') }}">
+  <input type="hidden" name="set_id" value="{{ time_set.id if set else '' }}">
+  <div class="sh-form-head">
+    <label><span>Name</span><input type="text" name="name" value="{{ time_set.name if set else '' }}" required placeholder="e.g. Early A"></label>
+    <label><span>Shift</span>
+      <select name="shift">
+        {% for key, label in shifts.items() %}
+        <option value="{{ key }}" {{ 'selected' if set and time_set.shift == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="sh-grow"><span>Note</span><input type="text" name="note" value="{{ time_set.note if set else '' }}" placeholder="optional"></label>
+  </div>
+  <div class="dash-table-scroll">
+    <table class="dash-table sh-table">
+      <thead><tr><th scope="col">Day</th><th scope="col">Start</th><th scope="col">End</th><th scope="col" class="num">Unpaid break (min)</th><th scope="col" class="num">Paid hours</th></tr></thead>
+      <tbody>
+        {% for i in range(7) %}
+        {% set day = time_set.days[i] if set else None %}
+        <tr>
+          <th scope="row">{{ weekdays[i] }}</th>
+          <td><input type="time" name="start_{{ i }}" value="{{ day.start_time if day and day.start_time else '' }}"></td>
+          <td><input type="time" name="end_{{ i }}" value="{{ day.end_time if day and day.end_time else '' }}"></td>
+          <td class="num"><input type="number" min="0" step="5" name="break_{{ i }}" value="{{ day.unpaid_break_minutes if day else 0 }}"></td>
+          <td class="num mono">{{ day.hours if day and day.hours else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="sh-hint">Leave a day's start and end empty and that set does not work that day. An
+    end earlier than the start is the next morning, which is how a night shift is written.</p>
+  <div class="sh-actions">
+    <button class="btn btn-gold btn-sm" type="submit">{{ 'Save' if set else 'Add working times' }}</button>
+    {% if set %}<button class="btn btn-ghost btn-sm" type="submit" name="delete" value="1"
+      onclick="return confirm('Remove {{ time_set.name|e }}? Codes using it become unconfigured.');">Remove</button>{% endif %}
+  </div>
+</form>
+{% endmacro %}
+
+{% macro rotation_form(rotation) %}
+<form class="sh-form" method="POST" action="{{ url_for('shift_rotation_save') }}">
+  <input type="hidden" name="rotation_id" value="{{ rotation.id if rotation else '' }}">
+  <div class="sh-form-head">
+    <label><span>Name</span><input type="text" name="name" value="{{ rotation.name if rotation else '' }}" required placeholder="e.g. 6-4-5 rotation"></label>
+    <label><span>Cycle length</span>
+      <select name="cycle_weeks" onchange="this.form.requestSubmit()">
+        {% for weeks in range(1, 7) %}
+        <option value="{{ weeks }}" {{ 'selected' if rotation and rotation.cycle_weeks == weeks else ('selected' if not rotation and weeks == 3 else '') }}>{{ weeks }} week{{ 's' if weeks > 1 }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label><span>Cycle starts (a Monday)</span><input type="date" name="anchor_monday" value="{{ rotation.anchor_monday if rotation and rotation.anchor_monday else '' }}"></label>
+    <label class="sh-grow"><span>Note</span><input type="text" name="note" value="{{ rotation.note if rotation else '' }}" placeholder="optional"></label>
+  </div>
+  <div class="dash-table-scroll">
+    <table class="dash-table sh-table sh-grid">
+      <thead><tr><th scope="col">Week</th>{% for d in weekday_short %}<th scope="col" class="num">{{ d }}</th>{% endfor %}<th scope="col" class="num">Days</th></tr></thead>
+      <tbody>
+        {% for week in range(rotation.cycle_weeks if rotation else 3) %}
+        {% set row = rotation.weeks[week] if rotation and week < rotation.weeks|length else None %}
+        <tr>
+          <th scope="row">Week {{ week + 1 }}</th>
+          {% for weekday in range(7) %}
+          <td class="num"><label class="sh-tick"><input type="checkbox" name="day" value="{{ week }}:{{ weekday }}"
+            {{ 'checked' if row and row.worked[weekday] else ('checked' if not rotation and weekday < 5 else '') }}><span></span></label></td>
+          {% endfor %}
+          <td class="num mono">{{ row.days if row else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="sh-hint">Tick the days worked in each week of the cycle. The cycle start anchors
+    "week 2 of 3" to a real date — without it the console cannot tell which week of the
+    rotation today is in, and assumes the first.</p>
+  <div class="sh-actions">
+    <button class="btn btn-gold btn-sm" type="submit">{{ 'Save' if rotation else 'Add rotation' }}</button>
+    {% if rotation %}<button class="btn btn-ghost btn-sm" type="submit" name="delete" value="1"
+      onclick="return confirm('Remove {{ rotation.name|e }}?');">Remove</button>{% endif %}
+  </div>
+</form>
+{% endmacro %}
+
+<h2 class="set-title">Shifts</h2>
+<p class="page-sub" style="margin-top:-6px;">
+  Working times are fixed but vary by day. A shift code picks one set of those times and one
+  rotation of days off — a code averages five days a week and gets there by working six one
+  week and four another, with the free days moving through the cycle.
+</p>
+
+<div class="sh-coverage {{ 'is-thin' if not shift_coverage.pct or shift_coverage.pct < 80 }}">
+  <div>
+    <strong>{{ shift_coverage.codes_configured }} of {{ shift_coverage.codes_seen }} codes configured</strong>
+    <span>
+      {% if shift_coverage.pct is none %}
+        No shift codes in the uploaded data yet, so there is nothing to map.
+      {% else %}
+        {{ shift_coverage.pct }}% of the {{ '{:,}'.format(shift_coverage.people) }} people in the
+        data are on a code with real times behind it. Anyone on an unconfigured code is costed
+        at a flat {{ shift_fallback_hours }}-hour,
+        five-day week, which is an assumption every capacity figure inherits.
+      {% endif %}
+    </span>
+  </div>
+  {% if shift_coverage.codes_unconfigured %}
+  <span class="sh-missing">Not mapped: {{ shift_coverage.codes_unconfigured[:8] | join(', ') }}{% if shift_coverage.codes_unconfigured | length > 8 %} and {{ shift_coverage.codes_unconfigured | length - 8 }} more{% endif %}</span>
+  {% endif %}
+</div>
+
+<h3 class="dash-section-label">Working times</h3>
+<div class="sh-sets">
+  {% for time_set in shift_time_sets %}
+  <details class="sh-card">
+    <summary>
+      <strong>{{ time_set.name }}</strong>
+      <span class="sh-chip">{{ shifts.get(time_set.shift, time_set.shift) }}</span>
+      <span class="sh-meta">{{ time_set.days_with_times }} day(s) · typically {{ time_set.typical_hours }}h</span>
+      <span class="sh-days">
+        {% for d in time_set.days %}<i class="{{ 'is-on' if d.hours }}" title="{{ d.name }}{% if d.hours %}: {{ d.start_time }}–{{ d.end_time }} ({{ d.hours }}h){% else %}: not worked{% endif %}">{{ d.short[0] }}</i>{% endfor %}
+      </span>
+    </summary>
+    {{ shift_time_form(time_set) }}
+  </details>
+  {% else %}
+  <div class="dash-empty">No working-time sets yet. Add the first one below.</div>
+  {% endfor %}
+</div>
+
+
+
+<details class="sh-card sh-add">
+  <summary><strong>Add a working-time set</strong></summary>
+  {{ shift_time_form(None) }}
+</details>
+
+<h3 class="dash-section-label">Rotations</h3>
+<div class="sh-sets">
+  {% for rotation in shift_rotations %}
+  <details class="sh-card">
+    <summary>
+      <strong>{{ rotation.name }}</strong>
+      <span class="sh-chip">{{ rotation.cycle_weeks }}-week cycle</span>
+      <span class="sh-meta">{{ rotation.average_days }} days a week on average</span>
+      <span class="sh-days">
+        {% for week in rotation.weeks %}<em title="Week {{ week.cycle_week + 1 }}: {{ week.days }} days{% if week.off %}, off {{ week.off | join(' ') }}{% endif %}">{{ week.days }}</em>{% endfor %}
+      </span>
+    </summary>
+    {{ rotation_form(rotation) }}
+  </details>
+  {% else %}
+  <div class="dash-empty">No rotations yet. A code with no rotation simply works every day its
+    times cover.</div>
+  {% endfor %}
+</div>
+
+
+
+<details class="sh-card sh-add">
+  <summary><strong>Add a rotation</strong></summary>
+  {{ rotation_form(None) }}
+</details>
+
+<h3 class="dash-section-label">Shift codes</h3>
+<p class="sh-hint" style="margin-top:-6px;">
+  Every code the uploaded data contains, with how many people are on it. Point each one at the
+  times it works and the rotation it follows.
+</p>
+<form method="POST" action="{{ url_for('shift_codes_save') }}">
+  <div class="dash-table-scroll">
+    <table class="dash-table sh-table">
+      <thead>
+        <tr><th scope="col">Code</th><th scope="col" class="num">People</th><th scope="col">Shift</th>
+        <th scope="col">Working times</th><th scope="col">Rotation</th>
+        <th scope="col" class="num">Days/wk</th><th scope="col" class="num">Hours/wk</th>
+        <th scope="col" class="num">In use</th></tr>
+      </thead>
+      <tbody>
+        {% set configured = {} %}
+        {% for c in shift_codes %}{% set _ = configured.update({c.code: c}) %}{% endfor %}
+        {% set all_codes = (seen_shift_codes.keys() | list + configured.keys() | list) | unique | sort %}
+        {% for code in all_codes %}
+        {% set c = configured.get(code) %}
+        <tr class="{{ 'sh-unmapped' if not (c and c.time_set) }}">
+          <th scope="row" class="mono">{{ code }}<input type="hidden" name="code" value="{{ code }}"></th>
+          <td class="num mono">{{ seen_shift_codes.get(code) or '—' }}</td>
+          <td>{{ shifts.get(c.shift if c else none, (c.shift if c else none) or '—') }}</td>
+          <td>
+            <select name="time_set_id">
+              <option value="">— not configured —</option>
+              {% for time_set in shift_time_sets %}
+              <option value="{{ time_set.id }}" {{ 'selected' if c and c.time_set_id == time_set.id }}>{{ time_set.name }} ({{ shifts.get(time_set.shift, time_set.shift) }})</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td>
+            <select name="rotation_id">
+              <option value="">— every day its times cover —</option>
+              {% for rotation in shift_rotations %}
+              <option value="{{ rotation.id }}" {{ 'selected' if c and c.rotation_id == rotation.id }}>{{ rotation.name }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td class="num mono">{{ c.average_days if c and c.average_days is not none else '—' }}</td>
+          <td class="num mono">{{ c.average_hours if c and c.average_hours is not none else '—' }}</td>
+          <td class="num"><label class="sh-tick"><input type="checkbox" name="active" value="{{ code }}" {{ 'checked' if not c or c.active }}><span></span></label></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="dash-muted">No shift codes in the uploaded data yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if seen_shift_codes or shift_codes %}
+  <div class="sh-actions"><button class="btn btn-gold btn-sm" type="submit">Save shift codes</button></div>
+  {% endif %}
+</form>
+
+{% if shift_preview and shift_preview.rows %}
+<h3 class="dash-section-label">The next {{ shift_preview.weeks }} weeks</h3>
+<p class="sh-hint" style="margin-top:-6px;">
+  What the configuration above actually produces. A three-week rotation written as tick boxes
+  is impossible to check in your head and easy to check against a calendar.
+</p>
+<div class="dash-table-scroll">
+  <table class="dash-table sh-table sh-preview">
+    <thead>
+      <tr>
+        <th scope="col">Code</th>
+        {% for day in shift_preview.days %}
+        <th scope="col" class="num {{ 'is-today' if day == shift_preview.today }}"
+            title="{{ day.strftime('%a %d %b') }}">{{ day.strftime('%d') }}</th>
+        {% endfor %}
+        <th scope="col" class="num">Days/wk</th><th scope="col" class="num">Hours/wk</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in shift_preview.rows %}
+      <tr>
+        <th scope="row" class="mono">{{ row.code }}<span class="mono">{{ row.time_set }}{% if row.rotation %} · {{ row.rotation }}{% endif %}</span></th>
+        {% for cell in row.cells %}
+        <td class="num sh-cell {{ 'is-on' if cell.working }} {{ 'is-today' if cell.is_today }}"
+            title="{{ cell.day.strftime('%a %d %b') }}{% if cell.working %}: {{ cell.hours }}h{% else %}: off{% endif %}{% if cell.cycle_week is not none %} (cycle week {{ cell.cycle_week + 1 }}){% endif %}">
+          {{ cell.hours | round | int if cell.working else '' }}
+        </td>
+        {% endfor %}
+        <td class="num mono">{{ row.days_per_week }}</td>
+        <td class="num mono">{{ row.hours_per_week }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}

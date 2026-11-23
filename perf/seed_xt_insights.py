@@ -90,6 +90,46 @@ def seed(weeks=WEEKS):
         }], changed_by="som00" if i % 2 == 0 else "trainer01", note=notes[i])
         moved += 1
 
+    # 2b. Shift configuration, because every capacity figure divides by
+    #     it: three sets of fixed times and two rotations, so the page
+    #     has a Saturday that is shorter than a Tuesday and a code whose
+    #     days off move.
+    conn = db.get_db()
+    cur = conn.cursor()
+    for table in ("shift_codes", "shift_rotation_days", "shift_rotations",
+                  "shift_time_days", "shift_time_sets"):
+        cur.execute("DELETE FROM " + table)
+    conn.commit()
+    conn.close()
+    time_sets = {}
+    for name, shift, times in (
+            ("Early A", "early", [("06:00", "16:30", 30)] * 4 + [("06:00", "14:30", 30),
+                                                                 ("06:00", "12:00", 0)]),
+            ("Late A", "late", [("14:00", "23:30", 30)] * 4 + [("14:00", "22:00", 30),
+                                                               ("14:00", "20:00", 0)]),
+            ("Night A", "night", [("22:00", "06:30", 30)] * 5)):
+        time_sets[shift] = db.save_shift_time_set(None, name, shift, [
+            {"weekday": i, "start_time": start, "end_time": end, "unpaid_break_minutes": brk}
+            for i, (start, end, brk) in enumerate(times)], updated_by="trainer01")
+    monday = today - timedelta(days=today.weekday())
+    anchor = (monday - timedelta(weeks=9)).isoformat()
+    rotations = {
+        "six_four_five": db.save_shift_rotation(None, "6-4-5 rotation", 3, {
+            0: [True, True, True, True, True, True, False],
+            1: [True, True, False, True, False, False, False],
+            2: [True, True, True, True, True, False, False]},
+            anchor_monday=anchor, updated_by="trainer01"),
+        "five": db.save_shift_rotation(None, "Straight five", 1, {
+            0: [True, True, True, True, True, False, False]},
+            anchor_monday=anchor, updated_by="trainer01"),
+    }
+    seen = sorted(db.seen_shift_codes())
+    for i, code in enumerate(seen):
+        shift = db._derive_shift(code) or "early"
+        db.save_shift_code(code, shift=shift, time_set_id=time_sets.get(shift),
+                           rotation_id=rotations["six_four_five"] if i % 2 == 0 else rotations["five"],
+                           updated_by="trainer01")
+
     # 3. Volume: one row per day, process and shift, for the processes
     #    the standards actually target, trending up into peak.
     # Every process anything targets, plus the ones the hours file
@@ -129,7 +169,8 @@ def seed(weeks=WEEKS):
     conn.commit()
     conn.close()
     return {"snapshots": snapshots, "target_changes": moved, "volume_rows": rows,
-            "processes": len(processes)}
+            "processes": len(processes), "shift_codes": len(seen),
+            "shift_coverage": db.shift_coverage()["pct"]}
 
 
 if __name__ == "__main__":

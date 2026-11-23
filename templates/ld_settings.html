@@ -86,9 +86,13 @@
   <a href="{{ url_for('ld_settings', tab='trainings') }}" class="{{ 'active' if tab=='trainings' }}">Training Configuration</a>
   <a href="{{ url_for('ld_settings', tab='data') }}" class="{{ 'active' if tab=='data' }}">Data Upload</a>
   <a href="{{ url_for('ld_settings', tab='indirect_roles') }}" class="{{ 'active' if tab=='indirect_roles' }}">Indirect Roles</a>
+  <a href="{{ url_for('ld_settings', tab='shifts') }}" class="{{ 'active' if tab=='shifts' }}">Shifts</a>
 </div>
 
-{% if tab == 'indirect_roles' %}
+{% if tab == 'shifts' %}
+{% include "_shift_settings.html" %}
+
+{% elif tab == 'indirect_roles' %}
 {# ============================================================ INDIRECT ROLES === #}
 <p class="page-sub" style="margin-top:-8px;">Ported from the Indirect Role Report workbook — four data sources feed the same coverage engine (targets, trained/practice status, and the Water Spider / TSO / Jambuster special-case logic). Accepts CSV or the raw .xlsx export — no need to convert first. Upload the raw exports as-is — the manually-added Shift/Area/Home Process columns aren't needed; the tool derives them the same way those columns' formulas did.</p>
 

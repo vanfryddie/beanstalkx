@@ -171,7 +171,10 @@ _TABLES_WITH_ID_PK = {
     # floor_clock and floor_identity key on a natural column, not an id.
     "xt_exclusions", "ambassador_process_definitions", "ambassador_training_sessions",
     "xt_target_changes", "xt_rollup_snapshots", "xt_rollup_counts", "process_volume",
-    # xt_training_costs keys on the process name, not an id.
+    "shift_time_sets", "shift_time_days", "shift_rotations", "shift_rotation_days",
+    "process_plan",
+    # xt_training_costs keys on the process name and shift_codes on the
+    # code, not an id.
 }
 _INSERT_TABLE_RE = re.compile(r"INSERT\s+INTO\s+(\w+)", re.IGNORECASE)
 
@@ -2367,6 +2370,66 @@ def init_db():
             updated_by TEXT,
             updated_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS shift_time_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            shift TEXT NOT NULL,
+            note TEXT,
+            updated_by TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS shift_time_days (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            set_id INTEGER NOT NULL REFERENCES shift_time_sets(id),
+            weekday INTEGER NOT NULL,
+            start_time TEXT,
+            end_time TEXT,
+            unpaid_break_minutes INTEGER DEFAULT 0,
+            UNIQUE(set_id, weekday)
+        );
+
+        CREATE TABLE IF NOT EXISTS shift_rotations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            cycle_weeks INTEGER NOT NULL DEFAULT 1,
+            anchor_monday TEXT,
+            note TEXT,
+            updated_by TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS shift_rotation_days (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rotation_id INTEGER NOT NULL REFERENCES shift_rotations(id),
+            cycle_week INTEGER NOT NULL,
+            weekday INTEGER NOT NULL,
+            working INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(rotation_id, cycle_week, weekday)
+        );
+
+        CREATE TABLE IF NOT EXISTS shift_codes (
+            code TEXT PRIMARY KEY,
+            shift TEXT,
+            time_set_id INTEGER REFERENCES shift_time_sets(id),
+            rotation_id INTEGER REFERENCES shift_rotations(id),
+            active INTEGER DEFAULT 1,
+            note TEXT,
+            updated_by TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS process_plan (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            process TEXT NOT NULL,
+            shift TEXT,
+            plan_rate REAL,
+            note TEXT,
+            updated_by TEXT,
+            updated_at TEXT,
+            UNIQUE(process, shift)
+        );
         """
     )
         # Safe migrations for columns added after the tables above first
@@ -2417,6 +2480,8 @@ def init_db():
             ("floor_clock", "current_kind", "TEXT"),
             ("floor_clock", "task_started_at", "TEXT"),
             ("floor_snapshots", "reader_version", "TEXT"),
+            ("process_volume", "plan_hours", "REAL"),
+            ("process_volume", "plan_rate", "REAL"),
         ]:
             if USE_POSTGRES:
                 # Postgres supports IF NOT EXISTS directly — no exception
@@ -3801,6 +3866,423 @@ def get_xt_team(manager_login):
     return _xt_employee_profiles(logins)
 
 
+
+
+# ====================================================================
+# Shift configuration
+#
+# A shift code says two things about somebody, and the console used to
+# read only the first letter of it.
+#
+#   * which set of working times they are on. The times are fixed, but
+#     they are not the same every day — a Saturday is rarely the same
+#     length as a Tuesday;
+#   * which days they have off, and when those days move. A code
+#     averages five working days a week and gets there by rotating: six
+#     one week, four the next, five the week after, with the free days
+#     moving through the cycle.
+#
+# So the model is three tables and a join. A time set is the fixed
+# hours, per weekday. A rotation is which weekdays are worked, per week
+# of a cycle, anchored to a real Monday so "week 2 of 3" means a date
+# and not a guess. A code points at one of each.
+#
+# What this buys the rest of the console is a real answer to "how many
+# hours is this person available on this day", which the capacity and
+# target maths had been approximating with one number for the whole
+# site.
+# ====================================================================
+
+WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+# Where a code is not configured yet, this is what the capacity maths
+# assumes: a plain five-day week of this length. Deliberately the same
+# number the single site-wide setting used to hold, so nothing moves on
+# the day this ships — it only gets more accurate as codes are mapped.
+SHIFT_FALLBACK_HOURS = 9.5
+SHIFT_FALLBACK_DAYS = 5
+
+
+def _minutes(value):
+    """Minutes past midnight from 'HH:MM', or None."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        hours, minutes = text.split(":")[:2]
+        return int(hours) * 60 + int(minutes)
+    except (ValueError, TypeError):
+        return None
+
+
+def shift_day_hours(start_time, end_time, unpaid_break_minutes=0):
+    """Paid hours between two clock times, minus the unpaid break.
+
+    A night shift ends on the next day, so an end earlier than the start
+    is tomorrow rather than a mistake — getting that wrong would have
+    every night code reading as a negative day."""
+    start, end = _minutes(start_time), _minutes(end_time)
+    if start is None or end is None:
+        return 0.0
+    span = end - start
+    if span <= 0:
+        span += 24 * 60
+    span -= (unpaid_break_minutes or 0)
+    return round(max(0.0, span) / 60.0, 2)
+
+
+@request_memoize
+def get_shift_time_sets():
+    """Every working-time set, each with its seven days."""
+    conn = get_db()
+    sets = [dict(r) for r in conn.execute(
+        "SELECT * FROM shift_time_sets ORDER BY shift, name").fetchall()]
+    days = conn.execute("SELECT * FROM shift_time_days").fetchall()
+    conn.close()
+    by_set = {}
+    for d in days:
+        by_set.setdefault(d["set_id"], {})[d["weekday"]] = dict(d)
+    for entry in sets:
+        entry["days"] = []
+        for weekday in range(7):
+            day = by_set.get(entry["id"], {}).get(weekday) or {}
+            hours = shift_day_hours(day.get("start_time"), day.get("end_time"),
+                                    day.get("unpaid_break_minutes"))
+            entry["days"].append({
+                "weekday": weekday, "name": WEEKDAYS[weekday], "short": WEEKDAY_SHORT[weekday],
+                "start_time": day.get("start_time"), "end_time": day.get("end_time"),
+                "unpaid_break_minutes": day.get("unpaid_break_minutes") or 0,
+                "hours": hours,
+            })
+        worked = [d for d in entry["days"] if d["hours"]]
+        entry["hours_by_weekday"] = {d["weekday"]: d["hours"] for d in entry["days"]}
+        entry["typical_hours"] = round(sum(d["hours"] for d in worked) / len(worked), 2) if worked else 0.0
+        entry["days_with_times"] = len(worked)
+    return sets
+
+
+def save_shift_time_set(set_id, name, shift, days, note=None, updated_by=None):
+    """Create or replace one working-time set. `days` is a list of
+    {weekday, start_time, end_time, unpaid_break_minutes}; a day with no
+    start or end is simply not a day this set works."""
+    shift = shift if shift in SHIFTS else "early"
+    conn = get_db()
+    cur = conn.cursor()
+    if set_id:
+        cur.execute("UPDATE shift_time_sets SET name=?, shift=?, note=?, updated_by=?, updated_at=? "
+                    "WHERE id=?", (name, shift, note, updated_by, _now(), set_id))
+    else:
+        cur.execute("INSERT INTO shift_time_sets (name, shift, note, updated_by, updated_at) "
+                    "VALUES (?,?,?,?,?)", (name, shift, note, updated_by, _now()))
+        set_id = cur.lastrowid
+    cur.execute("DELETE FROM shift_time_days WHERE set_id=?", (set_id,))
+    for day in days or []:
+        weekday = int(day.get("weekday"))
+        start, end = (day.get("start_time") or "").strip(), (day.get("end_time") or "").strip()
+        if not start or not end:
+            continue
+        cur.execute(
+            "INSERT INTO shift_time_days (set_id, weekday, start_time, end_time, unpaid_break_minutes) "
+            "VALUES (?,?,?,?,?)",
+            (set_id, weekday, start, end, int(day.get("unpaid_break_minutes") or 0)))
+    conn.commit()
+    conn.close()
+    return set_id
+
+
+def delete_shift_time_set(set_id):
+    conn = get_db()
+    conn.execute("UPDATE shift_codes SET time_set_id=NULL WHERE time_set_id=?", (set_id,))
+    conn.execute("DELETE FROM shift_time_days WHERE set_id=?", (set_id,))
+    conn.execute("DELETE FROM shift_time_sets WHERE id=?", (set_id,))
+    conn.commit()
+    conn.close()
+
+
+@request_memoize
+def get_shift_rotations():
+    """Every rotation, with its grid of worked days per cycle week."""
+    conn = get_db()
+    rotations = [dict(r) for r in conn.execute(
+        "SELECT * FROM shift_rotations ORDER BY name").fetchall()]
+    days = conn.execute("SELECT * FROM shift_rotation_days").fetchall()
+    conn.close()
+    grid = {}
+    for d in days:
+        grid.setdefault(d["rotation_id"], {}).setdefault(d["cycle_week"], {})[d["weekday"]] = bool(d["working"])
+    for rotation in rotations:
+        weeks = max(1, rotation["cycle_weeks"] or 1)
+        rotation["weeks"] = []
+        total = 0
+        for week in range(weeks):
+            worked = [grid.get(rotation["id"], {}).get(week, {}).get(wd, False) for wd in range(7)]
+            total += sum(1 for w in worked if w)
+            rotation["weeks"].append({
+                "cycle_week": week, "worked": worked,
+                "days": sum(1 for w in worked if w),
+                "off": [WEEKDAY_SHORT[i] for i, w in enumerate(worked) if not w],
+            })
+        rotation["average_days"] = round(total / weeks, 2) if weeks else 0.0
+    return rotations
+
+
+def save_shift_rotation(rotation_id, name, cycle_weeks, grid, anchor_monday=None,
+                        note=None, updated_by=None):
+    """Create or replace one rotation. `grid` is {cycle_week: [7 bools]}.
+
+    The anchor is a real Monday: without one, "week 2 of 3" cannot be
+    turned into a date, and the whole point of storing the cycle is
+    being able to say whether somebody is in today."""
+    cycle_weeks = max(1, min(int(cycle_weeks or 1), 12))
+    conn = get_db()
+    cur = conn.cursor()
+    if rotation_id:
+        cur.execute("UPDATE shift_rotations SET name=?, cycle_weeks=?, anchor_monday=?, note=?, "
+                    "updated_by=?, updated_at=? WHERE id=?",
+                    (name, cycle_weeks, anchor_monday, note, updated_by, _now(), rotation_id))
+    else:
+        cur.execute("INSERT INTO shift_rotations (name, cycle_weeks, anchor_monday, note, "
+                    "updated_by, updated_at) VALUES (?,?,?,?,?,?)",
+                    (name, cycle_weeks, anchor_monday, note, updated_by, _now()))
+        rotation_id = cur.lastrowid
+    cur.execute("DELETE FROM shift_rotation_days WHERE rotation_id=?", (rotation_id,))
+    for week in range(cycle_weeks):
+        worked = (grid or {}).get(week) or []
+        for weekday in range(7):
+            cur.execute(
+                "INSERT INTO shift_rotation_days (rotation_id, cycle_week, weekday, working) "
+                "VALUES (?,?,?,?)",
+                (rotation_id, week, weekday, 1 if (weekday < len(worked) and worked[weekday]) else 0))
+    conn.commit()
+    conn.close()
+    return rotation_id
+
+
+def delete_shift_rotation(rotation_id):
+    conn = get_db()
+    conn.execute("UPDATE shift_codes SET rotation_id=NULL WHERE rotation_id=?", (rotation_id,))
+    conn.execute("DELETE FROM shift_rotation_days WHERE rotation_id=?", (rotation_id,))
+    conn.execute("DELETE FROM shift_rotations WHERE id=?", (rotation_id,))
+    conn.commit()
+    conn.close()
+
+
+@request_memoize
+def get_shift_codes():
+    """Every configured code, with its times and rotation resolved."""
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM shift_codes ORDER BY code").fetchall()]
+    conn.close()
+    sets = {s["id"]: s for s in get_shift_time_sets()}
+    rotations = {r["id"]: r for r in get_shift_rotations()}
+    for row in rows:
+        row["time_set"] = sets.get(row["time_set_id"])
+        row["rotation"] = rotations.get(row["rotation_id"])
+        row["shift"] = row["shift"] or (row["time_set"] or {}).get("shift") or _derive_shift(row["code"])
+        row["configured"] = bool(row["time_set"])
+        row["average_days"] = (row["rotation"] or {}).get("average_days")
+        if row["time_set"] and row["rotation"]:
+            total = 0.0
+            for week in row["rotation"]["weeks"]:
+                for weekday, worked in enumerate(week["worked"]):
+                    if worked:
+                        total += row["time_set"]["hours_by_weekday"].get(weekday, 0.0)
+            weeks = len(row["rotation"]["weeks"]) or 1
+            row["average_hours"] = round(total / weeks, 2)
+        elif row["time_set"]:
+            row["average_hours"] = round(row["time_set"]["typical_hours"] * SHIFT_FALLBACK_DAYS, 2)
+        else:
+            row["average_hours"] = None
+    return rows
+
+
+def save_shift_code(code, shift=None, time_set_id=None, rotation_id=None,
+                    active=True, note=None, updated_by=None):
+    code = (code or "").strip().upper()
+    if not code:
+        return
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO shift_codes (code, shift, time_set_id, rotation_id, active, note,
+                                    updated_by, updated_at)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT (code) DO UPDATE SET
+             shift=excluded.shift, time_set_id=excluded.time_set_id,
+             rotation_id=excluded.rotation_id, active=excluded.active, note=excluded.note,
+             updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+        (code, shift if shift in SHIFTS else None, time_set_id or None, rotation_id or None,
+         1 if active else 0, (note or "").strip() or None, updated_by, _now()))
+    conn.commit()
+    conn.close()
+
+
+def delete_shift_code(code):
+    conn = get_db()
+    conn.execute("DELETE FROM shift_codes WHERE code=?", ((code or "").strip().upper(),))
+    conn.commit()
+    conn.close()
+
+
+@request_memoize
+def seen_shift_codes():
+    """Every shift code the uploaded data actually contains, with how
+    many people are on it.
+
+    So the configuration page can be a list of the codes this site really
+    runs rather than a blank form — nobody should have to go and find
+    out which codes exist before they can describe them."""
+    conn = get_db()
+    counts = {}
+    for sql, column in (
+            ("SELECT shift_pattern AS code, COUNT(DISTINCT employee_login) AS n FROM xt_hours "
+             "WHERE shift_pattern IS NOT NULL AND shift_pattern <> '' GROUP BY shift_pattern", "code"),
+            ("SELECT shift_pattern AS code, COUNT(DISTINCT login) AS n FROM ir_dashboard "
+             "WHERE shift_pattern IS NOT NULL AND shift_pattern <> '' GROUP BY shift_pattern", "code"),
+            ("SELECT shift_code AS code, COUNT(DISTINCT employee_login) AS n FROM floor_clock "
+             "WHERE shift_code IS NOT NULL AND shift_code <> '' GROUP BY shift_code", "code")):
+        try:
+            for row in conn.execute(sql).fetchall():
+                code = (row["code"] or "").strip().upper()
+                if code:
+                    counts[code] = max(counts.get(code, 0), row["n"] or 0)
+        except Exception:
+            # A table an older deployment has not built yet is not a
+            # reason to refuse to show the codes the others know about.
+            continue
+    conn.close()
+    return counts
+
+
+def shift_code_day(code, day, codes=None):
+    """What one code does on one date: whether it is a working day and
+    how many paid hours it is.
+
+    Falls back, loudly rather than silently: an unconfigured code is
+    reported as unconfigured and costed at the site fallback, so a page
+    can say how much of its answer is assumption."""
+    if isinstance(day, str):
+        try:
+            day = date.fromisoformat(day[:10])
+        except ValueError:
+            return {"working": False, "hours": 0.0, "configured": False, "reason": "bad date"}
+    code = (code or "").strip().upper()
+    by_code = {c["code"]: c for c in (codes if codes is not None else get_shift_codes())}
+    entry = by_code.get(code)
+    weekday = day.weekday()
+    if not entry or not entry.get("time_set"):
+        working = weekday < SHIFT_FALLBACK_DAYS
+        return {"working": working, "hours": SHIFT_FALLBACK_HOURS if working else 0.0,
+                "configured": False, "shift": _derive_shift(code),
+                "reason": "code not configured" if code else "no code"}
+    if not entry.get("active", 1):
+        return {"working": False, "hours": 0.0, "configured": True,
+                "shift": entry["shift"], "reason": "code retired"}
+
+    hours = entry["time_set"]["hours_by_weekday"].get(weekday, 0.0)
+    rotation = entry.get("rotation")
+    if rotation:
+        anchor = rotation.get("anchor_monday")
+        weeks = len(rotation["weeks"]) or 1
+        cycle_week = 0
+        if anchor:
+            try:
+                anchor_day = date.fromisoformat(anchor[:10])
+                anchor_monday = anchor_day - timedelta(days=anchor_day.weekday())
+                this_monday = day - timedelta(days=weekday)
+                cycle_week = ((this_monday - anchor_monday).days // 7) % weeks
+            except (ValueError, TypeError):
+                cycle_week = 0
+        week = rotation["weeks"][cycle_week]
+        if not week["worked"][weekday]:
+            return {"working": False, "hours": 0.0, "configured": True,
+                    "shift": entry["shift"], "cycle_week": cycle_week,
+                    "reason": "rostered off"}
+        return {"working": hours > 0, "hours": hours, "configured": True,
+                "shift": entry["shift"], "cycle_week": cycle_week,
+                "start_time": entry["time_set"]["hours_by_weekday"] and
+                              next((d["start_time"] for d in entry["time_set"]["days"]
+                                    if d["weekday"] == weekday), None),
+                "reason": None if hours > 0 else "no times for this weekday"}
+    return {"working": hours > 0, "hours": hours, "configured": True,
+            "shift": entry["shift"],
+            "reason": None if hours > 0 else "no times for this weekday"}
+
+
+def shift_code_hours_between(code, start, end, codes=None):
+    """Paid hours and working days for one code across a date range,
+    both ends included."""
+    codes = codes if codes is not None else get_shift_codes()
+    hours, days, assumed = 0.0, 0, False
+    cursor = start
+    while cursor <= end:
+        day = shift_code_day(code, cursor, codes=codes)
+        if not day["configured"]:
+            assumed = True
+        if day["working"]:
+            days += 1
+            hours += day["hours"]
+        cursor += timedelta(days=1)
+    return {"hours": round(hours, 2), "days": days, "assumed": assumed}
+
+
+def shift_coverage():
+    """How much of the workforce is on a code the console understands.
+
+    The number that says how far to trust everything built on top: a
+    capacity figure drawn mostly from the fallback is a guess wearing a
+    decimal point."""
+    seen = seen_shift_codes()
+    configured = {c["code"] for c in get_shift_codes() if c.get("time_set")}
+    total_people = sum(seen.values())
+    covered = sum(n for code, n in seen.items() if code in configured)
+    return {
+        "codes_seen": len(seen), "codes_configured": len(configured & set(seen)),
+        "codes_unconfigured": sorted(set(seen) - configured),
+        "people": total_people, "people_covered": covered,
+        "pct": round(100 * covered / total_people, 1) if total_people else None,
+    }
+
+
+# ------------------------------------------------------- the plan ----
+
+def get_process_plans():
+    """The performance target per process path: the rate the process is
+    planned to run at. {(process, shift): row}, plus {(process, None)}
+    for a plan that covers every shift."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM process_plan ORDER BY process, shift").fetchall()
+    conn.close()
+    return {(r["process"], r["shift"]): dict(r) for r in rows}
+
+
+def set_process_plan(process, shift, plan_rate, note=None, updated_by=None):
+    process = (process or "").strip()
+    if not process:
+        return
+    shift = shift if shift in SHIFTS else ""
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO process_plan (process, shift, plan_rate, note, updated_by, updated_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT (process, shift) DO UPDATE SET
+             plan_rate=excluded.plan_rate, note=excluded.note,
+             updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+        (process, shift, _as_number(plan_rate), (note or "").strip() or None, updated_by, _now()))
+    conn.commit()
+    conn.close()
+
+
+def plan_rate_for(process, shift, plans=None):
+    """The planned rate for a path: its own, else the process-wide one,
+    else nothing — and nothing means the page says "no plan" rather
+    than inventing one."""
+    plans = plans if plans is not None else get_process_plans()
+    for key in ((process, shift), (process, ""), (process, None)):
+        row = plans.get(key)
+        if row and row.get("plan_rate"):
+            return row["plan_rate"]
+    return None
 
 # ====================================================================
 # Cross-Training Insights

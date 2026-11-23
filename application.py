@@ -3529,13 +3529,40 @@ def _xt_change_batches(period, keys):
     return ordered
 
 
+def _xt_shift_day_hours(shift, day, codes=None, fallback=None):
+    """How long a shift is on one date, from the configured codes.
+
+    Shift lengths are fixed but not equal: a Saturday early is rarely
+    the same length as a Tuesday early, and dividing a Saturday's hours
+    by a Tuesday's length overstates the heads it took. So the length
+    used is the one the codes on that shift actually work that day —
+    the most common of them, since a shift can run more than one set of
+    times — and the flat fallback only applies where no code on that
+    shift is configured yet."""
+    codes = codes if codes is not None else db.get_shift_codes()
+    fallback = fallback or db.SHIFT_FALLBACK_HOURS
+    lengths = {}
+    for code in codes:
+        if code.get("shift") != shift or not code.get("time_set"):
+            continue
+        state = db.shift_code_day(code["code"], day, codes=codes)
+        if state["working"] and state["hours"]:
+            lengths[state["hours"]] = lengths.get(state["hours"], 0) + 1
+    if not lengths:
+        return {"hours": fallback, "configured": False}
+    # The length most of the shift is on, not the average of lengths:
+    # an average of 10 and 6 is a day nobody works.
+    best = max(sorted(lengths), key=lambda hours: lengths[hours])
+    return {"hours": best, "configured": True}
+
+
 def _xt_volume_series(period, keys, shift_hours):
     """Volume and hours per period, and per process and shift within it.
 
     `peak_heads` is the busiest single day of the period expressed in
-    people: the daily hours booked to that process divided by a shift.
-    That, not the average, is what a trained pool has to cover — an
-    average day never happens."""
+    people: the daily hours booked to that process divided by the length
+    of that shift on that day. That, not the average, is what a trained
+    pool has to cover — an average day never happens."""
     rows = db.get_process_volume()
     wanted = set(keys)
     per_period = {key: {"units": 0.0, "hours": 0.0, "days": set()} for key in keys}
@@ -3556,11 +3583,27 @@ def _xt_volume_series(period, keys, shift_hours):
         entry["hours"] += hours
         entry["by_day"][row["work_date"]] = entry["by_day"].get(row["work_date"], 0.0) + hours
 
-    for entries in per_path.values():
+    codes = db.get_shift_codes()
+    for (process, shift), entries in per_path.items():
         for entry in entries.values():
-            busiest = max(entry["by_day"].values()) if entry["by_day"] else 0.0
-            entry["peak_heads"] = (busiest / shift_hours) if shift_hours else None
+            peak_heads, peak_day, assumed = 0.0, None, False
+            for work_date, day_hours in entry["by_day"].items():
+                try:
+                    day = date.fromisoformat(work_date[:10])
+                except ValueError:
+                    continue
+                length = _xt_shift_day_hours(shift, day, codes=codes,
+                                             fallback=shift_hours)
+                heads = (day_hours / length["hours"]) if length["hours"] else 0.0
+                if heads > peak_heads:
+                    peak_heads, peak_day = heads, work_date
+                    assumed = not length["configured"]
+            entry["peak_heads"] = peak_heads or None
+            entry["peak_day"] = peak_day
+            entry["peak_assumed"] = assumed
             entry["rate"] = (entry["units"] / entry["hours"]) if entry["hours"] else None
+            entry["plan_rate"] = None
+            entry["plan_hours"] = entry.get("plan_hours")
     return {
         "per_period": [{"key": key, "label": db.period_label(key),
                         "units": round(per_period[key]["units"]),
@@ -3683,6 +3726,8 @@ def _xt_recommendation(path, history, cost_model, period):
         "no_pool": no_pool,
         "peak_heads": round(peak_heads, 1),
         "peak_period": db.period_label(busiest["key"]),
+        "peak_day": busiest.get("peak_day"),
+        "shift_assumed": bool(busiest.get("peak_assumed")),
         "needed_on_shift": round(needed_on_shift, 1),
         "cover_factor": cover,
         "trend_pct": round(100 * trend, 1) if trend is not None else None,
@@ -3775,6 +3820,26 @@ def _xt_signals(paths, population, volume, cost_model):
                        "hold, so training everybody available still would not cover it. That "
                        "is a headcount conversation, not a training one: "
                        + ", ".join(sorted({p["label"] for p in limited})[:6])),
+        })
+
+    coverage = db.shift_coverage()
+    if coverage["codes_seen"] and coverage["codes_unconfigured"]:
+        signals.append({
+            "severity": "watch" if (coverage["pct"] or 0) >= 50 else "risk",
+            "title": (f"{coverage['codes_configured']} of {coverage['codes_seen']} shift codes "
+                      "have real working times behind them"),
+            "detail": (f"{coverage['pct'] or 0}% of people are on a configured code. Everyone "
+                       f"else is costed at a flat {db.SHIFT_FALLBACK_HOURS}-hour five-day week, "
+                       "and every heads-on-shift figure below inherits that assumption. "
+                       "Unmapped: " + ", ".join(coverage["codes_unconfigured"][:6])),
+        })
+
+    assumed_shift = [p for p in paths if (p.get("recommendation") or {}).get("shift_assumed")]
+    if assumed_shift and not coverage["codes_unconfigured"]:
+        signals.append({
+            "severity": "info",
+            "title": f"{len(assumed_shift)} recommendation(s) used an assumed shift length",
+            "detail": "No configured code runs on the shift these paths are on.",
         })
 
     unmatched = [p for p in paths if p.get("volume_matched") is False]
@@ -6112,7 +6177,50 @@ def ld_settings():
         data_stale_after_days=db.DATA_STALE_AFTER_DAYS,
         freshness=db.data_freshness(),
         xt_freshness=db.xt_hours_freshness(),
+        weekdays=db.WEEKDAYS,
+        weekday_short=db.WEEKDAY_SHORT,
+        shift_time_sets=db.get_shift_time_sets() if tab == "shifts" else None,
+        shift_rotations=db.get_shift_rotations() if tab == "shifts" else None,
+        shift_codes=db.get_shift_codes() if tab == "shifts" else None,
+        seen_shift_codes=db.seen_shift_codes() if tab == "shifts" else None,
+        shift_coverage=db.shift_coverage() if tab == "shifts" else None,
+        shift_preview=_shift_preview() if tab == "shifts" else None,
+        shift_fallback_hours=db.SHIFT_FALLBACK_HOURS,
     )
+
+
+def _shift_preview(weeks=4):
+    """The next few weeks for every configured code, as a grid.
+
+    Configuration you cannot see the consequences of is configuration
+    nobody trusts: a three-week rotation written as a set of tick boxes
+    is impossible to check in your head, and trivial to check against a
+    calendar."""
+    codes = db.get_shift_codes()
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    days = [monday + timedelta(days=offset) for offset in range(weeks * 7)]
+    rows = []
+    for code in codes:
+        if not code.get("time_set"):
+            continue
+        cells = []
+        for day in days:
+            state = db.shift_code_day(code["code"], day, codes=codes)
+            cells.append({"day": day, "is_today": day == today,
+                          "working": state["working"], "hours": state["hours"],
+                          "cycle_week": state.get("cycle_week")})
+        worked = [c for c in cells if c["working"]]
+        rows.append({
+            "code": code["code"], "shift": code["shift"],
+            "time_set": (code["time_set"] or {}).get("name"),
+            "rotation": (code["rotation"] or {}).get("name"),
+            "cells": cells,
+            "days_per_week": round(len(worked) / weeks, 2),
+            "hours_per_week": round(sum(c["hours"] for c in worked) / weeks, 2),
+        })
+    return {"weeks": weeks, "days": days, "rows": rows,
+            "start": monday, "today": today}
 
 
 def _parse_topic_links(raw_values):
@@ -7135,6 +7243,123 @@ def api_remove_attendee(attendee_id):
         return jsonify({"error": "no role assigned"}), 403
     db.remove_slot_attendee(attendee_id)
     return jsonify({"ok": True})
+
+
+# ------------------------------------------------------------- shifts ----
+
+def _shift_day_rows(form):
+    """The seven working-time rows off a submitted form."""
+    days = []
+    for weekday in range(7):
+        days.append({
+            "weekday": weekday,
+            "start_time": (form.get(f"start_{weekday}") or "").strip(),
+            "end_time": (form.get(f"end_{weekday}") or "").strip(),
+            "unpaid_break_minutes": (form.get(f"break_{weekday}") or "0").strip() or 0,
+        })
+    return days
+
+
+@application.route("/ld-management/settings/shifts/times", methods=["POST"])
+def shift_times_save():
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if _effective_role() not in ADMIN_TIER_ROLES:
+        return _deny("Shift configuration is an L&D tool — you don't have access to it.")
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        flash("Give the working-time set a name.", "warning")
+        return redirect(url_for("ld_settings", tab="shifts"))
+    try:
+        set_id = int(request.form.get("set_id") or 0) or None
+    except ValueError:
+        set_id = None
+    if request.form.get("delete") and set_id:
+        db.delete_shift_time_set(set_id)
+        flash(f"'{name}' removed. Codes that used it are now unconfigured.", "info")
+        return redirect(url_for("ld_settings", tab="shifts"))
+    db.save_shift_time_set(set_id, name, request.form.get("shift"),
+                           _shift_day_rows(request.form),
+                           note=request.form.get("note"), updated_by=login_id)
+    flash(f"Working times saved for '{name}'.", "success")
+    return redirect(url_for("ld_settings", tab="shifts"))
+
+
+@application.route("/ld-management/settings/shifts/rotation", methods=["POST"])
+def shift_rotation_save():
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if _effective_role() not in ADMIN_TIER_ROLES:
+        return _deny("Shift configuration is an L&D tool — you don't have access to it.")
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        flash("Give the rotation a name.", "warning")
+        return redirect(url_for("ld_settings", tab="shifts"))
+    try:
+        rotation_id = int(request.form.get("rotation_id") or 0) or None
+    except ValueError:
+        rotation_id = None
+    if request.form.get("delete") and rotation_id:
+        db.delete_shift_rotation(rotation_id)
+        flash(f"'{name}' removed. Codes that used it now work every day their times cover.", "info")
+        return redirect(url_for("ld_settings", tab="shifts"))
+    try:
+        cycle_weeks = max(1, min(int(request.form.get("cycle_weeks") or 1), 12))
+    except ValueError:
+        flash("The cycle length must be a whole number of weeks.", "warning")
+        return redirect(url_for("ld_settings", tab="shifts"))
+    ticked = set(request.form.getlist("day"))      # "week:weekday"
+    grid = {week: [f"{week}:{weekday}" in ticked for weekday in range(7)]
+            for week in range(cycle_weeks)}
+    anchor = (request.form.get("anchor_monday") or "").strip() or None
+    if anchor:
+        try:
+            anchor_day = date.fromisoformat(anchor)
+            anchor = (anchor_day - timedelta(days=anchor_day.weekday())).isoformat()
+        except ValueError:
+            flash("The cycle start must be a date.", "warning")
+            return redirect(url_for("ld_settings", tab="shifts"))
+    db.save_shift_rotation(rotation_id, name, cycle_weeks, grid, anchor_monday=anchor,
+                           note=request.form.get("note"), updated_by=login_id)
+    flash(f"Rotation '{name}' saved.", "success")
+    return redirect(url_for("ld_settings", tab="shifts"))
+
+
+@application.route("/ld-management/settings/shifts/codes", methods=["POST"])
+def shift_codes_save():
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if _effective_role() not in ADMIN_TIER_ROLES:
+        return _deny("Shift configuration is an L&D tool — you don't have access to it.")
+    codes = request.form.getlist("code")
+    time_sets = request.form.getlist("time_set_id")
+    rotations = request.form.getlist("rotation_id")
+    actives = set(request.form.getlist("active"))
+    saved = 0
+    for i, code in enumerate(codes):
+        code = (code or "").strip()
+        if not code:
+            continue
+
+        def pick(values, index):
+            raw = values[index] if index < len(values) else ""
+            try:
+                return int(raw) or None
+            except (TypeError, ValueError):
+                return None
+
+        db.save_shift_code(code, time_set_id=pick(time_sets, i),
+                           rotation_id=pick(rotations, i),
+                           active=code in actives, updated_by=login_id)
+        saved += 1
+    coverage = db.shift_coverage()
+    flash(f"Saved {saved} shift code(s). "
+          f"{coverage['pct'] or 0}% of people are now on a code the console understands.",
+          "success")
+    return redirect(url_for("ld_settings", tab="shifts"))
 
 
 # ---------------------------------------------------------------- upload ----

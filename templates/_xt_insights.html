@@ -265,7 +265,10 @@
   Built from the busiest single day of the latest {{ ins.period }} — an average day never
   happens — scaled by what volume is doing, then multiplied by
   {{ ins.cost_model.cover_factor }}&times; for absence and for the other processes these
-  people are also trained on. A shift is {{ ins.cost_model.shift_hours }} hours.
+  people are also trained on. A day's length comes from the
+  <a href="{{ url_for('ld_settings', tab='shifts') }}">shift codes</a> that work it, so a
+  Saturday is not divided by a Tuesday; where no code is configured it falls back to
+  {{ ins.cost_model.shift_hours }} hours.
   Costs use {{ ins.cost_model.default_train_hours }} training hours at
   {{ ins.cost_model.hourly_cost }} an hour unless a process says otherwise.
 </p>
@@ -304,6 +307,9 @@
           in {{ r.latest_label }}; busiest day needed {{ r.peak_heads }} on shift;
           volume {{ 'flat' if r.trend_pct is none or (r.trend_pct|abs) < 1 else (('up ' ~ r.trend_pct ~ '%') if r.trend_pct > 0 else ('down ' ~ (r.trend_pct|abs) ~ '%')) }}
           per {{ ins.period }}; &times;{{ r.cover_factor }} cover.
+          {% if r.shift_assumed %}
+          <em class="xi-lowconf">Shift length assumed — no configured code runs this shift.</em>
+          {% endif %}
           {% if r.no_pool %}
           <em class="xi-lowconf">Nobody is in this path's source departments — train whom?</em>
           {% elif r.pool_limited %}
