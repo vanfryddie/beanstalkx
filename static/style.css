@@ -3350,7 +3350,7 @@ html[data-theme="light"] .site-switcher-option span { color: #6e6e73; }
 }
 
 /* --- Sparkline -------------------------------------------- */
-.dash-spark { display: block; overflow: visible; }
+.dash-spark { display: block; width: 100%; overflow: visible; }
 .dash-spark-line {
   fill: none; stroke: var(--aws-blue); stroke-width: 2;
   stroke-linecap: round; stroke-linejoin: round;

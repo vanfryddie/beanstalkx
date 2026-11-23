@@ -331,8 +331,8 @@
       <summary style="cursor:pointer; font-size:12.5px; font-weight:600; color:var(--aws-blue); list-style:none;">Bulk assign via Excel instead →</summary>
       <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
         <a href="{{ url_for('ld_role_bulk_template') }}" class="btn btn-ghost btn-sm" data-no-ajax>⬇ Download template</a>
-        <form method="POST" action="{{ url_for('ld_role_bulk_upload') }}" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center;">
-          <input type="file" name="file" accept=".xlsx" required>
+        <form method="POST" action="{{ url_for('ld_role_bulk_upload') }}" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; max-width:100%;">
+          <input type="file" name="file" accept=".xlsx" required style="min-width:0; max-width:100%;">
           <button class="btn btn-gold btn-sm" type="submit">Upload &amp; assign</button>
         </form>
       </div>
