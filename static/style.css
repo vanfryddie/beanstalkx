@@ -4753,7 +4753,7 @@ html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }
 html[data-theme="dark"], :root:not([data-theme="light"]) {
   --viz-series-1: #3987e5;
   --viz-series-2: #d95926;
-  --viz-seq-100: #184f95;
+  --viz-seq-100: #2a5080;
   --viz-seq-450: #3987e5;
   --viz-grid: rgba(255, 255, 255, .11);
   --viz-surface: #2c2c2e;
@@ -4764,18 +4764,18 @@ html[data-theme="dark"], :root:not([data-theme="light"]) {
 .viz-card > figcaption { margin-bottom: 12px; font-size: 11px; font-weight: 620; letter-spacing: .05em; text-transform: uppercase; color: var(--text-lo); }
 .viz-card .viz-sub { margin-top: 10px; font-size: 11.5px; line-height: 1.5; color: var(--text-lo); text-transform: none; letter-spacing: normal; font-weight: 400; }
 .viz-empty { margin: 0; padding: 18px 0; font-size: 12.5px; color: var(--text-lo); }
-.viz-plot { position: relative; }
+.viz-plot { position: relative; min-width: 0; padding: 0 5px; }
 .viz-svg { display: block; width: 100%; }
 .viz-grid { stroke: var(--viz-grid); stroke-width: 1; }
 .viz-area { fill: var(--viz-series-1); opacity: .14; }
 .viz-line { fill: none; stroke: var(--viz-series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.viz-dots { position: absolute; inset: 0; }
+.viz-dots { position: absolute; inset: 0 5px; }
 .viz-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--viz-series-1); opacity: 0; transition: opacity .12s ease; }
 .viz-dot.is-near { opacity: 1; box-shadow: 0 0 0 2px var(--viz-surface); }
-.viz-last { position: absolute; right: 0; transform: translateY(-50%); padding: 1px 6px; border-radius: 6px; background: var(--surface-solid); font-size: 11px; font-weight: 620; color: var(--ink); font-variant-numeric: tabular-nums; box-shadow: 0 1px 3px rgba(20,32,48,.14); }
+.viz-last { position: absolute; right: 5px; max-width: 100%; transform: translateY(-50%); padding: 1px 6px; border-radius: 6px; background: var(--surface-solid); font-size: 11px; font-weight: 620; color: var(--ink); font-variant-numeric: tabular-nums; box-shadow: 0 1px 3px rgba(20,32,48,.14); }
 .viz-tip { position: absolute; top: -4px; transform: translateY(-100%); padding: 4px 9px; border-radius: 8px; background: var(--ink); color: var(--surface-solid); font-size: 11px; white-space: nowrap; pointer-events: none; z-index: 3; }
 .viz-xaxis { display: flex; justify-content: space-between; margin-top: 7px; font-size: 10.5px; color: var(--text-lo); }
-.viz-spark { display: block; flex: none; overflow: visible; }
+.viz-spark { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: visible; }
 
 .viz-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 18px; }
 .viz-stat { padding: 14px 16px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
@@ -4798,11 +4798,12 @@ html[data-theme="dark"], :root:not([data-theme="light"]) {
 .viz-div-value { font-size: 11.5px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
 .viz-div-value.is-under { color: var(--text-lo); }
 
-.viz-meter { display: inline-flex; align-items: center; gap: 8px; min-width: 120px; }
+.viz-meter { display: inline-flex; align-items: center; gap: 8px;
+  width: 120px; max-width: 100%; min-width: 0; }
 /* display:block because an <i> is inline by default; a flex item is
    blockified only when its parent really is a flex container, and a
    zero-width track is invisible rather than obviously broken. */
-.viz-meter-track { display: block; position: relative; flex: 1; min-width: 46px; height: 8px; border-radius: 4px; background: var(--viz-seq-100); overflow: hidden; }
+.viz-meter-track { display: block; position: relative; flex: 1 1 46px; min-width: 24px; height: 8px; border-radius: 4px; background: var(--viz-seq-100); overflow: hidden; }
 .viz-meter-fill { display: block; }
 .viz-meter-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--viz-seq-450); }
 .viz-meter em { font-style: normal; font-size: 12px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
@@ -4838,15 +4839,30 @@ html[data-theme="dark"], :root:not([data-theme="light"]) {
 .clm-sit-track i { display: block; height: 100%; border-radius: 4px; background: var(--viz-seq-450); }
 .clm-sit-count { font-size: 12px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
 
-.clm-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.clm-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  align-items: start; gap: 12px; margin-bottom: 20px; }
 .clm-card { padding: 16px 18px 15px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
 .clm-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 13px; }
 .clm-card h4 { margin: 0; font-size: 14.5px; font-weight: 640; letter-spacing: -.015em; color: var(--ink); }
 .clm-card-meta { display: block; margin-top: 3px; font-size: 11px; color: var(--text-lo); }
 .clm-verdict { flex: none; padding: 4px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 640; text-align: right; }
-.clm-verdict-under { color: var(--red); background: rgba(255,69,58,.12); }
-.clm-verdict-at { color: var(--green); background: rgba(48,209,88,.12); }
-.clm-verdict-over { color: var(--aws-blue); background: rgba(41,151,255,.13); }
+/* The pill follows the conclusion, not the headcount. Red is a status
+   colour and is kept for a path that is genuinely short and missing
+   plan; a path the model simply cannot judge yet is not a failure, so
+   it reads neutral — otherwise a site that has not uploaded a plan
+   opens on a wall of red that means nothing. */
+.clm-verdict-under-missed { color: var(--red); background: rgba(255,69,58,.12); }
+.clm-verdict-at-missed,
+.clm-verdict-over-missed { color: var(--amber); background: rgba(255,159,10,.13); }
+.clm-verdict-at-met { color: var(--green); background: rgba(48,209,88,.12); }
+.clm-verdict-under-met,
+.clm-verdict-over-met { color: var(--aws-blue); background: rgba(41,151,255,.13); }
+.clm-verdict-under-unknown,
+.clm-verdict-at-unknown,
+.clm-verdict-over-unknown,
+.clm-verdict-none-met,
+.clm-verdict-none-missed,
+.clm-verdict-none-unknown { color: var(--text-lo); background: rgba(128,128,128,.14); }
 .clm-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; padding: 12px 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
 .clm-fig { min-width: 0; }
 /* By class, not `> span`: the meter is a span too, and the element
@@ -4888,3 +4904,48 @@ html[data-theme="dark"], :root:not([data-theme="light"]) {
 .clm-fig-row { display: flex; align-items: center; gap: 8px; }
 .clm-fig-row strong { flex: none; }
 .clm-fig-row .viz-spark { flex: 1; min-width: 0; max-width: 104px; }
+
+/* A scroll container only constrains its table if it is itself allowed
+   to be narrower than its content. Inside a flex or grid parent the
+   default min-width:auto makes it grow to the table instead, which put
+   a horizontal scrollbar on the whole page rather than on the table. */
+.dash-table-scroll { min-width: 0; max-width: 100%; overscroll-behavior-inline: contain; }
+
+/* The tab strip scrolls on a narrow screen instead of pushing the page
+   sideways. Thin scrollbar, because the tabs are the point, not it. */
+.dash-tabs, .xi-tabs, .ld-tabs {
+  max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+/* Table cells are nowrap by default, which is right for figures and
+   wrong for a sentence: the rules table's explanation column forced
+   the table far wider than its container. */
+.clm-rule-detail, td > .clm-rule-detail { white-space: normal; }
+.dash-table td.wrap, .dash-table th.wrap { white-space: normal; }
+
+/* The sparkline carries its own width attribute, so it needs telling it
+   may shrink — without this the rate figure was 7px wider than its
+   column on a phone. */
+.clm-fig-row .viz-spark { width: 100%; height: auto; }
+@media (max-width: 520px) {
+  .clm-figures { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+  .clm-fig-row .viz-spark { display: none; }
+}
+
+/* The value and its trend share one line; the number wins the space it
+   needs and the sparkline takes what is left. */
+.viz-stat { min-width: 0; }
+.viz-stat-row { min-width: 0; }
+.viz-stat-row strong { min-width: 0; overflow-wrap: anywhere; }
+
+/* Prose in a table cell wraps; only figures stay on one line. Without
+   this the reasoning column stretched the recommendations table far
+   past its container, and the change log did the same on a phone. */
+.dash-table td.xi-why,
+.dash-table .xi-change-table td,
+.dash-table.xi-change-table td,
+.xi-change-table td, .xi-change-table th[scope="row"] { white-space: normal; }
+.dash-table td.xi-why { max-width: 42ch; min-width: 18ch; }
+.xi-change-body { min-width: 0; }
+.xi-change-table th[scope="row"] { max-width: 22ch; }

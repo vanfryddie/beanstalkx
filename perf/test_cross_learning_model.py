@@ -51,8 +51,14 @@ cases = [
     ((50, 30, None), "under", "unknown", "Short, with no plan to judge it against"),
     ((50, 50, 84), "at", "missed", "Enough people, not enough rate"),
     ((50, 50, 101), "at", "met", "Settled"),
+    ((50, 50, None), "at", "unknown", "At target, with no plan to judge it against"),
     ((50, 80, 103), "over", "met", "Carrying more than the work needs"),
     ((50, 80, 70), "over", "missed", "Deep pool, missing plan"),
+    ((50, 80, None), "over", "unknown", "Above target, with no plan to judge it against"),
+    # A target of nothing is not a target somebody is meeting.
+    ((0, 4, 102), "none", "met", "No target set, and the work is getting done"),
+    ((0, 4, 80), "none", "missed", "No target set, and behind plan"),
+    ((0, 4, None), "none", "unknown", "No target and no plan"),
 ]
 for (target, trained, pct), standing, attainment, title in cases:
     got = situation(target, trained, pct)
@@ -78,6 +84,14 @@ over = situation(50, 80, 103)
 check("a surplus is offered for redeployment", "redeploy" in {a["kind"] for a in over["actions"]})
 noplan = situation(50, 30, None)
 check("no plan asks for one", "set_plan" in {a["kind"] for a in noplan["actions"]})
+# An unsized path is the quietest kind of gap: nothing reads as wrong.
+notarget = situation(0, 4, 102, {"people": 9, "hours": 400.0, "top": []})
+check("no target asks for one", "set_target" in {a["kind"] for a in notarget["actions"]},
+      str({a["kind"] for a in notarget["actions"]}))
+check("and says what size it already looks",
+      "9 people" in next(a["text"] for a in notarget["actions"] if a["kind"] == "set_target"))
+check("an unsized path is never called settled",
+      situation(0, 4, 102)["title"] != "Settled")
 
 print("\n3. Under target, on plan — the case the page exists for")
 # Somebody is doing the work. Who, and from where, decides whether the
@@ -180,7 +194,13 @@ check("every row has a verdict", all(r["situation"]["title"] for r in model["row
 check("the inputs it reads are declared", len(model["inputs"]) >= 5, str(len(model["inputs"])))
 check("each input says whether it is ready",
       all("ready" in i for i in model["inputs"]))
-check("the rules are published with it", len(model["rules"]) == 7, str(len(model["rules"])))
+import itertools
+every = set(itertools.product(("under", "at", "over", "none"), ("met", "missed", "unknown")))
+check("the rules are published with it", len(model["rules"]) == len(every),
+      str(len(model["rules"])))
+check("and the table has no holes to fall through",
+      set(application.CLM_RULE_MAP) == every,
+      str(sorted(every - set(application.CLM_RULE_MAP))))
 check("judged and unjudged add up to the rows",
       model["judged"] + model["unjudged"] == len(model["rows"]),
       f"{model['judged']} + {model['unjudged']} vs {len(model['rows'])}")
@@ -224,8 +244,15 @@ page = c.get("/ld-management/cross-training?tab=model", follow_redirects=True)
 check("it renders", page.status_code == 200, str(page.status_code))
 body = page.get_data(as_text=True)
 for probe in ("Cross learning model", "What it is learning from", "What it concluded",
-              "Path by path", "The rules it is applying", "Who carried it"):
+              "What to do about it", "The rules it is applying", "Who carried it"):
     check(f"it shows {probe}", probe in body)
+# A site has dozens of paths. The page leads with the ones that need a
+# decision and keeps the rest on the page as rows rather than as a
+# hundred screens of cards.
+check("it caps the cards", body.count("clm-card clm-") <= application.CLM_CARDS,
+      str(body.count("clm-card clm-")))
+check("and still accounts for every path",
+      "The other" in body or body.count("clm-card clm-") == len(model["rows"]))
 for period in ("week", "month", "quarter"):
     check(f"the {period} view renders",
           c.get(f"/ld-management/cross-training?tab=model&period={period}",

@@ -54,6 +54,16 @@ PROFICIENCY = ["Proficient", "Practice", "Refresh", "Lapsed"]
 # real file into.
 INDIRECT_ROLES = ["Jambuster", "Water Spider", "Problem Solver", "Trainer",
                   "Flow Lead", "Quality Auditor"]
+
+# Shift codes, shaped like the ones the real roster carries: a letter
+# for the shift, then an opaque run. Without them a seeded site has no
+# codes to configure, so shift coverage reads zero and every page built
+# on the real length of a working day falls back to the 9.5h guess.
+SHIFT_CODES = {
+    "early": ["D05A5CBY", "D58F88MZ", "D17K2PQR"],
+    "late":  ["L22B7TXN", "L41M9WVE"],
+    "night": ["N63C4ZHD", "N08R1JKL"],
+}
 IR_STATUSES = ["Active", "Active", "Active", "In Training", "Lapsed"]
 
 
@@ -138,17 +148,22 @@ def seed(n_som=2, n_om_per_som=3, n_am_per_om=6, n_assoc_per_am=25, weeks=10):
             # cross-trained in from elsewhere — which is the shape the
             # standards exist to describe.
             held = own + [others[(i + k) % len(others)] for k in range(1 + i % 3)]
+            # One code per person, from their shift's set — which is
+            # what a code means: the same fixed working times, with the
+            # days off rotating differently within the set.
+            pool = SHIFT_CODES.get(shift) or SHIFT_CODES["early"]
+            code = pool[i % len(pool)]
             for p in dict.fromkeys(held):
                 status = PROFICIENCY[(i + len(p)) % len(PROFICIENCY)]
                 cur.execute(
                     "INSERT INTO xt_hours (fc, fclm_mapped, employee_id, employee_login, "
                     "full_name, supervisor_login, "
                     "proficiency_status, merged_function, active_status, trained_status, "
-                    "fclm_area, shift, hours_60, hours_90, hours_180, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "fclm_area, shift, shift_pattern, hours_60, hours_90, hours_180, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("SCN2", home, emp_id, emp, emp.upper(), am_login,
                      status, p, "Active", "Trained",
-                     dept, shift, 25.0, 40.0, 80.0, now),
+                     dept, shift, code, 25.0, 40.0, 80.0, now),
                 )
                 n_xt += 1
     conn.commit()

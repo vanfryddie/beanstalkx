@@ -4001,6 +4001,11 @@ CLM_OUTSIDE_SHARE = 0.25
 # A department doing at least this share of a process's hours, with no
 # standard covering it, is worth proposing as one.
 CLM_DISCOVERY_SHARE = 0.10
+# How many paths get a card. A site has dozens of defined paths and a
+# page of dozens of cards is a scroll, not an answer: the rows are
+# already ordered by what deserves attention, so the ones past this
+# line go into a compact table underneath instead of being dropped.
+CLM_CARDS = 12
 
 
 def _clm_contributor_rows(window_column):
@@ -4115,12 +4120,32 @@ CLM_RULES = [
      "fix a rate problem — this is a process or a plan conversation, not a training one."),
     ("at", "met", "Settled",
      "At target and on plan. Hold it, and watch the lapse rate rather than the headcount."),
+    ("at", "unknown", "At target, with no plan to judge it against",
+     "The pool is the size the target asks for. Whether that size is the right one cannot be "
+     "told without a planned rate for the process. Set the plan."),
     ("over", "met", "Carrying more than the work needs",
      "Above target and on plan. The surplus is real flexibility, and it is also training "
      "hours being kept current for capacity nothing is asking for. Worth knowing the price."),
     ("over", "missed", "Deep pool, missing plan",
      "More trained than the target asks for and still behind plan. The constraint is not the "
      "number of people who can do the job."),
+    ("over", "unknown", "Above target, with no plan to judge it against",
+     "More trained than the target asks for. Whether that surplus is paying for itself cannot "
+     "be told without a planned rate for the process. Set the plan."),
+    # A path with a target of nothing is not a path that is on target.
+    # Saying "settled" about one is the same false comfort as judging a
+    # rate with no plan behind it, so it gets its own row.
+    ("none", "met", "No target set, and the work is getting done",
+     "Nothing says how many people this path should hold, and the process is hitting plan "
+     "anyway. Whoever is carrying it is enough — set the target to what that actually is, "
+     "so it survives the next person who leaves."),
+    ("none", "missed", "No target set, and behind plan",
+     "Nothing says how many people this path should hold, and the process is behind plan. "
+     "Set a target before deciding whether training is the answer — right now there is "
+     "nothing to be short of."),
+    ("none", "unknown", "No target and no plan",
+     "Neither a headcount target nor a planned rate exists for this path, so the model has "
+     "nothing to judge it against. It is listed because the floor is running it."),
 ]
 CLM_RULE_MAP = {(a, b): (title, detail) for a, b, title, detail in CLM_RULES}
 
@@ -4129,9 +4154,13 @@ def _clm_situation(path, plan, constellation, cost_model):
     """Which of the cases above this path is in, and what follows."""
     target = path.get("target") or 0
     trained = path.get("trained") or 0
-    if target and trained < target - CLM_TARGET_BAND:
+    if not target:
+        # No target at all is its own case. Falling through to "at"
+        # here reported a path nobody had sized as settled.
+        standing = "none"
+    elif trained < target - CLM_TARGET_BAND:
         standing = "under"
-    elif target and trained > target + CLM_TARGET_BAND:
+    elif trained > target + CLM_TARGET_BAND:
         standing = "over"
     else:
         standing = "at"
@@ -4144,8 +4173,10 @@ def _clm_situation(path, plan, constellation, cost_model):
     else:
         attainment = "missed"
 
-    title, detail = CLM_RULE_MAP.get((standing, attainment),
-                                     CLM_RULE_MAP.get((standing, "met"), ("Unclassified", "")))
+    # The table covers every standing against every attainment, so a
+    # miss here is a new case somebody forgot to write a row for, not
+    # something to paper over with the nearest neighbour.
+    title, detail = CLM_RULE_MAP.get((standing, attainment), ("Unclassified", ""))
     actions = []
     process = path.get("process") or ""
     train_hours = (cost_model["per_process"].get(process) or {}).get("train_hours") \
@@ -4196,6 +4227,19 @@ def _clm_situation(path, plan, constellation, cost_model):
                      f"{round(spare * unit_cost):,} of training kept current. If another path "
                      f"is short, these are the people who could be moved rather than trained "
                      f"from scratch."),
+        })
+    elif standing == "none":
+        # The useful thing to say about an unsized path is what size it
+        # looks like it already is, from the people doing it.
+        carrying = (constellation or {}).get("people")
+        actions.append({
+            "kind": "set_target",
+            "text": (f"No headcount target for this path. {carrying} people carried it over the "
+                     f"{'period' if not plan.get('hours') else 'period, ' + format(round(plan['hours']), ',') + 'h of work'}"
+                     f" — that is the number to start the target from."
+                     if carrying else
+                     "No headcount target for this path, and nobody recorded hours on it. "
+                     "Either it is not running, or the hours file does not name it the same way."),
         })
     if attainment == "unknown":
         actions.append({
@@ -4362,11 +4406,22 @@ def build_cross_learning_model(period="month", scenario="general"):
         by_situation.setdefault(row["situation"]["title"], []).append(row)
 
     judged = [r for r in rows if r["situation"]["attainment"] != "unknown"]
+    # A card for everything that needs a decision, and never more than
+    # a screenful or two of them; the rest stay on the page as rows.
+    acting = [r for r in rows if r["situation"]["actions"]]
+    card_count = min(max(len(acting), 1), CLM_CARDS) if rows else 0
     return {
         "period": period, "period_label": db.XT_PERIODS[period],
         "latest_label": db.period_label(latest_key) if latest_key else None,
         "scenario": scenario,
         "rows": rows,
+        "cards": rows[:card_count],
+        "rest": rows[card_count:],
+        "acting": len(acting),
+        # Whether anything below the cards still wants a decision, so
+        # the page does not claim the remainder is all quiet when the
+        # cap cut the list short.
+        "rest_acting": sum(1 for r in rows[card_count:] if r["situation"]["actions"]),
         "by_situation": sorted(by_situation.items(), key=lambda kv: -len(kv[1])),
         "discovered": discovered,
         "rules": CLM_RULES,

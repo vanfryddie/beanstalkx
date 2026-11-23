@@ -164,6 +164,7 @@
       {% else %}<span class="xi-change-note-pill is-missing">no reason given</span>{% endif %}
     </summary>
     <div class="xi-change-body">
+      <div class="dash-table-scroll">
       <table class="dash-table xi-change-table">
         <thead><tr><th scope="col">Standard</th><th scope="col">What changed</th><th scope="col" class="num">From</th><th scope="col" class="num">To</th><th scope="col" class="num">Move</th></tr></thead>
         <tbody>
@@ -181,6 +182,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
       <form class="xi-note-form" method="POST" action="{{ url_for('xt_change_note') }}">
         <input type="hidden" name="batch" value="{{ batch.batch }}">
         <input type="hidden" name="period" value="{{ ins.period }}">
@@ -245,6 +247,7 @@
     headcount percentage alone and everything else on this page still works.
   </p>
   <p class="xi-columns-intro">A CSV with these columns, one row per day, process and shift:</p>
+  <div class="dash-table-scroll">
   <table class="dash-table xi-columns">
     <thead><tr><th scope="col">Column</th><th scope="col">What goes in it</th></tr></thead>
     <tbody>
@@ -253,6 +256,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endif %}
 

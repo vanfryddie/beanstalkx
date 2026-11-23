@@ -97,13 +97,13 @@
 </div>
 {% endif %}
 
-<h3 class="dash-section-label">Path by path</h3>
+<h3 class="dash-section-label">What to do about it</h3>
 <p class="xi-note" style="margin-top:-6px;">
-  Ordered by what deserves attention first. Each card carries the figures the conclusion was
-  drawn from, so it can be argued with.
+  {{ m.cards | length }} of {{ m.rows | length }} paths, the ones that need a decision first.
+  Each card carries the figures the conclusion was drawn from, so it can be argued with.
 </p>
 <div class="clm-cards">
-  {% for row in m.rows %}
+  {% for row in m.cards %}
   {% set sit = row.situation %}
   <article class="clm-card clm-{{ sit.standing }}-{{ sit.attainment }}">
     <header>
@@ -111,13 +111,13 @@
         <h4>{{ row.label }}</h4>
         <span class="clm-card-meta">{{ shifts.get(row.shift, row.shift) }}{% if row.process %} · {{ row.process }}{% endif %}{% if row.source_departments %} · from {{ row.source_departments | join(', ') }}{% endif %}</span>
       </div>
-      <span class="clm-verdict clm-verdict-{{ sit.standing }}">{{ sit.title }}</span>
+      <span class="clm-verdict clm-verdict-{{ sit.standing }}-{{ sit.attainment }}">{{ sit.title }}</span>
     </header>
 
     <div class="clm-figures">
       <div class="clm-fig">
         <span class="clm-fig-label">Trained vs target</span>
-        <strong class="{{ 'is-under' if sit.gap < 0 }}">{{ sit.trained }} / {{ sit.target }}</strong>
+        <strong class="{{ 'is-under' if sit.gap < 0 and sit.attainment == 'missed' }}">{{ sit.trained }} / {{ sit.target }}</strong>
         <em>{{ '+' if sit.gap > 0 }}{{ sit.gap }}</em>
       </div>
       <div class="clm-fig">
@@ -159,6 +159,7 @@
       {% endif %}
       <details class="clm-people">
         <summary>The {{ c.top | length }} with the most hours</summary>
+        <div class="dash-table-scroll">
         <table class="dash-table">
           <thead><tr><th scope="col">Associate</th><th scope="col">Home department</th><th scope="col" class="num">Hours</th><th scope="col">Proficiency</th></tr></thead>
           <tbody>
@@ -172,6 +173,7 @@
             {% endfor %}
           </tbody>
         </table>
+        </div>
       </details>
     </div>
     {% endif %}
@@ -186,6 +188,41 @@
   </article>
   {% endfor %}
 </div>
+
+{% if m.rest %}
+<details class="xi-more">
+  <summary>The other {{ m.rest | length }} paths</summary>
+  <p class="xi-note">
+    {% if m.rest_acting %}{{ m.rest_acting }} of these still has something to act on — there were
+    more than would fit on cards.{% else %}Nothing here is asking for a decision today.{% endif %}
+    The same verdict and the same figures, as rows, so the whole picture is still on the page.
+  </p>
+  <div class="dash-table-scroll">
+    <table class="dash-table xi-table">
+      <thead><tr>
+        <th scope="col">Path</th><th scope="col">Shift</th><th scope="col">Verdict</th>
+        <th scope="col" class="num">Trained</th><th scope="col" class="num">Target</th>
+        <th scope="col" class="num">Rate</th><th scope="col" class="num">To plan</th>
+        <th scope="col" class="num">Carried by</th>
+      </tr></thead>
+      <tbody>
+        {% for row in m.rest %}
+        <tr>
+          <th scope="row">{{ row.label }}{% if row.process %} <span class="xi-dim">{{ row.process }}</span>{% endif %}</th>
+          <td>{{ shifts.get(row.shift, row.shift) }}</td>
+          <td><span class="clm-verdict clm-verdict-{{ row.situation.standing }}-{{ row.situation.attainment }}">{{ row.situation.title }}</span></td>
+          <td class="num">{{ row.situation.trained }}</td>
+          <td class="num">{{ row.situation.target }}</td>
+          <td class="num">{{ row.plan.rate if row.plan.rate is not none else '—' }}</td>
+          <td class="num">{% if row.plan.pct_to_plan is not none %}{{ row.plan.pct_to_plan }}%{% else %}—{% endif %}</td>
+          <td class="num">{% if row.constellation %}{{ row.constellation.people }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
 
 <details class="xi-more">
   <summary>The rules it is applying</summary>
@@ -202,7 +239,7 @@
           <th scope="row">{{ standing }}</th>
           <td>{{ attainment }}</td>
           <td><strong>{{ title }}</strong></td>
-          <td class="clm-rule-detail">{{ detail }}</td>
+          <td class="clm-rule-detail wrap">{{ detail }}</td>
         </tr>
         {% endfor %}
       </tbody>
