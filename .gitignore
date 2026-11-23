@@ -4,3 +4,8 @@ __pycache__/
 *.sqlite3
 instance/
 perf/__pycache__/
+
+# Delivery archives built with `git archive` — derived from the commit
+# they are built at, so committing one puts a copy of the repository
+# inside the repository and the next build adds another.
+scn2ldpage_*.zip
