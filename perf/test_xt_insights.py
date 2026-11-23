@@ -33,6 +33,10 @@ def wipe():
     for table in ("xt_rollup_counts", "xt_rollup_snapshots", "xt_target_changes",
                   "process_volume"):
         conn.execute("DELETE FROM " + table)
+    # The recommendation section builds a source pool of its own. Those
+    # rows are scaffolding, not data: left behind they join the roster
+    # and break the suites that count the floor.
+    conn.execute("DELETE FROM xt_hours WHERE employee_login LIKE ?", ("pool%",))
     conn.commit()
     conn.close()
 
@@ -261,12 +265,42 @@ check("the page can say what it has", coverage["rows"] == 3 and coverage["proces
 print("\n8. Recommendations")
 wipe()
 # A path with a real pool behind it, so the cap is not what is being
-# measured here.
+# measured here. The pool is built rather than assumed: this block ran
+# green on the dev SQLite file, whose standards name departments the
+# seed happens to fill, and failed on a freshly seeded Postgres, where
+# the same standards name departments with two people in them. A test
+# that depends on which roster it is pointed at is testing the data.
 paths = application._xt_defined_paths("general")
-target_path = next((p for p in paths if p["shift"] == "early" and p["process"]
-                    and p["headcount"] > 40), None)
-check("the dev data has a path with people behind it", target_path is not None,
+target_path = next((p for p in paths if p["shift"] == "early" and p["process"]), None)
+check("there is a defined path on early shift", target_path is not None,
       str([(p["label"], p["headcount"]) for p in paths[:4]]))
+
+if target_path and target_path["headcount"] <= 40:
+    # Who the path draws from, by the same column the pool is counted on.
+    if target_path["kind"] == "standard":
+        sources = next((d.get("source") or [] for d in db.get_xt_standard_defs("general")
+                        if d["id"] == target_path["id"]), [])
+    else:
+        sources = [r.get("source_dept") for rows in (db.get_internal_xt_overview() or {}).values()
+                   for r in rows if r["key"] == target_path["id"] and r.get("source_dept")]
+    dept = (sources or ["Receive"])[0]
+    conn = db.get_db()
+    cur = conn.cursor()
+    for i in range(60):
+        login = f"pool{i:03d}"
+        cur.execute(
+            "INSERT INTO xt_hours (fc, fclm_mapped, employee_id, employee_login, full_name, "
+            "proficiency_status, merged_function, active_status, trained_status, shift, "
+            "hours_60, hours_90, hours_180, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("SCN2", dept, str(700000000 + i), login, login.upper(), "Proficient",
+             target_path["process"], "Active", "Trained", "early", 10.0, 20.0, 40.0, db._now()))
+    conn.commit(); conn.close()
+    paths = application._xt_defined_paths("general")
+    target_path = next((p for p in paths if p["label"] == target_path["label"]
+                        and p["shift"] == "early"), None)
+check("and a pool can be put behind it",
+      target_path is not None and target_path["headcount"] > 40,
+      str(target_path and target_path["headcount"]))
 
 if target_path:
     process = target_path["process"]
@@ -419,6 +453,7 @@ check("and a change without one is called out",
       "no reason given" in body or "has a reason" in body)
 db.bulk_update_xt_standards([save_standard(std)], changed_by="som00", note="revert")
 
+wipe()
 wipe()
 print("\n" + "=" * 62)
 print("ALL CROSS-TRAINING INSIGHT CHECKS PASSED" if not fails else f"{len(fails)} FAILURE(S): {fails}")

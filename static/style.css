@@ -4737,3 +4737,154 @@ html[data-theme="light"] .tr-note { background: rgba(0,0,0,.035); }
   .sh-form-head label { flex: 1 1 100%; }
   .sh-form-head input, .sh-form-head select { width: 100%; }
 }
+
+/* ---------------------------------------------------------------- charts --
+   Hand-built SVG, no dependencies. The two categorical slots and the
+   blue sequential ramp are the validated defaults; both modes were
+   checked against their own surface rather than flipped. */
+:root {
+  --viz-series-1: #2a78d6;          /* categorical slot 1 — blue */
+  --viz-series-2: #eb6834;          /* categorical slot 2 — orange */
+  --viz-seq-100: #cde2fb;
+  --viz-seq-450: #2a78d6;
+  --viz-grid: rgba(0, 0, 0, .09);
+  --viz-surface: #fff;
+}
+html[data-theme="dark"], :root:not([data-theme="light"]) {
+  --viz-series-1: #3987e5;
+  --viz-series-2: #d95926;
+  --viz-seq-100: #184f95;
+  --viz-seq-450: #3987e5;
+  --viz-grid: rgba(255, 255, 255, .11);
+  --viz-surface: #2c2c2e;
+}
+
+.viz-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.viz-card { margin: 0; padding: 15px 16px 13px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.viz-card > figcaption { margin-bottom: 12px; font-size: 11px; font-weight: 620; letter-spacing: .05em; text-transform: uppercase; color: var(--text-lo); }
+.viz-card .viz-sub { margin-top: 10px; font-size: 11.5px; line-height: 1.5; color: var(--text-lo); text-transform: none; letter-spacing: normal; font-weight: 400; }
+.viz-empty { margin: 0; padding: 18px 0; font-size: 12.5px; color: var(--text-lo); }
+.viz-plot { position: relative; }
+.viz-svg { display: block; width: 100%; }
+.viz-grid { stroke: var(--viz-grid); stroke-width: 1; }
+.viz-area { fill: var(--viz-series-1); opacity: .14; }
+.viz-line { fill: none; stroke: var(--viz-series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.viz-dots { position: absolute; inset: 0; }
+.viz-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--viz-series-1); opacity: 0; transition: opacity .12s ease; }
+.viz-dot.is-near { opacity: 1; box-shadow: 0 0 0 2px var(--viz-surface); }
+.viz-last { position: absolute; right: 0; transform: translateY(-50%); padding: 1px 6px; border-radius: 6px; background: var(--surface-solid); font-size: 11px; font-weight: 620; color: var(--ink); font-variant-numeric: tabular-nums; box-shadow: 0 1px 3px rgba(20,32,48,.14); }
+.viz-tip { position: absolute; top: -4px; transform: translateY(-100%); padding: 4px 9px; border-radius: 8px; background: var(--ink); color: var(--surface-solid); font-size: 11px; white-space: nowrap; pointer-events: none; z-index: 3; }
+.viz-xaxis { display: flex; justify-content: space-between; margin-top: 7px; font-size: 10.5px; color: var(--text-lo); }
+.viz-spark { display: block; flex: none; overflow: visible; }
+
+.viz-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.viz-stat { padding: 14px 16px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.viz-stat-label { display: block; margin-bottom: 7px; font-size: 10.5px; font-weight: 620; letter-spacing: .06em; text-transform: uppercase; color: var(--text-lo); }
+.viz-stat-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.viz-stat strong { font-size: 27px; font-weight: 680; letter-spacing: -.035em; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
+.viz-stat-sub { display: block; margin-top: 7px; font-size: 11.5px; line-height: 1.45; color: var(--text-lo); }
+.viz-stat.is-risk strong { color: var(--red); }
+.viz-stat.is-good strong { color: var(--green); }
+
+.viz-wide { grid-column: 1 / -1; }
+.viz-diverging { display: flex; flex-direction: column; gap: 5px; }
+.viz-div-row { display: grid; grid-template-columns: minmax(90px, 20ch) 1fr 4.5ch; align-items: center; gap: 10px; }
+.viz-div-name { overflow: hidden; font-size: 12px; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
+.viz-div-track { position: relative; height: 14px; }
+.viz-div-axis { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--viz-grid); }
+.viz-div-bar { position: absolute; top: 2px; height: 10px; border-radius: 4px; }
+.viz-div-bar.is-under { background: var(--viz-series-2); border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.viz-div-bar.is-over { background: var(--viz-series-1); border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.viz-div-value { font-size: 11.5px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.viz-div-value.is-under { color: var(--text-lo); }
+
+.viz-meter { display: inline-flex; align-items: center; gap: 8px; min-width: 120px; }
+/* display:block because an <i> is inline by default; a flex item is
+   blockified only when its parent really is a flex container, and a
+   zero-width track is invisible rather than obviously broken. */
+.viz-meter-track { display: block; position: relative; flex: 1; min-width: 46px; height: 8px; border-radius: 4px; background: var(--viz-seq-100); overflow: hidden; }
+.viz-meter-fill { display: block; }
+.viz-meter-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--viz-seq-450); }
+.viz-meter em { font-style: normal; font-size: 12px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.viz-meter.is-short .viz-meter-fill { background: var(--viz-series-2); }
+
+.viz-split { display: inline-flex; width: 100%; min-width: 80px; gap: 2px; border-radius: 4px; overflow: hidden; }
+.viz-split-part { height: 100%; border-radius: 2px; }
+.viz-split-1 { background: var(--viz-series-1); }
+.viz-split-2 { background: var(--viz-series-2); }
+.viz-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--text-lo); }
+.viz-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.viz-swatch { width: 10px; height: 10px; border-radius: 3px; }
+@media (prefers-reduced-motion: reduce) { .viz-dot { transition: none; } }
+
+/* ------------------------------------------------- cross learning model -- */
+.clm-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 9px; margin-bottom: 20px; }
+.clm-input { display: flex; align-items: flex-start; gap: 11px; padding: 13px 15px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.clm-input > i { margin-top: 5px; flex: none; }
+.clm-input > div { min-width: 0; flex: 1; }
+.clm-input strong { display: block; font-size: 13px; color: var(--ink); }
+.clm-input strong a { color: inherit; }
+.clm-input span { display: block; margin-top: 2px; font-size: 11.5px; color: var(--text-lo); }
+.clm-input em { display: block; margin-top: 4px; font-style: normal; font-size: 11px; color: var(--text-lo); opacity: .85; }
+.clm-input-count { flex: none; font-size: 13px; font-weight: 620; color: var(--ink); font-variant-numeric: tabular-nums; }
+.clm-input.is-missing { border-color: rgba(255,159,10,.3); background: rgba(255,159,10,.06); }
+
+.clm-situations { display: flex; flex-direction: column; gap: 6px; }
+.clm-situation { display: grid; grid-template-columns: minmax(140px, 34ch) 1fr 3.5ch; align-items: center; gap: 12px; padding: 3px 0; color: inherit; text-decoration: none; }
+.clm-situation:hover { text-decoration: none; }
+.clm-situation:hover .clm-sit-name { color: var(--aws-blue); }
+.clm-sit-name { font-size: 12.5px; color: var(--ink); }
+.clm-sit-track { height: 12px; border-radius: 4px; background: var(--viz-seq-100); overflow: hidden; }
+.clm-sit-track i { display: block; height: 100%; border-radius: 4px; background: var(--viz-seq-450); }
+.clm-sit-count { font-size: 12px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.clm-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.clm-card { padding: 16px 18px 15px; border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); }
+.clm-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 13px; }
+.clm-card h4 { margin: 0; font-size: 14.5px; font-weight: 640; letter-spacing: -.015em; color: var(--ink); }
+.clm-card-meta { display: block; margin-top: 3px; font-size: 11px; color: var(--text-lo); }
+.clm-verdict { flex: none; padding: 4px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 640; text-align: right; }
+.clm-verdict-under { color: var(--red); background: rgba(255,69,58,.12); }
+.clm-verdict-at { color: var(--green); background: rgba(48,209,88,.12); }
+.clm-verdict-over { color: var(--aws-blue); background: rgba(41,151,255,.13); }
+.clm-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; padding: 12px 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
+.clm-fig { min-width: 0; }
+/* By class, not `> span`: the meter is a span too, and the element
+   selector was blockifying it into a label and collapsing its track. */
+.clm-fig-label { display: block; font-size: 10px; font-weight: 620; letter-spacing: .05em; text-transform: uppercase; color: var(--text-lo); }
+.clm-fig strong { display: block; margin-top: 4px; font-size: 18px; font-weight: 660; letter-spacing: -.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.clm-fig strong.is-under { color: var(--red); }
+.clm-fig em { display: block; margin-top: 3px; font-style: normal; font-size: 10.5px; color: var(--text-lo); }
+.clm-fig .viz-meter { margin-top: 5px; }
+.clm-detail { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--text-lo); }
+.clm-constellation { margin-top: 13px; padding: 12px 13px; border-radius: 11px; background: rgba(127,138,153,.06); }
+.clm-con-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.clm-con-head strong { font-size: 12px; color: var(--ink); }
+.clm-con-head span { font-size: 11px; color: var(--text-lo); }
+.clm-from { margin: 9px 0 0; display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--text-lo); }
+.clm-from span { white-space: nowrap; }
+.clm-from em { font-style: normal; color: var(--ink); font-variant-numeric: tabular-nums; }
+.clm-people { margin-top: 10px; }
+.clm-people > summary { cursor: pointer; font-size: 11.5px; color: var(--aws-blue); }
+.clm-people table { margin-top: 9px; }
+.clm-xt { padding: 1px 6px; border-radius: 999px; font-size: 10px; color: var(--viz-series-2); background: rgba(235,104,52,.14); }
+.clm-xt.is-warn { color: var(--red); background: rgba(255,69,58,.13); }
+.clm-actions { margin: 13px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+.clm-action { padding: 10px 12px 10px 13px; border-left: 2px solid var(--aws-blue); border-radius: 0 9px 9px 0; background: rgba(41,151,255,.07); font-size: 12px; line-height: 1.5; color: var(--ink); }
+.clm-action-close_gap, .clm-action-lapsed_carrying, .clm-action-untrained_carrying { border-left-color: var(--red); background: rgba(255,69,58,.07); }
+.clm-action-add_source { border-left-color: var(--viz-series-2); background: rgba(235,104,52,.09); }
+.clm-action-set_plan { border-left-color: var(--text-lo); background: rgba(127,138,153,.08); }
+.clm-rule-detail { max-width: 58ch; font-size: 11.5px; line-height: 1.5; color: var(--text-lo); }
+@media (max-width: 720px) {
+  .clm-cards { grid-template-columns: 1fr; }
+  .clm-card > header { flex-direction: column; }
+  .clm-verdict { text-align: left; }
+  .clm-situation { grid-template-columns: 1fr 3.5ch; }
+  .clm-sit-track { grid-column: 1 / -1; }
+}
+
+/* The rate figure carries a sparkline beside the number, so the card
+   shows a direction and not only the latest reading. */
+.clm-fig-row { display: flex; align-items: center; gap: 8px; }
+.clm-fig-row strong { flex: none; }
+.clm-fig-row .viz-spark { flex: 1; min-width: 0; max-width: 104px; }

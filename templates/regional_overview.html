@@ -57,7 +57,7 @@
       {% endif %}
     </h2>
     <p>
-      {% set worst = overview.sites | sort(attribute='total_score') | selectattr('total_score') | first %}
+      {% set worst = overview.sites | rejectattr('total_score', 'none') | first %}
       {% if worst %}
         {{ worst.site_name }} is lowest at {{ worst.total_score }}%{% if worst.focus_metric_label %},
         held down by {{ worst.focus_metric_label }}{% endif %}.
@@ -116,7 +116,7 @@
 
 <h2 class="dash-section-label">Sites</h2>
 <div class="dash-entity-grid">
-  {% for s in overview.sites | sort(attribute='total_score') %}
+  {% for s in overview.sites %}
   <article class="dash-entity-card dash-entity-{{ s.status or 'none' }}">
     <header class="dash-entity-head">
       <div>
@@ -229,7 +229,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for s in overview.sites | sort(attribute='total_score') %}
+        {% for s in overview.sites %}
         <tr>
           <th scope="row">
             <strong>{{ s.site_code }}</strong>

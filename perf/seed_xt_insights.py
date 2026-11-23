@@ -130,6 +130,15 @@ def seed(weeks=WEEKS):
                            rotation_id=rotations["six_four_five"] if i % 2 == 0 else rotations["five"],
                            updated_by="trainer01")
 
+    # 2c. A plan rate per process, so the model has something to judge
+    #     attainment against. Deliberately not all of them: a path with
+    #     no plan is a case the page has to handle.
+    for i, process in enumerate(sorted({d["target"] for d in defs if d["target"]})):
+        if i % 4 == 3:
+            continue
+        db.set_process_plan(process, "", 115 + (zlib.crc32(process.encode()) % 35),
+                            note="Seeded plan rate", updated_by="trainer01")
+
     # 3. Volume: one row per day, process and shift, for the processes
     #    the standards actually target, trending up into peak.
     # Every process anything targets, plus the ones the hours file

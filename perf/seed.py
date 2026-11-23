@@ -31,6 +31,10 @@ PROCESSES = ["Pick", "Pack Singles", "Pack Multis", "Stow Each Nike",
 # _xt_source_employees matches a standard's source departments against
 # it — so these are the department names the standards name as sources.
 # Each process is seeded into the department it would really sit in.
+# Every department the processes above live in — one per person, since
+# that is what the column means.
+HOME_DEPARTMENTS = ["RSP", "Pack Singles", "Pack Multis", "Chutings", "Receive"]
+
 FCLM_MAPPED = {
     "Pick": "RSP",
     "Pack Singles": "Pack Singles",
@@ -43,12 +47,21 @@ FCLM_MAPPED = {
 }
 PROFICIENCY = ["Proficient", "Practice", "Refresh", "Lapsed"]
 
+# Indirect roles, which a real site records in the IR dashboard upload.
+# Without them a seeded site has nobody holding a role, so every page
+# and filter built on them reads empty and looks broken — and the tests
+# that cover them pass only against a database somebody had uploaded a
+# real file into.
+INDIRECT_ROLES = ["Jambuster", "Water Spider", "Problem Solver", "Trainer",
+                  "Flow Lead", "Quality Auditor"]
+IR_STATUSES = ["Active", "Active", "Active", "In Training", "Lapsed"]
+
 
 def seed(n_som=2, n_om_per_som=3, n_am_per_om=6, n_assoc_per_am=25, weeks=10):
     db.init_db()
     conn = db.get_db()
     for table in ("tracked_items", "user_roles", "xt_hours", "olr_weekly_metrics",
-                  "ambassadors", "user_department_assignments"):
+                  "ambassadors", "user_department_assignments", "ir_dashboard"):
         try:
             conn.execute(f"DELETE FROM {table}")
         except Exception:
@@ -113,7 +126,19 @@ def seed(n_som=2, n_om_per_som=3, n_am_per_om=6, n_assoc_per_am=25, weeks=10):
             # mapping and a seed that reshuffled it every run would make
             # that look broken.
             emp_id = str(100000000 + (zlib.crc32(emp.encode()) % 99999999))
-            for p in PROCESSES[: 3 + (i % 3)]:
+            # One home department per person, which is what "FCLM
+            # Mapped" means. Seeding it per row gave the same associate
+            # a different department on every process they held, so
+            # nobody was ever cross-trained in from anywhere and the
+            # whole point of the data was invisible.
+            home = HOME_DEPARTMENTS[i % len(HOME_DEPARTMENTS)]
+            own = [proc for proc in PROCESSES if FCLM_MAPPED.get(proc) == home]
+            others = [proc for proc in PROCESSES if proc not in own]
+            # Their own department's work, plus one to three processes
+            # cross-trained in from elsewhere — which is the shape the
+            # standards exist to describe.
+            held = own + [others[(i + k) % len(others)] for k in range(1 + i % 3)]
+            for p in dict.fromkeys(held):
                 status = PROFICIENCY[(i + len(p)) % len(PROFICIENCY)]
                 cur.execute(
                     "INSERT INTO xt_hours (fc, fclm_mapped, employee_id, employee_login, "
@@ -121,11 +146,34 @@ def seed(n_som=2, n_om_per_som=3, n_am_per_om=6, n_assoc_per_am=25, weeks=10):
                     "proficiency_status, merged_function, active_status, trained_status, "
                     "fclm_area, shift, hours_60, hours_90, hours_180, updated_at) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    ("SCN2", FCLM_MAPPED.get(p), emp_id, emp, emp.upper(), am_login,
+                    ("SCN2", home, emp_id, emp, emp.upper(), am_login,
                      status, p, "Active", "Trained",
                      dept, shift, 25.0, 40.0, 80.0, now),
                 )
                 n_xt += 1
+    conn.commit()
+    conn.close()
+
+    # Roughly a third of the floor holds an indirect role, which is the
+    # shape a real IR dashboard has: a minority named, everybody else
+    # blank.
+    conn = db.get_db()
+    cur = conn.cursor()
+    n_ir = 0
+    for am_login, _role, _rt, dept, shift in ams:
+        for i in range(n_assoc_per_am):
+            if i % 3:
+                continue
+            emp = f"{am_login}e{i:03d}"
+            role = INDIRECT_ROLES[(i + len(am_login)) % len(INDIRECT_ROLES)]
+            cur.execute(
+                "INSERT INTO ir_dashboard (login, full_name, manager_login, shift, area, "
+                "home_process, indirect_role, indirect_role_status, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (emp, emp.upper(), am_login, shift, dept, PROCESSES[i % len(PROCESSES)],
+                 role, IR_STATUSES[(i + len(role)) % len(IR_STATUSES)], now),
+            )
+            n_ir += 1
     conn.commit()
     conn.close()
 
@@ -148,7 +196,8 @@ def seed(n_som=2, n_om_per_som=3, n_am_per_om=6, n_assoc_per_am=25, weeks=10):
     conn.close()
 
     print(f"seeded: {len(managers)} managers ({len(ams)} AMs), "
-          f"{n_items} tracked_items, {n_xt} xt_hours, {n_snap} olr snapshots")
+          f"{n_items} tracked_items, {n_xt} xt_hours, {n_ir} indirect roles, "
+          f"{n_snap} olr snapshots")
     return [m[0] for m in ams], [m[0] for m in managers]
 
 

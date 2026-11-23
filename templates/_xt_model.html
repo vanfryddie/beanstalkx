@@ -1,0 +1,241 @@
+{% set m = model %}
+{% import "_charts.html" as viz %}
+{#- The Cross Learning Model.
+
+    The Insights tab answers "what happened". This answers "what is the
+    model reading, what did it conclude, and why" — because a target
+    somebody is asked to act on has to be arguable, and a recommendation
+    whose reasoning is hidden is an opinion with a number on it. -#}
+
+<div class="xi-head">
+  <div>
+    <h2 class="xi-title">Cross learning model</h2>
+    <p class="xi-sub">
+      What the model reads, what it concluded about every defined path, and the rule that got
+      it there. Hours come from the {{ m.hours_window }} of the cross-training file; volume and
+      plan from the {{ m.latest_label or 'latest completed period' }}.
+    </p>
+  </div>
+  <nav class="xi-periods" aria-label="Period">
+    {% for key, label in xt_periods.items() %}
+    <a href="{{ url_for('cross_training', tab='model', scenario=scenario, period=key) }}"
+       class="{{ 'active' if m.period == key }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+</div>
+
+<h3 class="dash-section-label">What it is learning from</h3>
+<div class="clm-inputs">
+  {% for input in m.inputs %}
+  <div class="clm-input {{ 'is-ready' if input.ready else 'is-missing' }}">
+    <i class="dash-dot dash-dot-{{ 'good' if input.ready else 'watch' }}"></i>
+    <div>
+      <strong>{% if input.link %}<a href="{{ input.link }}">{{ input.name }}</a>{% else %}{{ input.name }}{% endif %}</strong>
+      <span>{{ input.detail }}</span>
+      <em>{{ input.note }}</em>
+    </div>
+    <span class="clm-input-count">{{ '{:,}'.format(input.rows) if input.rows else '—' }}</span>
+  </div>
+  {% endfor %}
+</div>
+
+<h3 class="dash-section-label">What it concluded</h3>
+<div class="viz-row">
+  <figure class="viz-card viz-wide">
+    <figcaption>Every path, by what the model made of it</figcaption>
+    {% if m.by_situation %}
+    {% set widest = m.by_situation[0][1] | length %}
+    <div class="clm-situations">
+      {% for title, rows in m.by_situation %}
+      <a class="clm-situation" href="#situation-{{ loop.index }}">
+        <span class="clm-sit-name">{{ title }}</span>
+        <span class="clm-sit-track"><i style="width:{{ (rows | length) / widest * 100 }}%"
+          title="{{ rows | length }} path(s): {{ title }}"></i></span>
+        <span class="clm-sit-count">{{ rows | length }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    <figcaption class="viz-sub">
+      {{ m.judged }} path(s) the model could judge against a plan; {{ m.unjudged }} it could not,
+      because no planned rate exists for them.
+    </figcaption>
+    {% else %}
+    <p class="viz-empty">No defined paths to judge.</p>
+    {% endif %}
+  </figure>
+</div>
+
+{% if m.discovered %}
+<h3 class="dash-section-label">Cross-training the floor is already doing</h3>
+<p class="xi-note" style="margin-top:-6px;">
+  A department working somebody else's process, with no standard describing it. These are not
+  forecasts — they are hours already worked, which makes them the most actionable thing on this
+  page: a route somebody built without writing it down, and a candidate for a standard.
+</p>
+<div class="dash-table-scroll">
+  <table class="dash-table xi-table">
+    <thead>
+      <tr><th scope="col">From department</th><th scope="col">Working process</th>
+      <th scope="col">Shifts</th><th scope="col" class="num">Hours</th>
+      <th scope="col" class="num">Share of the process</th>
+      <th scope="col" class="num">People</th><th scope="col" class="num">Recorded as trained</th></tr>
+    </thead>
+    <tbody>
+      {% for row in m.discovered %}
+      <tr>
+        <th scope="row">{{ row.department }}</th>
+        <td>{{ row.process }}</td>
+        <td class="mono">{{ row.shifts | join(', ') }}</td>
+        <td class="num mono">{{ '{:,.0f}'.format(row.hours) }}</td>
+        <td class="num">{{ viz.meter(row.share * 100, 100, row.department ~ ' on ' ~ row.process, '%', 0) }}</td>
+        <td class="num mono">{{ row.people }}</td>
+        <td class="num mono {{ 'is-down' if row.trained < row.people }}">{{ row.trained }}{% if row.trained < row.people %} of {{ row.people }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h3 class="dash-section-label">Path by path</h3>
+<p class="xi-note" style="margin-top:-6px;">
+  Ordered by what deserves attention first. Each card carries the figures the conclusion was
+  drawn from, so it can be argued with.
+</p>
+<div class="clm-cards">
+  {% for row in m.rows %}
+  {% set sit = row.situation %}
+  <article class="clm-card clm-{{ sit.standing }}-{{ sit.attainment }}">
+    <header>
+      <div class="clm-card-title">
+        <h4>{{ row.label }}</h4>
+        <span class="clm-card-meta">{{ shifts.get(row.shift, row.shift) }}{% if row.process %} · {{ row.process }}{% endif %}{% if row.source_departments %} · from {{ row.source_departments | join(', ') }}{% endif %}</span>
+      </div>
+      <span class="clm-verdict clm-verdict-{{ sit.standing }}">{{ sit.title }}</span>
+    </header>
+
+    <div class="clm-figures">
+      <div class="clm-fig">
+        <span class="clm-fig-label">Trained vs target</span>
+        <strong class="{{ 'is-under' if sit.gap < 0 }}">{{ sit.trained }} / {{ sit.target }}</strong>
+        <em>{{ '+' if sit.gap > 0 }}{{ sit.gap }}</em>
+      </div>
+      <div class="clm-fig">
+        <span class="clm-fig-label">Rate</span>
+        <div class="clm-fig-row">
+          <strong>{{ row.plan.rate if row.plan.rate is not none else '—' }}</strong>
+          {{ viz.sparkline(row.rate_series) }}
+        </div>
+        <em>{% if row.plan.plan_rate %}plan {{ row.plan.plan_rate }}{% else %}no plan set{% endif %}{% if row.rate_trend %} · {{ '%+.1f' % row.rate_trend }}/{{ m.period }}{% endif %}</em>
+      </div>
+      <div class="clm-fig">
+        <span class="clm-fig-label">To plan</span>
+        {{ viz.meter(row.plan.pct_to_plan, 100, row.label ~ ' attainment') }}
+        <em>{% if row.plan.hours_vs_plan is not none %}{{ '+' if row.plan.hours_vs_plan > 0 }}{{ row.plan.hours_vs_plan }}h vs plan{% else %}&nbsp;{% endif %}</em>
+      </div>
+      <div class="clm-fig">
+        <span class="clm-fig-label">Volume</span>
+        <strong>{{ '{:,}'.format(row.plan.units) if row.plan.units else '—' }}</strong>
+        <em>{% if row.plan.hours %}over {{ '{:,.0f}'.format(row.plan.hours) }}h{% if row.period_label %} in {{ row.period_label }}{% endif %}{% else %}no volume for this path{% endif %}</em>
+      </div>
+    </div>
+
+    <p class="clm-detail">{{ sit.detail }}</p>
+
+    {% if row.constellation %}
+    {% set c = row.constellation %}
+    <div class="clm-constellation">
+      <div class="clm-con-head">
+        <strong>Who carried it</strong>
+        <span>{{ c.people }} people, {{ '{:,.0f}'.format(c.hours) }}h in the {{ m.hours_window }}</span>
+      </div>
+      {{ viz.split_bar([
+          {'share': c.home_share or 0, 'label': 'Own department', 'text': '{:,.0f}h'.format(c.home_hours)},
+          {'share': c.outside_share or 0, 'label': 'Cross-trained in', 'text': '{:,.0f}h'.format(c.outside_hours)}]) }}
+      {{ viz.legend(['Own department · {:,.0f}h'.format(c.home_hours),
+                     'Cross-trained in · {:,.0f}h'.format(c.outside_hours)]) }}
+      {% if c.outside_by_department %}
+      <p class="clm-from">Coming from: {% for o in c.outside_by_department %}<span>{{ o.department }} <em>{{ '{:,.0f}'.format(o.hours) }}h</em></span>{% endfor %}</p>
+      {% endif %}
+      <details class="clm-people">
+        <summary>The {{ c.top | length }} with the most hours</summary>
+        <table class="dash-table">
+          <thead><tr><th scope="col">Associate</th><th scope="col">Home department</th><th scope="col" class="num">Hours</th><th scope="col">Proficiency</th></tr></thead>
+          <tbody>
+            {% for person in c.top %}
+            <tr>
+              <th scope="row">{{ person.name }}<span class="mono">{{ person.login }}</span></th>
+              <td>{{ person.home_department or '—' }}{% if person.from_outside %} <span class="clm-xt">cross-trained in</span>{% endif %}</td>
+              <td class="num mono">{{ person.hours }}</td>
+              <td>{{ person.proficiency or '—' }}{% if not person.trained %} <span class="clm-xt is-warn">not recorded as trained</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+    </div>
+    {% endif %}
+
+    {% if sit.actions %}
+    <ul class="clm-actions">
+      {% for action in sit.actions %}
+      <li class="clm-action clm-action-{{ action.kind }}">{{ action.text }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </article>
+  {% endfor %}
+</div>
+
+<details class="xi-more">
+  <summary>The rules it is applying</summary>
+  <p class="xi-note">
+    Written out rather than buried in branches. Standing is trained against target, within
+    {{ 1 }}; attainment is the actual rate against the planned one, within 5%.
+  </p>
+  <div class="dash-table-scroll">
+    <table class="dash-table xi-table">
+      <thead><tr><th scope="col">Standing</th><th scope="col">To plan</th><th scope="col">What it means</th><th scope="col">What follows</th></tr></thead>
+      <tbody>
+        {% for standing, attainment, title, detail in m.rules %}
+        <tr>
+          <th scope="row">{{ standing }}</th>
+          <td>{{ attainment }}</td>
+          <td><strong>{{ title }}</strong></td>
+          <td class="clm-rule-detail">{{ detail }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+
+{% if can_manage_xt %}
+<details class="xi-more">
+  <summary>The plan — what each process should run at</summary>
+  <p class="xi-note">
+    The rate a path is held to. A volume file carrying its own <code>plan_rate</code> column
+    wins over this; where neither exists the model says it cannot judge rather than guessing.
+  </p>
+  <form method="POST" action="{{ url_for('xt_plan_save') }}">
+    <input type="hidden" name="period" value="{{ m.period }}">
+    <div class="dash-table-scroll">
+      <table class="dash-table xi-table">
+        <thead><tr><th scope="col">Process</th><th scope="col" class="num">Planned rate (units/hour)</th><th scope="col">Set by</th></tr></thead>
+        <tbody>
+          {% for process in m.processes %}
+          {% set plan = m.plans.get((process, '')) or m.plans.get((process, none)) %}
+          <tr>
+            <th scope="row">{{ process }}<input type="hidden" name="plan_process" value="{{ process }}"></th>
+            <td class="num"><input type="number" step="0.1" min="0" name="plan_rate"
+                   value="{{ plan.plan_rate if plan and plan.plan_rate else '' }}" placeholder="not set"></td>
+            <td class="dash-muted">{{ plan.updated_by if plan else '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:14px;"><button class="btn btn-gold btn-sm" type="submit">Save the plan</button></div>
+  </form>
+</details>
+{% endif %}

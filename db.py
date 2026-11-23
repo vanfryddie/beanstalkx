@@ -1783,6 +1783,25 @@ def init_db():
         # created everything, so every worker after it just finds
         # IF NOT EXISTS correctly no-op'ing with nothing left to race on.
         conn.execute("SELECT pg_advisory_lock(727301727301)")
+        # A site other than the default lives in its own Postgres schema,
+        # and until now nothing created it. Postgres accepts a
+        # search_path naming a schema that does not exist and then
+        # resolves every unqualified name to the next entry — "public" —
+        # so without this a new site's CREATE TABLE IF NOT EXISTS found
+        # the default site's tables already there, did nothing, and that
+        # site then read and wrote the default site's data. Under the
+        # advisory lock, because CREATE SCHEMA IF NOT EXISTS races on the
+        # catalog between workers exactly as the indexes below do. On
+        # SQLite each site is its own file, so none of this can happen
+        # there, which is why the bug was invisible until Postgres.
+        schema = _site_schema_name(get_current_site())
+        if schema != "public":
+            conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            # The search_path was set when this connection was opened,
+            # which may have been before the schema existed; set it
+            # again so every CREATE TABLE below lands in this site's
+            # schema rather than in public.
+            conn.execute(f'SET search_path TO "{schema}", public')
     try:
         conn.executescript(
         """
@@ -4567,6 +4586,10 @@ PROCESS_VOLUME_COLUMNS = [
     ("process", "The process name as the cross-training data spells it, e.g. Pick or Stow Each Nike."),
     ("units", "Units processed — whatever this site counts that process in."),
     ("hours", "Paid hours worked on that process that day. Optional, but the recommendations need it."),
+    ("plan_rate", "The rate that day was planned to run at, in units an hour. Optional — a plan "
+                  "set per process on the Cross Learning Model tab is used where the file has none."),
+    ("plan_hours", "The hours that volume was planned to take. Optional; it is derived from the "
+                   "planned rate when absent."),
     ("fc", "Optional, for a multi-site file."),
 ]
 
@@ -4623,6 +4646,18 @@ def ingest_process_volume_csv(file_bytes, filename, uploaded_by=None):
             continue
         units = _as_number(row.get("units") or row.get("volume") or row.get("quantity"))
         hours = _as_number(row.get("hours") or row.get("paid hours") or row.get("paid_hours"))
+        plan_rate = _as_number(row.get("plan_rate") or row.get("plan rate")
+                               or row.get("planned rate") or row.get("target rate"))
+        plan_hours = _as_number(row.get("plan_hours") or row.get("plan hours")
+                                or row.get("planned hours"))
+        # Either side of the plan implies the other: a planned rate over
+        # the volume is the planned hours, and vice versa. Storing both
+        # means the page never has to re-derive it and get it subtly
+        # different from the file.
+        if plan_rate and not plan_hours and units:
+            plan_hours = round(units / plan_rate, 2)
+        if plan_hours and not plan_rate and units:
+            plan_rate = round(units / plan_hours, 2)
         # Never NULL: the unique key below includes fc, and in SQL one
         # NULL does not equal another, so a file without an fc column
         # would insert a fresh duplicate on every re-upload instead of
@@ -4630,12 +4665,16 @@ def ingest_process_volume_csv(file_bytes, filename, uploaded_by=None):
         fc = _clean(row.get("fc")) or get_current_site()
         cur.execute(
             """INSERT INTO process_volume (fc, work_date, shift, process, units, hours,
+                                           plan_rate, plan_hours,
                                            source, uploaded_by, uploaded_at)
-               VALUES (?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT (fc, work_date, shift, process) DO UPDATE SET
-                 units=excluded.units, hours=excluded.hours, source=excluded.source,
+                 units=excluded.units, hours=excluded.hours,
+                 plan_rate=excluded.plan_rate, plan_hours=excluded.plan_hours,
+                 source=excluded.source,
                  uploaded_by=excluded.uploaded_by, uploaded_at=excluded.uploaded_at""",
-            (fc, work_date, shift, process, units, hours, filename, uploaded_by, now))
+            (fc, work_date, shift, process, units, hours, plan_rate, plan_hours,
+             filename, uploaded_by, now))
         loaded += 1
     cur.execute(
         "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
@@ -4665,7 +4704,8 @@ def process_volume_coverage():
     row = conn.execute(
         "SELECT COUNT(*) AS rows, MIN(work_date) AS first_day, MAX(work_date) AS last_day, "
         "COUNT(DISTINCT process) AS processes, "
-        "SUM(CASE WHEN hours IS NULL THEN 1 ELSE 0 END) AS without_hours "
+        "SUM(CASE WHEN hours IS NULL THEN 1 ELSE 0 END) AS without_hours, "
+        "SUM(CASE WHEN plan_rate IS NULL THEN 1 ELSE 0 END) AS without_plan "
         "FROM process_volume").fetchone()
     conn.close()
     return dict(row) if row else {"rows": 0}
@@ -4722,6 +4762,27 @@ def get_xt_cost_model():
         "default_train_hours": setting("xt_default_train_hours", XT_DEFAULT_TRAIN_HOURS),
         "per_process": get_xt_training_costs(),
     }
+
+@request_memoize
+def xt_process_home_departments():
+    """Each process's 'home' department: whichever fclm_mapped is most
+    common among the people who do it.
+
+    There is no authoritative process-to-department table in this app,
+    so this is derived from the data rather than guessed. Shared by the
+    Retention tab and the Cross Learning Model, which both need to tell
+    "this is their own department" from "they were cross-trained in"."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT fclm_mapped, merged_function, COUNT(*) AS n FROM xt_hours "
+        "WHERE fclm_mapped IS NOT NULL AND merged_function IS NOT NULL "
+        "GROUP BY fclm_mapped, merged_function").fetchall()
+    conn.close()
+    counts = {}
+    for r in rows:
+        counts.setdefault(r["merged_function"], {})[r["fclm_mapped"]] = r["n"]
+    return {process: max(by_dept, key=by_dept.get) for process, by_dept in counts.items()}
+
 
 def get_xt_retention_report():
     """The Retention tab's data: for every shift, every process's

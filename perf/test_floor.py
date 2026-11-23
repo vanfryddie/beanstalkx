@@ -309,8 +309,19 @@ packers = [p for p in view["people"]
            if p["floor"] and p["floor"]["process_name"] == ON_FLOOR]
 check("the people already on it are excluded from the move",
       not ({p["employee_login"] for p in move["people"]} & {p["employee_login"] for p in packers}))
-check(f"somebody on {ON_FLOOR} is shown as doing what they are trained for",
-      all(TRAINED in p["doing_trained"] for p in packers), str(len(packers)))
+# Standing on the FCLM process does not mean being trained on the
+# cross-training one — that is the qualification the page exists to
+# track. What must hold is the mapping: of the people on ON_FLOOR, the
+# ones who DO hold TRAINED are credited with doing it.
+qualified = [p for p in packers if TRAINED in p["trained_processes"]]
+check(f"somebody on {ON_FLOOR} holds {TRAINED}", len(qualified) > 0,
+      f"{len(qualified)} of {len(packers)} on {ON_FLOOR}")
+check(f"and each of them is shown as doing what they are trained for",
+      all(TRAINED in p["doing_trained"] for p in qualified),
+      str([(p["employee_login"], p["doing_trained"]) for p in qualified[:3]]))
+check("while somebody on it who does not hold it is not credited with it",
+      all(TRAINED not in p["doing_trained"] for p in packers
+          if TRAINED not in p["trained_processes"]))
 
 off = application.build_staffing_view([am], None, {"presence": "off_site"})
 check("the on-none filter returns only people the sweep did not see",

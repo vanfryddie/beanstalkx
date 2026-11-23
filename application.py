@@ -3047,6 +3047,13 @@ def get_regional_overview(region=None, status=None):
             weeks.setdefault(week_start, []).append(value)
     region_trend = [(w, round(sum(v) / len(v), 1)) for w, v in sorted(weeks.items())]
 
+    # Weakest first, and a site with no data at all last rather than
+    # treated as a zero: a brand new site has no score, and sorting on
+    # that None is a crash, not an ordering. Sorted here, once, because
+    # three separate views of this list all want the same order.
+    rows.sort(key=lambda r: (r["total_score"] is None, r["total_score"] or 0,
+                             r["site_code"]))
+
     return {
         "sites": rows,
         "site_count": len(rows),
@@ -3345,7 +3352,7 @@ def cross_training():
         tab = "standards"
     if tab == "exclusions" and not can_manage_xt_exclusions:
         tab = "standards"
-    if tab == "insights" and not can_manage_xt:
+    if tab in ("insights", "model") and not can_manage_xt:
         tab = "standards"
     matrix_shift = request.args.get("matrix_shift") or "early"
     matrix = db.get_xt_dept_process_matrix(shift=matrix_shift) if tab == "directory" else None
@@ -3394,6 +3401,9 @@ def cross_training():
         xt_change_fields=db.XT_CHANGE_FIELDS,
         insights=(build_xt_insights(insights_period, scenario=scenario)
                   if tab == "insights" else None),
+        model=(build_cross_learning_model(request.args.get("period") or "month",
+                                          scenario=scenario)
+               if tab == "model" else None),
     )
 
 
@@ -3854,6 +3864,17 @@ def _xt_signals(paths, population, volume, cost_model):
     return signals
 
 
+@application.template_filter("zip_points")
+def _zip_points(labels, values):
+    """Label/value pairs for a chart macro, dropping the gaps.
+
+    A period with no census has no point — a line drawn straight through
+    it would claim a measurement nobody took."""
+    return [{"label": label, "value": value}
+            for label, value in zip(labels or [], values or [])
+            if value is not None]
+
+
 def build_xt_insights(period="week", scenario="general"):
     """The Insights tab: what the targets did, what the trained
     population did, what the floor actually processed, and what the
@@ -3897,6 +3918,12 @@ def build_xt_insights(period="week", scenario="general"):
 
     signals = _xt_signals(paths, population, volume, cost_model)
 
+    gap_rows = sorted(
+        [{"name": f"{p['label']} · {p['shift'][:1].upper()}", "value": p["gap"],
+          "note": f"({p['trained']} trained against {p['target']})"}
+         for p in paths if p.get("target")],
+        key=lambda row: -abs(row["value"]))
+
     recommended = [p for p in paths if p.get("recommendation")]
     recommended.sort(key=lambda p: (-(p["recommendation"]["short_by"]),
                                     -(p["recommendation"]["cost_of_spare"]),
@@ -3914,6 +3941,7 @@ def build_xt_insights(period="week", scenario="general"):
         "lowered": sum(b["lowered"] for b in batches),
         "with_note": sum(1 for b in batches if b["note"]),
         "paths": paths,
+        "gap_rows": gap_rows,
         "recommended": recommended,
         "signals": signals,
         "volume": volume,
@@ -3925,6 +3953,463 @@ def build_xt_insights(period="week", scenario="general"):
         "snapshots": len([entry for entry in population if entry["has_data"]]),
     }
 
+
+
+# ====================================================================
+# The Cross Learning Model
+#
+# The Insights tab answers "what happened". This answers "what is the
+# model reading, what did it conclude, and why" — because a target
+# somebody is asked to act on has to be arguable, and a recommendation
+# whose reasoning is hidden is just an opinion with a number on it.
+#
+# It reads four things and crosses them:
+#
+#   operations   units processed, hours used, the rate that comes out of
+#                those two, and how that rate compares with the plan;
+#   targets      what each defined path is supposed to hold and what it
+#                actually holds;
+#   people       who did the hours, and whether this is their own
+#                department or one they were cross-trained in from;
+#   cost         what a trained head costs to make and keep.
+#
+# The interesting cases are the corners. Under target but hitting plan
+# means the target is above what the work needs — and if the hours came
+# from outside the path's own departments, the people covering it are
+# proof of a cross-training route nobody has written down. That is the
+# case this page exists for.
+# ====================================================================
+
+# Which rolling hours column stands in for a period. The hours file
+# carries 60/90/180-day windows rather than per-period totals, so the
+# nearest window is used and the page says which — a 60-day window is
+# not a week, and pretending otherwise would be the sort of quiet
+# approximation this page is supposed to expose.
+CLM_HOURS_WINDOW = {"week": ("hours_60", "last 60 days"),
+                    "month": ("hours_60", "last 60 days"),
+                    "quarter": ("hours_180", "last 180 days")}
+
+# Plan attainment inside this band of 100% counts as "on plan": a
+# process running at 99.2% of plan did not miss anything anybody should
+# act on.
+CLM_PLAN_BAND = 5.0
+# A path whose trained count is within this of target is "at" target.
+CLM_TARGET_BAND = 1
+# Hours from outside the path's own source departments, past which the
+# work is genuinely being carried by cross-trained people.
+CLM_OUTSIDE_SHARE = 0.25
+# A department doing at least this share of a process's hours, with no
+# standard covering it, is worth proposing as one.
+CLM_DISCOVERY_SHARE = 0.10
+
+
+def _clm_contributor_rows(window_column):
+    """Who has hours on what, with the department they belong to.
+
+    One query for the whole table rather than one per path: the model
+    looks at every path on the page, and the hours file is one row per
+    person per process already."""
+    conn = db.get_db()
+    rows = conn.execute(
+        f"""SELECT employee_login, full_name, fclm_mapped AS home_department,
+                   merged_function AS process, shift, trained_status, proficiency_status,
+                   supervisor_login, {window_column} AS hours
+            FROM xt_hours
+            WHERE merged_function IS NOT NULL AND {window_column} IS NOT NULL
+              AND {window_column} > 0"""
+    ).fetchall()
+    conn.close()
+    by_path = {}
+    for r in rows:
+        by_path.setdefault((r["process"], r["shift"]), []).append(dict(r))
+    for people in by_path.values():
+        people.sort(key=lambda p: -(p["hours"] or 0))
+    return by_path
+
+
+def _clm_constellation(path, people):
+    """Who actually carried this path, and from where.
+
+    The question the seniors ask of a path that is under target and
+    still hitting plan: who is doing it? If most of the hours come from
+    departments the standard does not name, the standard is describing
+    a route the floor is not using."""
+    total = sum(p["hours"] or 0 for p in people)
+    sources = {(s or "").strip().lower() for s in (path.get("source_departments") or [])}
+    home, outside = 0.0, {}
+    for person in people:
+        dept = (person.get("home_department") or "").strip()
+        hours = person["hours"] or 0
+        if dept.lower() in sources:
+            home += hours
+        else:
+            outside[dept or "not recorded"] = outside.get(dept or "not recorded", 0.0) + hours
+    ranked = sorted(outside.items(), key=lambda kv: -kv[1])
+    return {
+        "people": len(people),
+        "hours": round(total, 1),
+        "home_hours": round(home, 1),
+        "home_share": round(home / total, 3) if total else None,
+        "outside_hours": round(total - home, 1),
+        "outside_share": round((total - home) / total, 3) if total else None,
+        "outside_by_department": [{"department": dept, "hours": round(hours, 1),
+                                   "share": round(hours / total, 3) if total else None}
+                                  for dept, hours in ranked[:5]],
+        "top": [{"login": p["employee_login"], "name": p["full_name"] or p["employee_login"],
+                 "hours": round(p["hours"] or 0, 1),
+                 "home_department": p.get("home_department"),
+                 "from_outside": (p.get("home_department") or "").strip().lower() not in sources,
+                 "proficiency": p.get("proficiency_status"),
+                 "trained": p.get("trained_status") == "Trained"}
+                # Biggest contributors first, sorted here rather than
+                # trusted from the caller: "who carried it" is the whole
+                # point of the panel, so the order is this function's job.
+                for p in sorted(people, key=lambda p: -(p["hours"] or 0))[:8]],
+    }
+
+
+def _clm_plan(entries, plans, process, shift):
+    """Units, hours, the rate those two make, and how it compares with
+    the plan. The plan is the site's own: how many hours that volume
+    should have taken, and at what rate."""
+    units = sum(e.get("units") or 0 for e in entries)
+    hours = sum(e.get("hours") or 0 for e in entries)
+    planned_hours = sum(e.get("plan_hours") or 0 for e in entries)
+    file_rates = [e["plan_rate"] for e in entries if e.get("plan_rate")]
+    rate = (units / hours) if hours else None
+    plan_rate = (sum(file_rates) / len(file_rates)) if file_rates else db.plan_rate_for(process, shift, plans)
+    if not planned_hours and plan_rate and units:
+        planned_hours = units / plan_rate
+    pct_to_plan = None
+    if plan_rate and rate:
+        pct_to_plan = round(100 * rate / plan_rate, 1)
+    return {
+        "units": round(units), "hours": round(hours, 1),
+        "rate": round(rate, 1) if rate else None,
+        "plan_rate": round(plan_rate, 1) if plan_rate else None,
+        "plan_hours": round(planned_hours, 1) if planned_hours else None,
+        "hours_vs_plan": round(hours - planned_hours, 1) if planned_hours else None,
+        "pct_to_plan": pct_to_plan,
+        "plan_source": "file" if file_rates else ("setting" if plan_rate else None),
+    }
+
+
+# The decision table, written out rather than buried in branches: each
+# entry is (trained against target, plan attainment) -> what that means
+# and what to do about it. Printed on the page as the model's own rules,
+# because a model whose logic cannot be read is one nobody will trust
+# with a training budget.
+CLM_RULES = [
+    ("under", "met", "Target is above what the work needs",
+     "The path is short of its target and the process still hit plan. Either the target is "
+     "set higher than the work requires, or somebody outside the path is covering it. Check "
+     "the constellation before lowering anything."),
+    ("under", "missed", "Genuinely short",
+     "Short of target and missing plan. This is the case the target was written for: close "
+     "the gap, and the cost of closing it is priced."),
+    ("under", "unknown", "Short, with no plan to judge it against",
+     "Short of target, and no planned rate for this path, so there is no way to tell whether "
+     "that shortfall is costing anything. Set the plan."),
+    ("at", "missed", "Enough people, not enough rate",
+     "The pool is at target and the process is still behind plan. More trained heads will not "
+     "fix a rate problem — this is a process or a plan conversation, not a training one."),
+    ("at", "met", "Settled",
+     "At target and on plan. Hold it, and watch the lapse rate rather than the headcount."),
+    ("over", "met", "Carrying more than the work needs",
+     "Above target and on plan. The surplus is real flexibility, and it is also training "
+     "hours being kept current for capacity nothing is asking for. Worth knowing the price."),
+    ("over", "missed", "Deep pool, missing plan",
+     "More trained than the target asks for and still behind plan. The constraint is not the "
+     "number of people who can do the job."),
+]
+CLM_RULE_MAP = {(a, b): (title, detail) for a, b, title, detail in CLM_RULES}
+
+
+def _clm_situation(path, plan, constellation, cost_model):
+    """Which of the cases above this path is in, and what follows."""
+    target = path.get("target") or 0
+    trained = path.get("trained") or 0
+    if target and trained < target - CLM_TARGET_BAND:
+        standing = "under"
+    elif target and trained > target + CLM_TARGET_BAND:
+        standing = "over"
+    else:
+        standing = "at"
+
+    pct = plan.get("pct_to_plan")
+    if pct is None:
+        attainment = "unknown"
+    elif pct >= 100 - CLM_PLAN_BAND:
+        attainment = "met"
+    else:
+        attainment = "missed"
+
+    title, detail = CLM_RULE_MAP.get((standing, attainment),
+                                     CLM_RULE_MAP.get((standing, "met"), ("Unclassified", "")))
+    actions = []
+    process = path.get("process") or ""
+    train_hours = (cost_model["per_process"].get(process) or {}).get("train_hours") \
+        or cost_model["default_train_hours"]
+    unit_cost = train_hours * cost_model["hourly_cost"]
+
+    if standing == "under" and attainment == "met":
+        outside = (constellation or {}).get("outside_share") or 0
+        if outside >= CLM_OUTSIDE_SHARE and constellation["outside_by_department"]:
+            top = constellation["outside_by_department"][0]
+            actions.append({
+                "kind": "add_source",
+                "text": (f"{round(100 * outside)}% of the hours on this path came from outside "
+                         f"its source departments, most of it from {top['department']}. The "
+                         f"floor is already running a route the standard does not describe — "
+                         f"add {top['department']} as a source on this standard, or write the "
+                         f"standard for it."),
+                "department": top["department"],
+            })
+        gap = target - trained
+        actions.append({
+            "kind": "lower_target",
+            "text": (f"Plan was met with {trained} trained against a target of {target}. "
+                     f"Lowering the target to what the work actually drew on would release "
+                     f"about {round(gap * unit_cost):,} of training that is not being asked "
+                     f"for — but only once the constellation shows the cover is stable."),
+        })
+    elif standing == "under" and attainment == "missed":
+        gap = target - trained
+        actions.append({
+            "kind": "close_gap",
+            "text": (f"{gap} short of target and {round(100 - (pct or 0), 1)}% behind plan. "
+                     f"Closing it costs about {round(gap * unit_cost):,} at "
+                     f"{train_hours}h a head."),
+        })
+    elif standing == "at" and attainment == "missed":
+        actions.append({
+            "kind": "not_training",
+            "text": ("The pool is at target, so the shortfall against plan is not a training "
+                     "problem. Check the plan rate itself, the process, or whether the trained "
+                     "people are being scheduled onto it."),
+        })
+    elif standing == "over":
+        spare = trained - target
+        actions.append({
+            "kind": "redeploy",
+            "text": (f"{spare} more trained than the target asks for, about "
+                     f"{round(spare * unit_cost):,} of training kept current. If another path "
+                     f"is short, these are the people who could be moved rather than trained "
+                     f"from scratch."),
+        })
+    if attainment == "unknown":
+        actions.append({
+            "kind": "set_plan",
+            "text": ("No planned rate for this path, so none of the above can be judged. Set "
+                     "one below, or put a plan_rate column in the volume file."),
+        })
+
+    lapsed = [p for p in (constellation or {}).get("top", []) if p.get("proficiency") == "Lapsed"]
+    if lapsed:
+        actions.append({
+            "kind": "lapsed_carrying",
+            "text": (f"{len(lapsed)} of the people carrying the most hours on this path are "
+                     "Lapsed. They are doing the work and the record says they should not be."),
+        })
+    untrained = [p for p in (constellation or {}).get("top", []) if not p.get("trained")]
+    if untrained:
+        actions.append({
+            "kind": "untrained_carrying",
+            "text": (f"{len(untrained)} of the top contributors are not recorded as Trained on "
+                     "this process at all, which is either a records problem or a real one."),
+        })
+
+    return {"standing": standing, "attainment": attainment, "title": title,
+            "detail": detail, "actions": actions,
+            "target": target, "trained": trained, "gap": trained - target}
+
+
+def _clm_discovered_paths(contributors, paths, min_hours=40.0):
+    """Cross-training routes the floor is running that nothing describes.
+
+    For every department doing real hours on a process, is there a
+    standard whose source includes that department and whose target is
+    that process? Where there is not, and the hours are more than
+    incidental, that is a path somebody built without writing it down —
+    and the most useful thing this model can hand a senior, because it
+    is a proposal drawn from what is already happening rather than from
+    a forecast."""
+    described = set()
+    for path in paths:
+        process = (path.get("process") or "").strip().lower()
+        for dept in path.get("source_departments") or []:
+            described.add(((dept or "").strip().lower(), process))
+    # A department doing its own process is not cross-training, it is
+    # the job. Only a department working somebody else's process is a
+    # route worth writing down.
+    home = {process.strip().lower(): (dept or "").strip().lower()
+            for process, dept in db.xt_process_home_departments().items()}
+
+    found = {}
+    for (process, shift), people in contributors.items():
+        if not process:
+            continue
+        total = sum(p["hours"] or 0 for p in people)
+        if not total:
+            continue
+        by_dept = {}
+        for person in people:
+            dept = (person.get("home_department") or "").strip()
+            if not dept:
+                continue
+            entry = by_dept.setdefault(dept, {"hours": 0.0, "people": set(), "trained": 0})
+            entry["hours"] += person["hours"] or 0
+            entry["people"].add(person["employee_login"])
+            if person.get("trained_status") == "Trained":
+                entry["trained"] += 1
+        for dept, entry in by_dept.items():
+            if (dept.lower(), process.lower()) in described:
+                continue
+            if home.get(process.strip().lower()) == dept.lower():
+                continue
+            share = entry["hours"] / total if total else 0
+            if entry["hours"] < min_hours or share < CLM_DISCOVERY_SHARE:
+                continue
+            key = (dept, process)
+            existing = found.get(key)
+            if existing and existing["hours"] >= entry["hours"]:
+                existing["shifts"].add(shift)
+                continue
+            found[key] = {
+                "department": dept, "process": process,
+                "shifts": {shift} | (existing["shifts"] if existing else set()),
+                "hours": round(entry["hours"], 1), "share": round(share, 3),
+                "people": len(entry["people"]), "trained": entry["trained"],
+            }
+    rows = sorted(found.values(), key=lambda r: -r["hours"])
+    for row in rows:
+        row["shifts"] = sorted(s for s in row["shifts"] if s)
+    return rows
+
+
+def build_cross_learning_model(period="month", scenario="general"):
+    """What the model is reading, what it concluded, and why."""
+    if period not in db.XT_PERIODS:
+        period = "month"
+    keys = db.recent_periods(period, XT_INSIGHT_PERIODS[period])
+    cost_model = db.get_xt_cost_model()
+    plans = db.get_process_plans()
+    volume = _xt_volume_series(period, keys, cost_model["shift_hours"])
+    coverage = db.process_volume_coverage()
+    shift_cover = db.shift_coverage()
+    window_column, window_label = CLM_HOURS_WINDOW[period]
+    contributors = _clm_contributor_rows(window_column)
+
+    # The paths, with the source departments the constellation needs.
+    paths = _xt_defined_paths(scenario)
+    sources_by_standard = {d["id"]: d.get("source") or [] for d in db.get_xt_standard_defs(scenario)}
+    internal_sources = {t["label"]: [t["source_dept"]] for t in db.get_internal_xt_targets()
+                        if t.get("source_dept")}
+    for path in paths:
+        if path["kind"] == "standard":
+            path["source_departments"] = sources_by_standard.get(path["id"], [])
+        else:
+            path["source_departments"] = internal_sources.get(path["label"], [])
+
+    volume_by_process = {}
+    for (process, shift), entries in volume["per_path"].items():
+        volume_by_process.setdefault(_xt_process_target(process), {})[shift] = entries
+
+    latest_key = next((key for key in reversed(keys)
+                       if any(key in entries
+                              for shifts in volume_by_process.values()
+                              for entries in shifts.values())), None)
+
+    rows = []
+    for path in paths:
+        entries = volume_by_process.get(_xt_process_target(path.get("process")), {}).get(path["shift"]) or {}
+        # The most recent period that finished, so a part-week does not
+        # read as a process falling over.
+        current = db.period_key(date.today(), period)
+        usable = [key for key in keys if key in entries and key != current]
+        series = [dict(entries[key], key=key, label=db.period_label(key)) for key in usable]
+        plan = _clm_plan([entries[key] for key in usable[-1:]], plans,
+                         path.get("process"), path["shift"]) if usable else \
+            {"units": 0, "hours": 0, "rate": None, "plan_rate": db.plan_rate_for(
+                path.get("process"), path["shift"], plans), "plan_hours": None,
+             "hours_vs_plan": None, "pct_to_plan": None, "plan_source": None}
+        people = contributors.get((path.get("process"), path["shift"]), [])
+        constellation = _clm_constellation(path, people) if people else None
+        situation = _clm_situation(path, plan, constellation, cost_model)
+        # Where the rate has been, so the card shows a direction and
+        # not only a snapshot: a path at 94% of plan and climbing is a
+        # different conversation from one at 94% and sliding.
+        rate_series = [round(e["units"] / e["hours"], 1) if e.get("hours") else None
+                       for e in series]
+        rows.append({**path, "plan": plan, "constellation": constellation,
+                     "situation": situation, "series": series,
+                     "rate_series": rate_series,
+                     "rate_trend": _xt_trend_per_period(
+                         [r for r in rate_series if r is not None]),
+                     "period_label": db.period_label(usable[-1]) if usable else None})
+
+    # Worth a senior's attention first: a real conclusion, biggest
+    # first, with the cases the model cannot judge last.
+    order = {"under": 0, "at": 1, "over": 2}
+    rows.sort(key=lambda r: (r["situation"]["attainment"] == "unknown",
+                             order.get(r["situation"]["standing"], 3),
+                             -abs(r["situation"]["gap"]),
+                             (r["label"] or "").lower()))
+
+    discovered = _clm_discovered_paths(contributors, paths)
+    by_situation = {}
+    for row in rows:
+        by_situation.setdefault(row["situation"]["title"], []).append(row)
+
+    judged = [r for r in rows if r["situation"]["attainment"] != "unknown"]
+    return {
+        "period": period, "period_label": db.XT_PERIODS[period],
+        "latest_label": db.period_label(latest_key) if latest_key else None,
+        "scenario": scenario,
+        "rows": rows,
+        "by_situation": sorted(by_situation.items(), key=lambda kv: -len(kv[1])),
+        "discovered": discovered,
+        "rules": CLM_RULES,
+        "cost_model": cost_model,
+        "plans": plans,
+        "processes": sorted({p["process"] for p in paths if p.get("process")}, key=str.lower),
+        "hours_window": window_label,
+        "inputs": [
+            {"name": "Volume processed", "detail": "units and hours per process, per shift, per day",
+             "rows": coverage["rows"], "ready": bool(coverage["rows"]),
+             "note": (f"{coverage['first_day']} to {coverage['last_day']}" if coverage["rows"]
+                      else "nothing loaded — the model cannot judge a rate without it"),
+             "link": url_for("cross_training", tab="insights")},
+            {"name": "The plan", "detail": "the rate each path is planned to run at",
+             "rows": len([1 for key in plans if plans[key].get("plan_rate")]),
+             "ready": bool(plans) or bool(coverage["rows"] and coverage["rows"] > (coverage["without_plan"] or 0)),
+             "note": (f"{(coverage['rows'] or 0) - (coverage['without_plan'] or 0)} volume rows carry "
+                      f"their own plan rate; {len(plans)} path(s) have one set here"),
+             "link": None},
+            {"name": "Cross-training records", "detail": f"who is trained on what, and their hours in the {window_label}",
+             "rows": sum(len(v) for v in contributors.values()),
+             "ready": bool(contributors),
+             "note": f"hours read from the {window_label} window of the hours-on-function file",
+             "link": url_for("cross_training", tab="directory")},
+            {"name": "Targets", "detail": "what each defined path should hold",
+             "rows": len(paths), "ready": bool(paths),
+             "note": f"{len(paths)} path/shift combinations in {dict(db.XT_SCENARIOS).get(scenario, scenario)}",
+             "link": url_for("cross_training", tab="definitions", scenario=scenario)},
+            {"name": "Shift configuration", "detail": "how long a day on each shift actually is",
+             "rows": shift_cover["codes_configured"], "ready": not shift_cover["codes_unconfigured"],
+             "note": (f"{shift_cover['pct'] or 0}% of people on a configured code"
+                      if shift_cover["codes_seen"] else "no shift codes in the data yet"),
+             "link": url_for("ld_settings", tab="shifts")},
+            {"name": "What training costs", "detail": "hours to train a head, and the hourly rate",
+             "rows": len(cost_model["per_process"]), "ready": True,
+             "note": f"{cost_model['default_train_hours']}h at {cost_model['hourly_cost']} by default",
+             "link": url_for("cross_training", tab="insights")},
+        ],
+        "judged": len(judged),
+        "unjudged": len(rows) - len(judged),
+        "volume_coverage": coverage,
+        "shift_coverage": shift_cover,
+    }
 
 @application.route("/ld-management/cross-training/volume/upload", methods=["POST"])
 def xt_volume_upload():
@@ -3977,6 +4462,37 @@ def xt_change_note():
         db.set_xt_change_note(batch, request.form.get("note"), changed_by=login_id)
         flash("Reason saved against that change.", "success")
     return redirect(url_for("cross_training", tab="insights", period=period))
+
+
+@application.route("/ld-management/cross-training/model/plan", methods=["POST"])
+def xt_plan_save():
+    """The performance target each path is held to: the rate it is
+    planned to run at. Without it the model can see a process running
+    slowly and cannot tell you whether that is slow."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers "
+                     "can set the plan.")
+    period = request.form.get("period") or "month"
+    saved = 0
+    for process, rate in zip(request.form.getlist("plan_process"),
+                             request.form.getlist("plan_rate")):
+        rate = (rate or "").strip()
+        if not rate:
+            continue
+        try:
+            value = float(rate)
+        except ValueError:
+            flash(f"The plan rate for {process} must be a number.", "warning")
+            return redirect(url_for("cross_training", tab="model", period=period))
+        if value <= 0:
+            continue
+        db.set_process_plan(process, "", value, updated_by=login_id)
+        saved += 1
+    flash(f"Saved the planned rate for {saved} process(es).", "success")
+    return redirect(url_for("cross_training", tab="model", period=period))
 
 
 @application.route("/ld-management/cross-training/insights/cost-model", methods=["POST"])

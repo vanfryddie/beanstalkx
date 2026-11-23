@@ -123,6 +123,14 @@ check("the directory returns the AM's associates", len(directory) > 0,
       f"got {len(directory)} people")
 if directory:
     nominees = [p["employee_login"] for p in directory[:2]]
+    # This test writes a request and leaves it behind, so a second run
+    # against the same scratch database would find two. Clear this AM's
+    # requests first: a verification suite has to be repeatable.
+    conn = db.get_db()
+    conn.execute("DELETE FROM training_request_nominees WHERE request_id IN "
+                 "(SELECT id FROM training_requests WHERE requested_by=?)", (ams[0],))
+    conn.execute("DELETE FROM training_requests WHERE requested_by=?", (ams[0],))
+    conn.commit(); conn.close()
     with c.session_transaction() as s:
         s["login"], s["role"], s["auth_source"], s["site"] = ams[0], "am", "manual", "SCN2"
     r = c.post("/training-requests",
@@ -341,6 +349,57 @@ conn = db.get_db()
 conn.execute("DELETE FROM xt_hours WHERE fclm_mapped = 'Nike TSI'")
 conn.commit()
 conn.close()
+
+print("\n4g. A second site is its own database, not a view of the first")
+# Postgres puts each site in its own schema and the search_path names
+# that schema and then public. Postgres accepts a search_path naming a
+# schema that does not exist, and silently resolves every unqualified
+# name to the next entry — so a site whose schema was never created
+# reads and writes the default site's data instead of its own, and
+# CREATE TABLE IF NOT EXISTS finds the default site's tables and does
+# nothing. On SQLite every site is a separate file, so no SQLite test
+# can catch this: it is exactly the class of bug this file exists for.
+db.init_global_db()
+SCRATCH = "ZQ99"
+try:
+    if not db.get_site(SCRATCH):
+        db.create_site(SCRATCH, "Schema isolation scratch", "EU", "test")
+    schema = db._site_schema_name(SCRATCH)
+    check("the site gets a schema of its own", schema not in ("", "public"), schema)
+
+    probe = db.get_global_db()
+    row = probe.execute("SELECT COUNT(*) AS n FROM information_schema.tables "
+                        "WHERE table_schema=?", (schema,)).fetchone()
+    probe.close()
+    check("and its tables are built inside it", (row["n"] or 0) > 20, f"{row['n']} tables")
+
+    db.set_current_site("SCN2")
+    conn = db.get_db()
+    conn.execute("INSERT INTO user_roles (login, role, assigned_by, assigned_at) "
+                 "VALUES (?,?,?,?) ON CONFLICT(login) DO UPDATE SET role=excluded.role",
+                 ("siteprobe", "om", "test", db._now()))
+    conn.commit(); conn.close()
+
+    db.set_current_site(SCRATCH)
+    check("a row written at the default site is not visible at the new one",
+          db.get_user_role("siteprobe") is None, f"got {db.get_user_role('siteprobe')!r}")
+
+    conn = db.get_db()
+    conn.execute("INSERT INTO user_roles (login, role, assigned_by, assigned_at) "
+                 "VALUES (?,?,?,?) ON CONFLICT(login) DO UPDATE SET role=excluded.role",
+                 ("otherprobe", "am", "test", db._now()))
+    conn.commit(); conn.close()
+    check("and the new site keeps its own row", db.get_user_role("otherprobe") == "am")
+
+    db.set_current_site("SCN2")
+    check("which the default site cannot see either",
+          db.get_user_role("otherprobe") is None, f"got {db.get_user_role('otherprobe')!r}")
+    check("while its own row is still there", db.get_user_role("siteprobe") == "om")
+finally:
+    db.set_current_site("SCN2")
+    conn = db.get_db()
+    conn.execute("DELETE FROM user_roles WHERE login IN ('siteprobe','otherprobe')")
+    conn.commit(); conn.close()
 
 print("\n5. The connection pool survives repeated requests (no leak)")
 pool = db._get_pg_pool()

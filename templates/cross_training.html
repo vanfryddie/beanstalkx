@@ -21,6 +21,7 @@
   {% endif %}
   {% if can_manage_xt %}
   <a href="{{ url_for('cross_training', tab='insights') }}" class="{{ 'active' if tab=='insights' }}">Insights</a>
+  <a href="{{ url_for('cross_training', tab='model') }}" class="{{ 'active' if tab=='model' }}">Cross Learning Model</a>
   <a href="{{ url_for('cross_training', tab='definitions') }}" class="{{ 'active' if tab=='definitions' }}">Definitions</a>
   {% endif %}
 </div>
@@ -443,6 +444,9 @@
 
 {% elif tab == 'insights' %}
 {% include "_xt_insights.html" %}
+
+{% elif tab == 'model' %}
+{% include "_xt_model.html" %}
 
 {% elif tab == 'definitions' %}
 

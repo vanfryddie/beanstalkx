@@ -1,5 +1,6 @@
 {% set ins = insights %}
 {% import "_dashboard.html" as dash %}
+{% import "_charts.html" as viz %}
 {#- Cross-Training Insights.
 
     Three histories the rest of the cross-training pages cannot show,
@@ -27,46 +28,31 @@
   </nav>
 </div>
 
-<section class="xi-stats" aria-label="Headlines">
-  <div class="xi-stat">
-    <span class="xi-stat-label">Trained records</span>
-    <strong>{{ ins.latest.trained if ins.latest else '—' }}</strong>
-    <span class="xi-stat-sub">
-      {%- if ins.latest and ins.latest.delta is not none -%}
-        {{ '+' if ins.latest.delta > 0 }}{{ ins.latest.delta }} on the previous {{ ins.period }}
-      {%- elif ins.latest -%}
-        at {{ ins.latest.label }}
-      {%- else -%}
-        no census stored yet
-      {%- endif -%}
-    </span>
-  </div>
-  <div class="xi-stat">
-    <span class="xi-stat-label">Lapsed</span>
-    <strong class="{{ 'is-risk' if ins.latest and ins.latest.lapse_pct and ins.latest.lapse_pct >= 15 }}">
-      {{ ins.latest.lapsed if ins.latest else '—' }}</strong>
-    <span class="xi-stat-sub">
-      {% if ins.latest and ins.latest.lapse_pct is not none %}{{ ins.latest.lapse_pct }}% of trained records
-      {% else %}no census stored yet{% endif %}
-    </span>
-  </div>
-  <div class="xi-stat">
-    <span class="xi-stat-label">Targets changed</span>
-    <strong>{{ ins.moves }}</strong>
-    <span class="xi-stat-sub">
-      {{ ins.raised }} up, {{ ins.lowered }} down, across {{ ins.batch_count }} save(s)
-    </span>
-  </div>
-  <div class="xi-stat">
-    <span class="xi-stat-label">Changes with a reason</span>
-    <strong class="{{ 'is-risk' if ins.batch_count and ins.with_note < ins.batch_count }}">
-      {{ ins.with_note }}/{{ ins.batch_count }}</strong>
-    <span class="xi-stat-sub">a note can still be added below</span>
-  </div>
+{%- set with_data = ins.periods | selectattr('has_data') | list -%}
+{%- set volume_points = ins.volume.per_period | selectattr('units') | list -%}
+
+<section class="viz-stats" aria-label="Headlines">
+  {{ viz.stat('Trained records',
+      ins.latest.trained if ins.latest else '—',
+      (('+' if ins.latest.delta > 0 else '') ~ ins.latest.delta ~ ' on the previous ' ~ ins.period)
+        if (ins.latest and ins.latest.delta is not none)
+        else (('at ' ~ ins.latest.label) if ins.latest else 'no census stored yet'),
+      with_data | map(attribute='trained') | list,
+      'good' if (ins.latest and ins.latest.delta and ins.latest.delta > 0) else none) }}
+  {{ viz.stat('Lapse rate',
+      (ins.latest.lapse_pct ~ '%') if (ins.latest and ins.latest.lapse_pct is not none) else '—',
+      (ins.latest.lapsed ~ ' of ' ~ ins.latest.trained ~ ' qualifications') if ins.latest else 'no census stored yet',
+      with_data | map(attribute='lapse_pct') | list,
+      'risk' if (ins.latest and ins.latest.lapse_pct and ins.latest.lapse_pct >= 15) else none) }}
+  {{ viz.stat('Targets changed', ins.moves,
+      ins.raised ~ ' up, ' ~ ins.lowered ~ ' down, across ' ~ ins.batch_count ~ ' save(s)',
+      none, none) }}
+  {{ viz.stat('Changes with a reason', ins.with_note ~ '/' ~ ins.batch_count,
+      'a reason can still be added below', none,
+      'risk' if (ins.batch_count and ins.with_note < ins.batch_count) else none) }}
 </section>
 
 {% if ins.signals %}
-<h3 class="dash-section-label">What the numbers are saying</h3>
 <div class="xi-signals">
   {% for signal in ins.signals %}
   <div class="xi-signal xi-signal-{{ signal.severity }}">
@@ -74,6 +60,29 @@
     <div><strong>{{ signal.title }}</strong><span>{{ signal.detail }}</span></div>
   </div>
   {% endfor %}
+</div>
+{% endif %}
+
+{#- Three magnitudes over the same periods. Deliberately three charts
+    and not one with three axes: a count, a percentage and a unit total
+    share no scale, and putting them on one would make the shapes lie
+    about each other. -#}
+<div class="viz-row">
+  {{ viz.area_chart('Trained records',
+       with_data | map(attribute='label') | list | zip_points(with_data | map(attribute='trained') | list)) }}
+  {{ viz.area_chart('Lapse rate',
+       with_data | map(attribute='label') | list | zip_points(with_data | map(attribute='lapse_pct') | list),
+       unit='%', fmt='{:,.1f}') }}
+  {{ viz.area_chart('Volume processed',
+       volume_points | map(attribute='label') | list | zip_points(volume_points | map(attribute='units') | list)) }}
+</div>
+
+{% if ins.gap_rows %}
+<div class="viz-row">
+  {{ viz.diverging_bars('Where the pool stands against target',
+       ins.gap_rows,
+       'Trained minus target for every defined path, biggest difference first. Over and under
+        are two measurements, not two verdicts — a surplus can be deliberate flexibility.') }}
 </div>
 {% endif %}
 
@@ -417,3 +426,5 @@
 </form>
 </details>
 {% endif %}
+
+{{ viz.crosshair_script() }}

@@ -172,9 +172,23 @@ db.save_shift_code("D05A5CBY", shift="early", time_set_id=early, rotation_id=rot
 fresh()
 
 print("\n7. Coverage, so a page can say how much of its answer is a guess")
+# Coverage compares the codes the roster actually carries against the
+# ones configured, so the code it is asked about has to be one the data
+# holds — configured here rather than assumed, because which codes a
+# site's roster carries differs from database to database.
+seen = db.seen_shift_codes()          # {code: people on it}
+check("the roster carries at least one code", len(seen) >= 1, str(seen)[:120])
+check("and says how many people are on each", all(n >= 0 for n in seen.values()))
+if seen:
+    busiest = max(seen, key=lambda code: seen[code])
+    db.save_shift_code(busiest, shift="early", time_set_id=early, rotation_id=rotation,
+                       active=True, updated_by="admin")
+    fresh()
 coverage = db.shift_coverage()
 check("the codes in the data are counted", coverage["codes_seen"] >= 1, str(coverage))
 check("configured ones are known apart", coverage["codes_configured"] >= 1, str(coverage))
+check("and so are the people behind them",
+      coverage["people_covered"] >= 1 if coverage["people"] else True, str(coverage))
 check("and the share of people is reported",
       coverage["pct"] is not None and 0 <= coverage["pct"] <= 100, str(coverage["pct"]))
 check("with the unmapped codes named", isinstance(coverage["codes_unconfigured"], list))

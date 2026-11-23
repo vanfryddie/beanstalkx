@@ -1,0 +1,203 @@
+{#- Charts, hand-built in SVG.
+
+    The console carries no front-end dependencies and this is not the
+    reason to start. Every macro here renders server-side markup; the
+    only script is one shared crosshair for the time series.
+
+    Colours come from the validated two-slot categorical palette and the
+    blue sequential ramp, declared once in style.css as --viz-* tokens
+    so light and dark swap in one place. Two series is the ceiling here
+    by design: everything on these pages is either one magnitude over
+    time, or a home/away split. -#}
+
+{% macro sparkline(values, width=104, height=28, positive_is_good=true) -%}
+{#- A trend inside a stat tile: no axes, no labels, no tooltip. It says
+    "this shape", and the figure beside it says the number. -#}
+{%- set clean = values | reject('none') | list -%}
+{%- if clean | length > 1 -%}
+{%- set lo = clean | min %}{% set hi = clean | max -%}
+{%- set span = (hi - lo) if (hi - lo) else 1 -%}
+{%- set step = (width - 4) / ((clean | length) - 1) -%}
+{%- set pts = [] -%}
+{%- for v in clean -%}
+{%- set _ = pts.append('%.1f,%.1f' % (2 + loop.index0 * step, height - 3 - ((v - lo) / span) * (height - 6))) -%}
+{%- endfor -%}
+<svg class="viz-spark" width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}"
+     role="img" aria-label="Trend across the last {{ clean | length }} periods" focusable="false">
+  <polyline points="{{ pts | join(' ') }}" fill="none" stroke="var(--viz-series-1)"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="{{ pts[-1].split(',')[0] }}" cy="{{ pts[-1].split(',')[1] }}" r="2.5"
+          fill="var(--viz-series-1)"/>
+</svg>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro stat(label, value, sub=None, series=None, tone=None) -%}
+<div class="viz-stat {{ 'is-' ~ tone if tone }}">
+  <span class="viz-stat-label">{{ label }}</span>
+  <div class="viz-stat-row">
+    <strong>{{ value }}</strong>
+    {% if series %}{{ sparkline(series) }}{% endif %}
+  </div>
+  {% if sub %}<span class="viz-stat-sub">{{ sub }}</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro area_chart(title, points, unit='', height=150, fmt='{:,.0f}') -%}
+{#- One magnitude over time. One series, so no legend — the title names
+    it — and only the last point is labelled, because a number on every
+    point is noise. The crosshair does the rest. -#}
+{%- set clean = points | selectattr('value', 'defined') | rejectattr('value', 'none') | list -%}
+<figure class="viz-card">
+  <figcaption>{{ title }}</figcaption>
+  {% if clean | length > 1 %}
+  {%- set lo = (clean | map(attribute='value') | min) -%}
+  {%- set hi = (clean | map(attribute='value') | max) -%}
+  {%- set floor = 0 if lo >= 0 and lo < (hi / 2) else lo -%}
+  {%- set span = (hi - floor) if (hi - floor) else 1 -%}
+  {%- set w = 100 -%}
+  {%- set step = w / ((clean | length) - 1) -%}
+  {%- set pts = [] -%}
+  {%- set cols = [] -%}
+  {%- for p in clean -%}
+    {%- set x = loop.index0 * step -%}
+    {%- set y = 100 - ((p.value - floor) / span) * 100 -%}
+    {%- set _ = pts.append('%.2f,%.2f' % (x, y)) -%}
+    {%- set _ = cols.append({'x': x, 'y': y, 'p': p}) -%}
+  {%- endfor -%}
+  <div class="viz-plot" data-viz-crosshair>
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="viz-svg" style="height:{{ height }}px"
+         role="img" aria-label="{{ title }} across {{ clean | length }} periods" focusable="false">
+      {% for frac in [0, 0.5, 1] %}
+      <line x1="0" y1="{{ frac * 100 }}" x2="100" y2="{{ frac * 100 }}" class="viz-grid"
+            vector-effect="non-scaling-stroke"/>
+      {% endfor %}
+      <polygon points="0,100 {{ pts | join(' ') }} 100,100" class="viz-area"/>
+      <polyline points="{{ pts | join(' ') }}" class="viz-line" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div class="viz-dots">
+      {% for c in cols %}
+      <span class="viz-dot" style="left:{{ c.x }}%; top:{{ c.y }}%"
+            data-label="{{ c.p.label }}" data-value="{{ fmt.format(c.p.value) }}{{ unit }}"
+            title="{{ c.p.label }}: {{ fmt.format(c.p.value) }}{{ unit }}"></span>
+      {% endfor %}
+    </div>
+    <span class="viz-last" style="top:{{ cols[-1].y }}%">{{ fmt.format(cols[-1].p.value) }}{{ unit }}</span>
+    <div class="viz-tip" hidden></div>
+  </div>
+  <div class="viz-xaxis"><span>{{ clean[0].label }}</span><span>{{ clean[-1].label }}</span></div>
+  {% else %}
+  <p class="viz-empty">Not enough periods with data to draw a trend yet.</p>
+  {% endif %}
+</figure>
+{%- endmacro %}
+
+{% macro diverging_bars(title, rows, caption=None, limit=12) -%}
+{#- Delta to target: above and below one baseline, which is the one
+    thing a plain bar chart cannot show. Over and under get the two
+    categorical hues rather than green and red, because green and red
+    are reserved for status and this is a measurement. -#}
+{%- set shown = rows[:limit] -%}
+{%- set widest = ((shown | map(attribute='value') | map('abs') | max) or 1) if shown else 1 -%}
+<figure class="viz-card viz-wide">
+  <figcaption>{{ title }}</figcaption>
+  {% if shown %}
+  <div class="viz-diverging">
+    {% for row in shown %}
+    <div class="viz-div-row">
+      <span class="viz-div-name" title="{{ row.name }}">{{ row.name }}</span>
+      <span class="viz-div-track">
+        <i class="viz-div-axis"></i>
+        {% set pct = (row.value | abs) / widest * 50 %}
+        <i class="viz-div-bar {{ 'is-under' if row.value < 0 else 'is-over' }}"
+           style="{{ 'right:50%' if row.value < 0 else 'left:50%' }}; width:{{ pct }}%"
+           title="{{ row.name }}: {{ '+' if row.value > 0 }}{{ row.value }}{{ ' ' ~ row.note if row.note }}"></i>
+      </span>
+      <span class="viz-div-value {{ 'is-under' if row.value < 0 }}">{{ '+' if row.value > 0 }}{{ row.value }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% if caption %}<figcaption class="viz-sub">{{ caption }}</figcaption>{% endif %}
+  {% else %}
+  <p class="viz-empty">Nothing to compare yet.</p>
+  {% endif %}
+</figure>
+{%- endmacro %}
+
+{% macro meter(value, limit=100, label=None, unit='%', good_at=95) -%}
+{#- One ratio against a limit. The track is the same hue as the fill,
+    lighter — never a second colour, which would read as a second
+    series. -#}
+{%- set pct = (value / limit * 100) if (value is not none and limit) else None -%}
+<span class="viz-meter {{ 'is-good' if pct is not none and value >= good_at }}{{ ' is-short' if pct is not none and value < good_at }}"
+      title="{{ label ~ ': ' if label }}{{ value if value is not none else 'no plan' }}{{ unit if value is not none }}">
+  <i class="viz-meter-track"><i class="viz-meter-fill" style="width:{{ [[pct, 100] | min, 0] | max if pct else 0 }}%"></i></i>
+  <em>{{ (value ~ unit) if value is not none else '—' }}</em>
+</span>
+{%- endmacro %}
+
+{% macro split_bar(parts, height=8) -%}
+{#- A thin segmented bar with no text on it: the figures live in the
+    row beside it, so printing them twice adds nothing. A 2px surface
+    gap keeps the segments apart without a border. -#}
+<span class="viz-split" style="height:{{ height }}px">
+  {% for part in parts %}{% if part.share %}
+  <i class="viz-split-part viz-split-{{ loop.index }}" style="width:{{ part.share * 100 }}%"
+     title="{{ part.label }}: {{ part.text }}"></i>
+  {% endif %}{% endfor %}
+</span>
+{%- endmacro %}
+
+{% macro legend(items) -%}
+<div class="viz-legend">
+  {% for item in items %}
+  <span><i class="viz-swatch viz-split-{{ loop.index }}"></i>{{ item }}</span>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro crosshair_script() -%}
+<script>
+/* One crosshair for every time series on the page. The dots are already
+   positioned by the server; this only has to find the nearest one and
+   show what it says. */
+(function () {
+  document.querySelectorAll('[data-viz-crosshair]').forEach(function (plot) {
+    if (plot.dataset.vizBound === '1') return;
+    plot.dataset.vizBound = '1';
+    var tip = plot.querySelector('.viz-tip');
+    var dots = Array.prototype.slice.call(plot.querySelectorAll('.viz-dot'));
+    if (!tip || !dots.length) return;
+
+    function show(event) {
+      var box = plot.getBoundingClientRect();
+      var x = event.clientX - box.left;
+      var nearest = null, best = Infinity;
+      dots.forEach(function (dot) {
+        var d = Math.abs(dot.offsetLeft - x);
+        if (d < best) { best = d; nearest = dot; }
+      });
+      if (!nearest) return;
+      dots.forEach(function (dot) { dot.classList.toggle('is-near', dot === nearest); });
+      tip.textContent = nearest.dataset.label + ' · ' + nearest.dataset.value;
+      tip.hidden = false;
+      /* Kept inside the card rather than clipped at its edge. */
+      var left = Math.min(Math.max(nearest.offsetLeft, 4), plot.clientWidth - tip.offsetWidth - 4);
+      tip.style.left = left + 'px';
+    }
+
+    function hide() {
+      tip.hidden = true;
+      dots.forEach(function (dot) { dot.classList.remove('is-near'); });
+    }
+
+    plot.addEventListener('mousemove', show);
+    plot.addEventListener('mouseleave', hide);
+    plot.addEventListener('touchmove', function (e) {
+      if (e.touches && e.touches[0]) show(e.touches[0]);
+    }, { passive: true });
+    plot.addEventListener('touchend', hide);
+  });
+})();
+</script>
+{%- endmacro %}
