@@ -1356,6 +1356,50 @@ def _compute_ld_metrics_full(login):
 LD_METRICS = db.SCORECARD_CATEGORIES  # [(key, label, sections), ...] — the 7 tracked L&D metrics
 
 
+def _managers_to_rank():
+    """The managers a ranking should cover, and the role assignments that
+    no longer match any data.
+
+    Roles are assigned by hand and nothing ever clears them, so the
+    roster keeps everyone who has ever been given one. The uploaded
+    exports do turn over — somebody who has left stops appearing in them
+    — so they are what says who is still here. A manager counts as still
+    here if the data mentions them or mentions anybody reporting up to
+    them, which is how an OM or SOM shows up: as the manager of people
+    who are in the file rather than as a row of their own.
+
+    Nobody is judged absent from data that has not been loaded, so a
+    fresh site ranks everyone.
+
+    Returns (live, stale). The stale ones are not dropped quietly: the
+    page lists them as assignments to revoke, which is the thing that
+    actually needs doing, and until somebody does the manager is out of
+    the ranking and out of its headline counts.
+    """
+    present = db.logins_in_current_data()
+    live, stale = [], []
+    for manager in db.get_roster_by_roles(["am", "om", "som"]):
+        reports = db.get_descendant_ams(manager["login"])
+        manager["reports"] = reports
+        in_data = not present or (
+            (manager["login"] or "").strip().lower() in present
+            or any((r or "").strip().lower() in present for r in reports)
+        )
+        (live if in_data else stale).append(manager)
+    return live, sorted(stale, key=lambda m: (m.get("full_name") or m["login"]).lower())
+
+
+def _stale_assignment_rows(stale):
+    """The shape the rankings hand to the template for the revoke list."""
+    return [{
+        "login": m["login"],
+        "full_name": m.get("full_name") or m["login"],
+        "role": m["role"],
+        "role_label": ROLES.get(m["role"], m["role"]),
+        "assigned_at": m.get("assigned_at"),
+    } for m in stale]
+
+
 def get_ld_metric_ranking(metric_key, full_by_login=None):
     """Generalized version of get_safety_training_compliance_ranking —
     ranks every AM/OM/SOM on one L&D metric (or 'total', the composite
@@ -1367,7 +1411,7 @@ def get_ld_metric_ranking(metric_key, full_by_login=None):
     already-computed pass across managers rather than recomputing it —
     building all 8 rankings independently would otherwise redo the same
     expensive per-manager computation 8 times over."""
-    managers = db.get_roster_by_roles(["am", "om", "som"])
+    managers, stale = _managers_to_rank()
     rows = []
     for manager in managers:
         full = full_by_login[manager["login"]] if full_by_login is not None else _compute_ld_metrics_full(manager["login"])
@@ -1403,7 +1447,7 @@ def get_ld_metric_ranking(metric_key, full_by_login=None):
             "retention_pct": retention_pct,
             "trend": _metric_trend_4_weeks(manager["login"], score, metric_key),
             "status": "on_target" if score is not None and score >= SAFETY_COMPLIANCE_TARGET else "needs_attention",
-            "report_count": len(db.get_descendant_ams(manager["login"])),
+            "report_count": len(manager["reports"]),
         })
 
     scored = [row for row in rows if row["score"] is not None]
@@ -1435,6 +1479,7 @@ def get_ld_metric_ranking(metric_key, full_by_login=None):
         "attention_count": len(rows) - on_target_count,
         "top_score": top_score,
         "top_tie_count": top_tie_count,
+        "stale_assignments": _stale_assignment_rows(stale),
     }
 
 
@@ -1457,7 +1502,7 @@ def get_safety_training_compliance_ranking():
     rank, while critical overdue requirements and accumulated overdue days
     provide a separate operational action priority.
     """
-    managers = db.get_roster_by_roles(["am", "om", "som"])
+    managers, stale = _managers_to_rank()
     rows = []
 
     for manager in managers:
@@ -1498,7 +1543,7 @@ def get_safety_training_compliance_ranking():
             "trend": _safety_trend_4_weeks(manager["login"], score),
             "status": "on_target" if score is not None and score >= SAFETY_COMPLIANCE_TARGET else "needs_attention",
             "record_count": total,
-            "report_count": len(db.get_descendant_ams(manager["login"])),
+            "report_count": len(manager["reports"]),
         })
 
     scored = [row for row in rows if row["score"] is not None]
@@ -1550,6 +1595,7 @@ def get_safety_training_compliance_ranking():
         "top_tie_count": top_tie_count,
         "roles": sorted({row["role"] for row in rows}),
         "departments": sorted({row["department"] for row in rows}),
+        "stale_assignments": _stale_assignment_rows(stale),
     }
 
 
@@ -7963,16 +8009,40 @@ def data_upload():
             return redirect(url_for("ld_settings", tab="data"))
         try:
             if section == "compliance_safety":
-                n = db.ingest_safety_compliance_csv(f.read(), f.filename)
+                result = db.ingest_safety_compliance_csv(f.read(), f.filename)
             elif section == "planning_de_tech":
-                n = db.ingest_de_tech_csv(f.read(), f.filename)
+                result = db.ingest_de_tech_csv(f.read(), f.filename)
             elif section == "planning_bts":
-                n = db.ingest_bts_csv(f.read(), f.filename)
+                result = db.ingest_bts_csv(f.read(), f.filename)
             elif section == "xt_hours":
-                n = db.ingest_xt_hours_csv(f.read(), f.filename, uploaded_by=login_id)
+                result = db.ingest_xt_hours_csv(f.read(), f.filename, uploaded_by=login_id)
             else:
-                n = db.ingest_items_csv(section, f.read(), f.filename)
-            flash(f"Imported {n} rows into {db.SECTIONS[section]}.", "success")
+                result = db.ingest_items_csv(section, f.read(), f.filename)
+            # The tracked_items imports return what they loaded and what
+            # they removed; the cross-training one returns a plain count.
+            if isinstance(result, dict):
+                n = result.get("loaded", 0)
+                removed, held_back = result.get("removed", 0), result.get("held_back", 0)
+            else:
+                n, removed, held_back = result, 0, 0
+            message = f"Imported {n} rows into {db.SECTIONS[section]}."
+            if removed:
+                # Never silent: this is the only place rows leave on their
+                # own, and somebody should be able to question it.
+                message += (f" Removed {removed} record(s) this file no longer "
+                            f"contains — people who have left, or moved out of "
+                            f"the scope it covers.")
+            if held_back:
+                # The import still happened; only the removal was refused.
+                # Said as a warning, because a file that would empty half
+                # a section is usually the wrong file.
+                flash(f"{message} It would also have removed {held_back} record(s) — "
+                      f"more than half of this section — so nothing was removed. "
+                      f"That usually means a partial export (filtered, truncated, or "
+                      f"the wrong building). Check the file; if the drop is real, "
+                      f"clear the section and upload again.", "warning")
+            else:
+                flash(message, "success")
             snapshot_olr_metrics_for_all_reviewees()
         except Exception as e:
             flash(f"Import failed: {e}", "danger")

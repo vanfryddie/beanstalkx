@@ -912,6 +912,32 @@ function ldocOpenEscalationSenior(login) {
     <article class="stc-kpi stc-kpi--days"><span>Total overdue days</span><strong>{{ safety_ranking.overdue_days }}</strong></article>
   </section>
 
+  {% if safety_ranking.stale_assignments %}
+  {#- A manager the uploaded data no longer mentions anywhere. They are
+      out of the ranking and out of the counts above, but not out of
+      sight: the role is still assigned, which is the thing to fix. -#}
+  <section class="stc-stale" aria-label="Role assignments with no data behind them">
+    <div class="stc-stale-head">
+      <strong>{{ safety_ranking.stale_assignments | length }} role assignment{{ '' if safety_ranking.stale_assignments | length == 1 else 's' }} with nobody behind {{ 'it' if safety_ranking.stale_assignments | length == 1 else 'them' }}</strong>
+      <span>No record in the safety export, the cross-training file or the roster names {{ 'this manager' if safety_ranking.stale_assignments | length == 1 else 'these managers' }} or anyone reporting to them. They are left out of the ranking and its counts. If they have left, revoke the role.</span>
+    </div>
+    <ul class="stc-stale-list">
+      {% for m in safety_ranking.stale_assignments %}
+      <li>
+        <span class="stc-stale-name">{{ m.full_name }}</span>
+        <span class="stc-stale-meta">{{ m.role_label }} · {{ m.login }}{% if m.assigned_at %} · assigned {{ m.assigned_at[:10] }}{% endif %}</span>
+        {% if can_admin %}
+        <form method="POST" action="{{ url_for('ld_role_revoke') }}">
+          <input type="hidden" name="login" value="{{ m.login }}">
+          <button class="btn btn-ghost btn-sm" type="submit">Revoke role</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   <section class="stc-insight" aria-label="Ranking insight">
     <span class="stc-info-icon" aria-hidden="true">i</span>
     <div>

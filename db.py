@@ -2457,6 +2457,13 @@ def init_db():
         # duplicate-column error) once already applied.
         for table, column, coltype in [
             ("tracked_items", "shift", "TEXT"),
+            # Who put the row there. Uploads own their rows and may remove
+            # the ones a later file no longer contains; a row somebody
+            # typed in by hand is not an upload's to delete. NULL means an
+            # upload wrote it before this column existed, which is true of
+            # every historical row.
+            ("tracked_items", "source", "TEXT"),
+            ("tracked_items", "upload_batch", "TEXT"),
             ("user_roles", "shift", "TEXT"),
             ("user_roles", "reports_to", "TEXT"),
             ("user_roles", "department", "TEXT"),
@@ -2676,14 +2683,75 @@ def _clean(v):
 
 # --------------------------------------------------------------- items ----
 
+# How much of a section one upload may remove before it is treated as
+# the wrong file rather than a real change in the population. The floor
+# keeps the share from firing on tiny sections, where two rows out of
+# three is not evidence of anything.
+PRUNE_SHARE_LIMIT = 0.5
+PRUNE_FLOOR = 25
+
+
+def _prune_items_not_in_upload(cur, section, batch, fcs):
+    """Remove the rows of one section that this upload did not contain.
+
+    These files are exports of a whole population, not lists of changes:
+    a person who has left is simply absent from the next one. Upserting
+    without this left them behind at whatever status they had on the day
+    they went, for good — and because tracked_items is what the Safety
+    scorecard counts, their old supervisor kept a score built out of
+    records nobody could still affect, identical after every update.
+
+    Two things bound what it removes. Rows somebody typed in by hand are
+    not an upload's to delete, so only rows this import owns go (NULL
+    counts as owned: every row written before the column existed came
+    from an import). And it only prunes the FCs the file actually covers,
+    so a file for one building cannot empty another; rows with no FC at
+    all go with them, because nothing attributes them anywhere else.
+
+    Returns how many rows were removed, for the upload to report: data
+    disappearing is not something to do quietly.
+    """
+    if not batch:
+        return {"removed": 0, "held_back": 0}
+    where = ("section=? AND (upload_batch IS NULL OR upload_batch <> ?) "
+             "AND (source IS NULL OR source='upload')")
+    params = [section, batch]
+    fcs = sorted({f for f in (fcs or []) if f})
+    if fcs:
+        where += " AND (fc IS NULL OR fc IN (" + ",".join("?" * len(fcs)) + "))"
+        params.extend(fcs)
+
+    stale = cur.execute("SELECT COUNT(*) AS n FROM tracked_items WHERE " + where,
+                        params).fetchone()["n"] or 0
+    if not stale:
+        return {"removed": 0, "held_back": 0}
+
+    # How much of this section the file would take out. A weekly export
+    # loses a few people; one that would take out half of them is far
+    # more likely to be the wrong file — filtered to one department,
+    # truncated, or pointed at the wrong building — than a real exodus.
+    # Deleting first and apologising afterwards is not recoverable, so a
+    # file like that is loaded without pruning and the upload says so.
+    in_scope = cur.execute(
+        "SELECT COUNT(*) AS n FROM tracked_items WHERE section=? "
+        "AND (source IS NULL OR source='upload')", [section]).fetchone()["n"] or 0
+    if (stale >= PRUNE_FLOOR and in_scope
+            and stale / in_scope > PRUNE_SHARE_LIMIT):
+        return {"removed": 0, "held_back": stale}
+
+    cur.execute("DELETE FROM tracked_items WHERE " + where, params)
+    removed = cur.rowcount
+    return {"removed": removed if removed and removed > 0 else 0, "held_back": 0}
+
+
 def add_tracked_item(section, employee_login, full_name, fc, am_login,
                       subcategory, status, due_date, value, notes):
     conn = get_db()
     conn.execute(
         """INSERT INTO tracked_items
            (section, employee_login, full_name, fc, am_login, subcategory,
-            status, due_date, value, notes, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            status, due_date, value, notes, updated_at, source)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,'manual')""",
         (section, employee_login, full_name, fc, am_login, subcategory,
          status, due_date, value, notes, _now()),
     )
@@ -2701,6 +2769,10 @@ def ingest_items_csv(section, file_bytes, filename):
     cur = conn.cursor()
     n = 0
     now = _now()
+    # One token per import, so the prune below can tell the rows this
+    # file just wrote from the ones the file no longer contains.
+    batch = uuid.uuid4().hex
+    seen_fcs = set()
     for row in reader:
         row = {k.strip().lower(): v for k, v in row.items() if k}
         status = _clean(row.get("status")) or "Not Started"
@@ -2712,12 +2784,13 @@ def ingest_items_csv(section, file_bytes, filename):
         cur.execute(
             """INSERT INTO tracked_items
                (section, employee_login, full_name, fc, am_login, subcategory,
-                status, due_date, value, notes, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                status, due_date, value, notes, updated_at, source, upload_batch)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,'upload',?)
                ON CONFLICT (section, employee_login, subcategory) DO UPDATE SET
                  full_name=excluded.full_name, fc=excluded.fc, am_login=excluded.am_login,
                  status=excluded.status, due_date=excluded.due_date, value=excluded.value,
-                 notes=excluded.notes, updated_at=excluded.updated_at""",
+                 notes=excluded.notes, updated_at=excluded.updated_at,
+                 source='upload', upload_batch=excluded.upload_batch""",
             (
                 section,
                 _clean(row.get("employee_login")),
@@ -2730,6 +2803,7 @@ def ingest_items_csv(section, file_bytes, filename):
                 val,
                 _clean(row.get("notes")),
                 now,
+                batch,
             ),
         )
         emp = _clean(row.get("employee_login"))
@@ -2743,14 +2817,16 @@ def ingest_items_csv(section, file_bytes, filename):
                      am_login=COALESCE(excluded.am_login, org_map.am_login)""",
                 (emp, _clean(row.get("full_name")), _clean(row.get("fc")), _clean(row.get("am_login"))),
             )
+        seen_fcs.add(_clean(row.get("fc")))
         n += 1
+    pruned = _prune_items_not_in_upload(cur, section, batch, seen_fcs)
     conn.execute(
         "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
         (filename, section, now, n),
     )
     conn.commit()
     conn.close()
-    return n
+    return {"loaded": n, **pruned}
 
 
 def ingest_safety_compliance_csv(file_bytes, filename):
@@ -2766,6 +2842,10 @@ def ingest_safety_compliance_csv(file_bytes, filename):
     cur = conn.cursor()
     n = 0
     now = _now()
+    # One token per import, so the prune below can tell the rows this
+    # file just wrote from the ones the file no longer contains.
+    batch = uuid.uuid4().hex
+    seen_fcs = set()
     today = date.today().isoformat()
     for row in reader:
         row = {(k or "").strip(): v for k, v in row.items() if k}
@@ -2798,14 +2878,15 @@ def ingest_safety_compliance_csv(file_bytes, filename):
         cur.execute(
             """INSERT INTO tracked_items
                (section, employee_login, full_name, fc, am_login, subcategory,
-                status, due_date, value, notes, shift, updated_at)
-               VALUES ('compliance_safety',?,?,?,?,?,?,?,?,?,?,?)
+                status, due_date, value, notes, shift, updated_at, source, upload_batch)
+               VALUES ('compliance_safety',?,?,?,?,?,?,?,?,?,?,?,'upload',?)
                ON CONFLICT (section, employee_login, subcategory) DO UPDATE SET
                  full_name=excluded.full_name, fc=excluded.fc, am_login=excluded.am_login,
                  status=excluded.status, due_date=excluded.due_date, notes=excluded.notes,
-                 shift=excluded.shift, updated_at=excluded.updated_at""",
+                 shift=excluded.shift, updated_at=excluded.updated_at,
+                 source='upload', upload_batch=excluded.upload_batch""",
             (emp_login, full_name, fc, am_login, topic, status, due_date, None,
-             " · ".join(notes_bits) or None, shift, now),
+             " · ".join(notes_bits) or None, shift, now, batch),
         )
         cur.execute(
             """INSERT INTO org_map (employee_login, full_name, fc, am_login, role_title)
@@ -2817,14 +2898,16 @@ def ingest_safety_compliance_csv(file_bytes, filename):
                  role_title=COALESCE(excluded.role_title, org_map.role_title)""",
             (emp_login, full_name, fc, am_login, business_title),
         )
+        seen_fcs.add(fc)
         n += 1
+    pruned = _prune_items_not_in_upload(cur, "compliance_safety", batch, seen_fcs)
     conn.execute(
         "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
         (filename, "compliance_safety", now, n),
     )
     conn.commit()
     conn.close()
-    return n
+    return {"loaded": n, **pruned}
 
 
 BTS_STATUS_MAP = {
@@ -2853,6 +2936,10 @@ def ingest_bts_csv(file_bytes, filename):
     cur = conn.cursor()
     n = 0
     now = _now()
+    # One token per import, so the prune below can tell the rows this
+    # file just wrote from the ones the file no longer contains.
+    batch = uuid.uuid4().hex
+    seen_fcs = set()
     for row in reader:
         row = _ci_row(row)
         if (_clean(row.get("is now in the fc?")) or "").strip().lower() == "no":
@@ -2871,13 +2958,14 @@ def ingest_bts_csv(file_bytes, filename):
         cur.execute(
             """INSERT INTO tracked_items
                (section, employee_login, full_name, fc, am_login, subcategory,
-                status, due_date, value, notes, shift, updated_at)
-               VALUES ('planning_bts',?,?,?,?,?,?,?,?,?,?,?)
+                status, due_date, value, notes, shift, updated_at, source, upload_batch)
+               VALUES ('planning_bts',?,?,?,?,?,?,?,?,?,?,?,'upload',?)
                ON CONFLICT (section, employee_login, subcategory) DO UPDATE SET
                  fc=excluded.fc, am_login=excluded.am_login, status=excluded.status,
                  due_date=excluded.due_date, notes=excluded.notes, shift=excluded.shift,
-                 updated_at=excluded.updated_at""",
-            (emp_login, None, fc, am_login, course, status, due_date, None, raw_status, shift, now),
+                 updated_at=excluded.updated_at,
+                 source='upload', upload_batch=excluded.upload_batch""",
+            (emp_login, None, fc, am_login, course, status, due_date, None, raw_status, shift, now, batch),
         )
         cur.execute(
             """INSERT INTO org_map (employee_login, full_name, fc, am_login, role_title)
@@ -2887,14 +2975,16 @@ def ingest_bts_csv(file_bytes, filename):
                  am_login=COALESCE(excluded.am_login, org_map.am_login)""",
             (emp_login, None, fc, am_login),
         )
+        seen_fcs.add(fc)
         n += 1
+    pruned = _prune_items_not_in_upload(cur, "planning_bts", batch, seen_fcs)
     conn.execute(
         "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
         (filename, "planning_bts", now, n),
     )
     conn.commit()
     conn.close()
-    return n
+    return {"loaded": n, **pruned}
 
 
 def ingest_de_tech_csv(file_bytes, filename):
@@ -2916,6 +3006,10 @@ def ingest_de_tech_csv(file_bytes, filename):
     cur = conn.cursor()
     n = 0
     now = _now()
+    # One token per import, so the prune below can tell the rows this
+    # file just wrote from the ones the file no longer contains.
+    batch = uuid.uuid4().hex
+    seen_fcs = set()
     today_d = date.today()
     today = today_d.isoformat()
     for row in reader:
@@ -2973,14 +3067,15 @@ def ingest_de_tech_csv(file_bytes, filename):
         cur.execute(
             """INSERT INTO tracked_items
                (section, employee_login, full_name, fc, am_login, subcategory,
-                status, due_date, value, notes, shift, updated_at)
-               VALUES ('planning_de_tech',?,?,?,?,?,?,?,?,?,?,?)
+                status, due_date, value, notes, shift, updated_at, source, upload_batch)
+               VALUES ('planning_de_tech',?,?,?,?,?,?,?,?,?,?,?,'upload',?)
                ON CONFLICT (section, employee_login, subcategory) DO UPDATE SET
                  fc=excluded.fc, am_login=excluded.am_login, status=excluded.status,
                  due_date=excluded.due_date, notes=excluded.notes, shift=excluded.shift,
-                 updated_at=excluded.updated_at""",
+                 updated_at=excluded.updated_at,
+                 source='upload', upload_batch=excluded.upload_batch""",
             (emp_login, None, fc, am_login, topic, status, due_date, None,
-             f"Priority: {priority}" if priority else None, shift, now),
+             f"Priority: {priority}" if priority else None, shift, now, batch),
         )
         cur.execute(
             """INSERT INTO org_map (employee_login, full_name, fc, am_login, role_title)
@@ -2990,14 +3085,16 @@ def ingest_de_tech_csv(file_bytes, filename):
                  am_login=COALESCE(excluded.am_login, org_map.am_login)""",
             (emp_login, None, fc, am_login, None),
         )
+        seen_fcs.add(fc)
         n += 1
+    pruned = _prune_items_not_in_upload(cur, "planning_de_tech", batch, seen_fcs)
     conn.execute(
         "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
         (filename, "planning_de_tech", now, n),
     )
     conn.commit()
     conn.close()
-    return n
+    return {"loaded": n, **pruned}
 
 
 # ------------------------------------------------------- Cross-Training --
@@ -9982,6 +10079,49 @@ def _roster_rows_by_roles(roles):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+@request_memoize
+def logins_in_current_data():
+    """Every login the current uploaded data mentions, in any role.
+
+    user_roles is assigned by hand and nothing ever clears it, so a
+    manager who has left keeps their row — and with it a place on every
+    ranking built from that roster. The uploaded exports are the thing
+    that actually turns over: somebody who has gone stops appearing in
+    them. This is the set to ask "is this person still here?" against.
+
+    Both sides of each table are read, because a manager appears in the
+    compliance exports as somebody's supervisor rather than as a row of
+    their own.
+    """
+    conn = get_db()
+    found = set()
+    # Only the tables an upload replaces or prunes, because the question
+    # is who is still here. org_map is deliberately not among them: it is
+    # an accumulating employee-to-manager lookup that nothing clears, so
+    # everyone who ever appeared is in it for good, and asking it would
+    # answer "yes, still here" about every leaver forever.
+    for sql in (
+            "SELECT DISTINCT employee_login AS login FROM tracked_items",
+            "SELECT DISTINCT am_login AS login FROM tracked_items",
+            "SELECT DISTINCT employee_login AS login FROM xt_hours",
+            "SELECT DISTINCT supervisor_login AS login FROM xt_hours",
+            "SELECT DISTINCT login FROM ir_dashboard",
+            "SELECT DISTINCT manager_login AS login FROM ir_dashboard",
+            "SELECT DISTINCT login FROM ir_roster",
+    ):
+        try:
+            for row in conn.execute(sql).fetchall():
+                login = (row["login"] or "").strip().lower()
+                if login:
+                    found.add(login)
+        except Exception:
+            # A table an older deployment has not built yet is not a
+            # reason to call everybody departed.
+            continue
+    conn.close()
+    return found
 
 
 def get_roster_by_roles(roles):
