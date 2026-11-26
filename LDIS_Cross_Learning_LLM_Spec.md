@@ -52,16 +52,43 @@ and the ability to ask a forward-looking question.
 6. **Every prediction and recommendation explains why.** This is the
    requirement the whole feature turns on.
 
-## Decisions to make before building
+## Where the model runs — decided
 
-**Where the model runs.** LDIS holds named Amazon associates, their
-compliance status and their hours. Sending that to a model endpoint is a
-data-handling decision before it is a technical one. Bedrock inside the
-site's own AWS account keeps it in the existing boundary and fits the
-`boto3` dependency already in `requirements.txt`; a public API endpoint
-needs an egress rule through the Elastic Beanstalk environment and a
-conversation with whoever owns that policy. **Confirm this first — it
-decides the whole design.** Do not assume.
+**Amazon Bedrock, in the same AWS account as the Elastic Beanstalk
+environment.** Decided 2026-11-26. The data stays inside the account's own
+boundary, and it is the same credential path the app already uses for S3
+and Tickety rather than a new one.
+
+Verified against the pinned dependency, not assumed:
+
+- `boto3==1.34.162` already in `requirements.txt` exposes the
+  `bedrock-runtime` client, with `converse`, `converse_stream`,
+  `invoke_model` and `invoke_model_with_response_stream`. **No new
+  dependency is needed**, which is what keeps this inside the project's
+  no-new-dependency rule. Prefer `converse` — it is the model-agnostic
+  shape and avoids hand-rolling a request body per model.
+- The app reads its region from `AWS_REGION`, defaulting to `us-east-1`
+  (see `db.py` for the S3 client). Bedrock should follow the same
+  variable rather than inventing a second one, and the default should be
+  the environment's real region rather than inherited by accident.
+
+Three things that will block it, none of them code, all outside this repo:
+
+- **The EB instance profile needs an IAM policy** allowing the Bedrock
+  invoke action on the model it will call. The role is the one the
+  environment already runs under; this is an addition to it.
+- **Model access has to be enabled** for that account and region in the
+  Bedrock console. A brand-new account has none enabled and the call
+  fails with an access error that reads like a permissions bug.
+- **Not every model is in every region.** Check what the account can
+  actually reach — `bedrock:ListFoundationModels`, or the console — and
+  use a cross-region inference profile if the region alone does not have
+  it.
+
+**Do not hard-code a model id from memory.** Bedrock ids are
+region-prefixed and they change; read the account's own list and pick the
+latest Claude model it offers. Load the `claude-api` skill before writing
+the call.
 
 **What the model is given.** The strong default is to send computed
 aggregates — the figures already on the page — and never raw rows with
@@ -86,11 +113,12 @@ shows today, not to an error.
 
 Everything in `CLAUDE.md` applies, and three things bear directly:
 
-- **No external runtime dependencies.** An HTTPS call to a model endpoint
-  is fine from the standard library or from `boto3`, which is already a
-  dependency. Do not add an SDK for it.
-- **Use the latest Claude models.** Do not pin something older out of
-  habit.
+- **No external runtime dependencies.** The call goes through the `boto3`
+  already in `requirements.txt`. Do not add an SDK for it, and do not
+  bump boto3 without a reason — the version pinned today already has
+  what this needs.
+- **Use the latest Claude model the account offers.** Do not pin
+  something older out of habit, and do not write an id from memory.
 - **Test it through `app.test_client()` and show it passing.** The model
   call itself gets stubbed; what gets tested is that the page is right
   with a response, right without one, and never shows a number the
@@ -98,7 +126,10 @@ Everything in `CLAUDE.md` applies, and three things bear directly:
 
 ## Suggested shape of the work
 
-1. Confirm the hosting decision above.
+1. Confirm the account can reach a model at all — region, enabled model
+   access, and an instance-profile policy — before building anything on
+   top of it. A five-line script that calls `converse` once and prints
+   the reply settles it, and settles it now rather than at the end.
 2. A thin client module — one function, a timeout, a stubbed path for
    tests, no SDK.
 3. A prompt built from the aggregates `build_cross_learning_model()`
