@@ -1,7 +1,8 @@
 # Cross Learning Model — LLM layer
 
-Requested 2026-11-26. Not built. This is the brief for the work, written
-down so it survives into whichever session builds it.
+Requested 2026-11-26. **Built 2026-11-26** — see "As built" at the end
+for where it departs from this brief and why. Console set-up:
+`LDIS_Bedrock_Setup.md`.
 
 ## What exists today
 
@@ -140,3 +141,33 @@ Everything in `CLAUDE.md` applies, and three things bear directly:
    maths run first, the model asked to explain the result and to say which
    source department and why — including the case where the answer is "do
    not cross-train for this, staff the home department".
+
+## As built
+
+- **`bedrock_client.py`** — one call, `ask_json()`, never raises; every
+  failure is a status (`off`, `iam`, `model_access`, `marketplace`,
+  `needs_profile`, `timeout`, `throttled`, `refused`, `bad_json`,
+  `max_tokens`, `error`). Model id from `LDIS_BEDROCK_MODEL_ID`, region
+  from `AWS_REGION`. Answers cached 12h per process on a hash of the exact
+  payload.
+- **InvokeModel, not Converse.** Anthropic's Bedrock documentation lists
+  the current Claude models as reachable through InvokeModel on
+  bedrock-runtime and says nothing either way about Converse, so the
+  brief's "prefer converse" was reversed. Still the pinned boto3; no new
+  dependency.
+- **The account was not probed from the build session** — its AWS
+  credentials were invalid. `perf/bedrock_probe.py` runs on the EB
+  instance and settles region, access and IAM through the app's own client.
+  No model id is written anywhere in the code.
+- **Deterministic additions** in `application.py`: `_xt_size_pool()`
+  (shared by the history recommendation and the forecast),
+  `_clm_target_review()`, `_clm_forecast()` with candidate departments and
+  the "staff the department instead" rule, and a no-names per-department
+  aggregate on the constellation.
+- **Vetting**: `_clm_vet_review()` / `_clm_vet_forecast()` drop any
+  sentence quoting a number not in the payload, departments not offered,
+  self-contradicting judgements, and departures from the computed target
+  with no surviving reason.
+- **Batches**: the review is asked 15 paths per call, concurrently, so one
+  long answer cannot outrun gunicorn's 120s worker timeout.
+- **Tests**: `perf/test_cross_learning_llm.py`.

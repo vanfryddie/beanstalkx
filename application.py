@@ -16,6 +16,7 @@ from flask import (
 import db
 import oidc_auth
 import tickety_client
+import bedrock_client
 
 application = Flask(__name__)
 application.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
@@ -3418,6 +3419,18 @@ def cross_training():
         ).fetchall()
         conn.close()
 
+    model = forecast = forecast_args = None
+    if tab == "model":
+        model = build_cross_learning_model(request.args.get("period") or "month",
+                                           scenario=scenario)
+        # The forecast is pure arithmetic and is answered with the page;
+        # only its explanation is fetched afterwards.
+        key, volume, rate = _clm_forecast_args()
+        forecast_args = {"path": key, "volume": request.args.get("fc_volume") or "",
+                         "rate": request.args.get("fc_rate") or ""}
+        if key:
+            forecast = _clm_forecast(model, key, volume, rate)
+
     return render_template(
         "cross_training.html",
         **_login_context(),
@@ -3447,9 +3460,9 @@ def cross_training():
         xt_change_fields=db.XT_CHANGE_FIELDS,
         insights=(build_xt_insights(insights_period, scenario=scenario)
                   if tab == "insights" else None),
-        model=(build_cross_learning_model(request.args.get("period") or "month",
-                                          scenario=scenario)
-               if tab == "model" else None),
+        model=model,
+        forecast=forecast,
+        forecast_args=forecast_args,
     )
 
 
@@ -3715,6 +3728,25 @@ def _xt_process_target(process):
     return (process or "").strip().lower()
 
 
+def _xt_size_pool(needed_on_shift, cover, pool):
+    """People needed on shift, times cover, rounded up, capped by the
+    departments it is drawn from: (recommended, pool_limited, no_pool).
+
+    One function because two things size a pool — the recommendation
+    from history and the forecast a manager types in — and they must
+    never disagree about the arithmetic, only about the inputs.
+
+    There is no point recommending a pool bigger than the departments
+    it would be drawn from. Where that bites, the recommendation is the
+    pool and the page says the real answer is more people, not more
+    training."""
+    recommended = _xt_round_up(needed_on_shift * cover)
+    pool_limited = pool is not None and pool > 0 and recommended > pool
+    if pool_limited:
+        recommended = pool
+    return recommended, pool_limited, pool == 0
+
+
 def _xt_recommendation(path, history, cost_model, period):
     """One path's recommended target, and the reasoning behind it.
 
@@ -3750,17 +3782,8 @@ def _xt_recommendation(path, history, cost_model, period):
         return None
     needed_on_shift = peak_heads * growth
     cover = cost_model["cover_factor"]
-    recommended = _xt_round_up(needed_on_shift * cover)
-
-    # There is no point recommending a pool bigger than the departments
-    # it would be drawn from. Where that bites, the recommendation is
-    # the pool and the page says the real answer is more people, not
-    # more training.
     pool = path.get("headcount")
-    pool_limited = pool is not None and pool > 0 and recommended > pool
-    if pool_limited:
-        recommended = pool
-    no_pool = pool == 0
+    recommended, pool_limited, no_pool = _xt_size_pool(needed_on_shift, cover, pool)
 
     process = path.get("process") or ""
     per_process = cost_model["per_process"].get(process) or {}
@@ -4096,7 +4119,21 @@ def _clm_constellation(path, people):
         else:
             outside[dept or "not recorded"] = outside.get(dept or "not recorded", 0.0) + hours
     ranked = sorted(outside.items(), key=lambda kv: -kv[1])
+    # Every department's part in the path, without names: the forecast
+    # asks which department to draw from, and needs everyone's count
+    # rather than only the top eight shown below.
+    by_department = {}
+    for person in people:
+        dept = (person.get("home_department") or "").strip() or "not recorded"
+        entry = by_department.setdefault(dept, {"department": dept, "hours": 0.0,
+                                                "people": 0, "trained": 0})
+        entry["hours"] += person["hours"] or 0
+        entry["people"] += 1
+        if person.get("trained_status") == "Trained":
+            entry["trained"] += 1
     return {
+        "by_department": sorted(({**e, "hours": round(e["hours"], 1)} for e in by_department.values()),
+                                key=lambda e: -e["hours"]),
         "people": len(people),
         "hours": round(total, 1),
         "home_hours": round(home, 1),
@@ -4431,12 +4468,21 @@ def build_cross_learning_model(period="month", scenario="general"):
         # different conversation from one at 94% and sliding.
         rate_series = [round(e["units"] / e["hours"], 1) if e.get("hours") else None
                        for e in series]
+        # The same recommendation the Insights tab makes, from the same
+        # history, so the two tabs can never quote different targets for
+        # one path. It is what the target review and the generated
+        # explanation argue about.
+        history = [dict(entries[key], key=key) for key in keys if key in entries]
+        recommendation = _xt_recommendation(path, history, cost_model, period)
         rows.append({**path, "plan": plan, "constellation": constellation,
                      "situation": situation, "series": series,
                      "rate_series": rate_series,
                      "rate_trend": _xt_trend_per_period(
                          [r for r in rate_series if r is not None]),
-                     "period_label": db.period_label(usable[-1]) if usable else None})
+                     "period_label": db.period_label(usable[-1]) if usable else None,
+                     "path_key": _clm_path_key(path),
+                     "recommendation": recommendation,
+                     "review": _clm_target_review(path, recommendation)})
 
     # Worth a senior's attention first: a real conclusion, biggest
     # first, with the cases the model cannot judge last.
@@ -4510,7 +4556,619 @@ def build_cross_learning_model(period="month", scenario="general"):
         "unjudged": len(rows) - len(judged),
         "volume_coverage": coverage,
         "shift_coverage": shift_cover,
+        # Every path whose target can be weighed against the work, most
+        # out of line first, for the target review table.
+        "reviews": sorted((r for r in rows if r["review"]["judgement"] != "cannot_judge"),
+                          key=lambda r: (-abs(r["review"]["move"] or 0),
+                                         (r["label"] or "").lower(), r["shift"])),
+        "unreviewed": sum(1 for r in rows if r["review"]["judgement"] == "cannot_judge"),
+        "judgements": CLM_JUDGEMENTS,
+        "llm_enabled": bedrock_client.enabled(),
     }
+
+
+# ====================================================================
+# Cross Learning Model — targets, forecasts, and the generated reasoning
+#
+# The split is the whole design. Everything with a number in it is
+# computed here, deterministically, and tested. The language model is
+# handed those numbers and asked which reading is right and why; what it
+# says comes back through _clm_vet_reasons(), which drops any sentence
+# quoting a figure the payload does not contain, so a wrong answer is a
+# wrong argument on the page and never a wrong number.
+# ====================================================================
+
+def _clm_path_key(path):
+    """A path's stable name across the page, the payload and the reply."""
+    return f"{path.get('kind')}:{path.get('id')}:{path.get('shift')}"
+
+
+def _clm_target_review(path, recommendation):
+    """Is the current target too high, too low, or about right, by the
+    arithmetic alone? The band is the same one the decision table uses
+    for trained-against-target, so "about right" means the same thing in
+    both places."""
+    target = path.get("target")
+    if not recommendation or not target:
+        reason = ("no volume matched to this path, so there is no work to size it from"
+                  if not recommendation else "no target set to judge")
+        return {"judgement": "cannot_judge", "move": None, "reason": reason}
+    move = recommendation["recommended"] - target
+    if move > CLM_TARGET_BAND:
+        judgement = "too_low"
+    elif move < -CLM_TARGET_BAND:
+        judgement = "too_high"
+    else:
+        judgement = "about_right"
+    return {"judgement": judgement, "move": move, "reason": None}
+
+
+CLM_JUDGEMENTS = {"too_high": "Target too high", "too_low": "Target too low",
+                  "about_right": "About right", "cannot_judge": "Cannot judge"}
+
+# A department counts as stretched — a poor place to borrow people
+# from — when its own work is behind plan while short of target, or is
+# already leaning on people cross-trained in from elsewhere at least as
+# hard as the share that makes the model flag a path.
+CLM_STRETCHED_TITLES = {"Genuinely short"}
+
+
+def _clm_department_load(model):
+    """For every department, how its own work on each shift is going.
+
+    A department's own work is the processes it is the empirical home of
+    (db.xt_process_home_departments — the same derivation the Retention
+    tab uses). The forecast needs this to answer the question the floor
+    actually argues about: lend people out, or is that department short
+    itself?"""
+    home_of = {}
+    for process, dept in db.xt_process_home_departments().items():
+        if process and dept:
+            home_of.setdefault(dept.strip().lower(), set()).add(process.strip().lower())
+    by_process_shift = {}
+    for row in model["rows"]:
+        key = ((row.get("process") or "").strip().lower(), row["shift"])
+        by_process_shift.setdefault(key, []).append(row)
+
+    def load(dept, shift):
+        processes = sorted(home_of.get((dept or "").strip().lower(), ()))
+        states = []
+        for process in processes:
+            for row in by_process_shift.get((process, shift), []):
+                c = row.get("constellation") or {}
+                states.append({
+                    "process": row.get("process"), "path": row["label"],
+                    "verdict": row["situation"]["title"],
+                    "pct_to_plan": row["plan"].get("pct_to_plan"),
+                    "outside_share": c.get("outside_share"),
+                    "stretched": (row["situation"]["title"] in CLM_STRETCHED_TITLES
+                                  or (c.get("outside_share") or 0) >= CLM_OUTSIDE_SHARE),
+                })
+        return {"home_processes": processes, "states": states,
+                "stretched": any(s["stretched"] for s in states)}
+    return load
+
+
+def _clm_forecast(model, path_key, volume, rate):
+    """What a forecast volume at a forecast rate needs, by arithmetic.
+
+    `volume` is units on one day of this shift — the busiest day being
+    planned for, which is what the recommendation from history uses too.
+    Hours that volume takes at that rate, divided by the shift length, is
+    people on shift; times cover, capped by the source pool, is the
+    target (_xt_size_pool, shared with the recommendation).
+
+    Then the question the arithmetic alone cannot settle but can frame:
+    who should those people be? Every department that could supply them
+    is listed with the evidence for and against — whether its people
+    already work this path, how many are already trained on it, and
+    whether its own work is short — and a deterministic first pick is
+    made from that, which the language model may argue with but not
+    replace."""
+    row = next((r for r in model["rows"] if r["path_key"] == path_key), None)
+    if row is None or not volume or not rate or volume <= 0 or rate <= 0:
+        return None
+    cost_model = model["cost_model"]
+    shift_hours = cost_model["shift_hours"]
+    cover = cost_model["cover_factor"]
+    hours_needed = volume / rate
+    on_shift = hours_needed / shift_hours
+    pool = row.get("headcount")
+    target, pool_limited, no_pool = _xt_size_pool(on_shift, cover, pool)
+    trained = row.get("trained") or 0
+    process = row.get("process") or ""
+    train_hours = (cost_model["per_process"].get(process) or {}).get("train_hours") \
+        or cost_model["default_train_hours"]
+    unit_cost = train_hours * cost_model["hourly_cost"]
+    short_by = max(0, target - trained)
+
+    # Candidates: the departments the standard names, then anyone the
+    # floor already draws hours from on this path.
+    load = _clm_department_load(model)
+    constellation = row.get("constellation") or {}
+    hours_by_dept = {e["department"]: e["hours"] for e in constellation.get("by_department", [])}
+    people_by_dept = {e["department"]: e["people"] for e in constellation.get("by_department", [])}
+    trained_by_dept = {e["department"]: e["trained"] for e in constellation.get("by_department", [])}
+    names = []
+    for dept in list(row.get("source_departments") or []) + sorted(
+            hours_by_dept, key=lambda d: -hours_by_dept[d]):
+        if dept and dept != "not recorded" and dept.lower() not in {n.lower() for n in names}:
+            names.append(dept)
+    total_hours = sum(hours_by_dept.values())
+    candidates = []
+    for dept in names:
+        match = next((d for d in hours_by_dept if d.lower() == dept.lower()), None)
+        state = load(dept, row["shift"])
+        hours = round(hours_by_dept.get(match, 0.0), 1) if match else 0.0
+        candidates.append({
+            "department": dept,
+            "named_in_standard": dept.lower() in {(s or "").lower() for s in row.get("source_departments") or []},
+            "hours_on_path": hours,
+            "share_of_path_hours": round(hours / total_hours, 3) if total_hours else None,
+            "people_on_path": people_by_dept.get(match, 0) if match else 0,
+            "trained_on_path": trained_by_dept.get(match, 0) if match else 0,
+            "own_work": state["states"],
+            "stretched": state["stretched"],
+        })
+    # The deterministic first pick: a department that is not short
+    # itself, preferring people already trained on the path (moved, not
+    # trained from scratch), then the most hours already worked there.
+    ranked = sorted(candidates, key=lambda c: (c["stretched"], -c["trained_on_path"],
+                                               -c["hours_on_path"], c["department"].lower()))
+    first = next((c for c in ranked if not c["stretched"]), None)
+
+    # When to say "do not cross-train for this, staff the department":
+    # the pool the standard draws from cannot hold the target, or there
+    # is nobody to borrow from who is not short themselves.
+    home_dept = db.xt_process_home_departments().get(process) if process else None
+    reasons = []
+    if pool_limited:
+        reasons.append("pool_limited")
+    if no_pool:
+        reasons.append("no_pool")
+    if candidates and first is None:
+        reasons.append("every_source_stretched")
+    if not candidates:
+        reasons.append("no_candidates")
+    return {
+        "path_key": path_key, "label": row["label"], "shift": row["shift"],
+        "process": process, "home_department": home_dept,
+        "volume": round(volume), "rate": round(rate, 1),
+        "hours_needed": round(hours_needed, 1), "shift_hours": shift_hours,
+        "on_shift": round(on_shift, 1), "cover_factor": cover,
+        "target": target, "current_target": row.get("target"), "trained": trained,
+        "pool": pool, "pool_limited": pool_limited, "no_pool": no_pool,
+        "short_by": short_by, "train_hours": train_hours,
+        "hourly_cost": cost_model["hourly_cost"],
+        "cost_to_close": round(short_by * unit_cost),
+        "recent_rate": row["plan"].get("rate"), "plan_rate": row["plan"].get("plan_rate"),
+        "home_share": constellation.get("home_share"),
+        "outside_share": constellation.get("outside_share"),
+        "candidates": ranked,
+        "suggested_source": first["department"] if first else None,
+        "raise_home_headcount": bool(reasons),
+        "raise_home_reasons": reasons,
+    }
+
+
+# --- What the model is told, and what it is allowed to say back ------
+
+CLM_LLM_SYSTEM_REVIEW = """You review cross-training targets for a fulfilment-centre site. \
+A cross-training path trains people from source departments on another process, per shift. \
+For every path you are given figures the application has already computed: the current \
+headcount target, how many are trained, the recent volume, hours and rate against the \
+planned rate, a recommended target worked out from the busiest day of history (people on \
+shift on that day, times the volume trend, times a cover factor for absence and the other \
+process, capped by the source pool), the verdict of a fixed decision table, and the share of \
+hours worked by the path's own source departments versus people cross-trained in.
+
+Your job is to weigh that evidence and explain it, not to recompute it. For each path, judge \
+whether the current target is too high, too low or about right, recommend a target, and say \
+why in terms a site manager can check against the page.
+
+Rules:
+- Quote only numbers that appear in the data for that path, exactly as given (a share may be \
+written as a percentage). Do not calculate new numbers; if a difference matters, name both \
+figures.
+- Normally your recommended target is the computed `recommended`. Depart from it only when \
+the evidence says the arithmetic is reading the wrong thing (for example: the busiest day was \
+an outlier, the plan was missed for reasons training cannot fix, the pool cap binds), and say \
+which evidence.
+- Use the own-department versus cross-trained share in your reasoning: a path carried mostly \
+by people from outside its source departments is telling you something about the standard.
+- If a path has too little evidence, say "cannot_judge" and why.
+- Be brief: at most three reasons per path, one sentence each.
+
+Reply with JSON only, no prose around it, in this shape:
+{"overview": "<two or three sentences on the site as a whole>",
+ "paths": [{"key": "<path key as given>",
+            "judgement": "too_high" | "too_low" | "about_right" | "cannot_judge",
+            "recommended_target": <integer or null>,
+            "reasons": ["<sentence>", ...],
+            "home_share_reading": "<one sentence on who carries this path, or empty>"}]}"""
+
+CLM_LLM_SYSTEM_FORECAST = """You advise a fulfilment-centre site on cross-training for a \
+forecast. You are given the forecast (units per day on one shift, and the rate in units per \
+hour), and figures the application has already computed from it: the hours that volume \
+takes, people needed on shift, the cross-training target after the cover factor and the \
+source-pool cap, how many are trained now, the cost to close the gap, and a list of \
+candidate source departments with the evidence for each — hours they already work on this \
+path, how many of their people are already trained on it, and how their own work is going \
+(whether they are short themselves).
+
+Your job is to weigh that evidence and explain it, not to recompute it. Decide:
+1. Whether the computed target is the right cross-training target for this forecast, and why.
+2. Which department the people should come from, and why that one rather than the others — \
+or that none should, and the process's own home department should raise its headcount \
+instead of borrowing people. The application has flagged when it thinks that is the case \
+(raise_home_headcount and raise_home_reasons); agree or disagree with reasons.
+
+Rules:
+- Name only departments from the candidate list, spelled as given (or the home_department).
+- Quote only numbers that appear in the data, exactly as given (a share may be written as a \
+percentage). Do not calculate new numbers.
+- At most four reasons, one sentence each.
+
+Reply with JSON only, no prose around it, in this shape:
+{"target_verdict": "<one sentence>",
+ "source_department": "<a candidate department, or null>",
+ "raise_home_headcount": true | false,
+ "department_to_grow": "<department that should raise its own headcount, or null>",
+ "reasons": ["<sentence>", ...],
+ "summary": "<one or two sentences a manager could repeat>"}"""
+
+# Paths sent for review, in batches of CLM_LLM_BATCH (see
+# _clm_review_in_batches). The cards and the review table are what the
+# page shows first; past this the payload costs more than the
+# explanation is worth, and the rest still have their deterministic
+# verdicts.
+CLM_LLM_MAX_PATHS = 60
+CLM_LLM_BATCH = 15
+
+
+def _clm_review_payload(model):
+    """The figures the model reasons over — aggregates only. No names,
+    no logins: nothing about whether a target is right needs to know who
+    did the work, and the per-person detail stays on this server."""
+    paths = []
+    for row in (model["cards"] + model["reviews"] + model["rows"]):
+        if any(p["key"] == row["path_key"] for p in paths):
+            continue
+        rec = row.get("recommendation") or {}
+        c = row.get("constellation") or {}
+        paths.append({
+            "key": row["path_key"], "path": row["label"], "process": row.get("process"),
+            "shift": row["shift"], "source_departments": row.get("source_departments") or [],
+            "current_target": row.get("target"), "trained": row.get("trained"),
+            "source_pool": row.get("headcount"),
+            "verdict": row["situation"]["title"],
+            "units": row["plan"].get("units"), "hours": row["plan"].get("hours"),
+            "rate": row["plan"].get("rate"), "plan_rate": row["plan"].get("plan_rate"),
+            "pct_to_plan": row["plan"].get("pct_to_plan"),
+            "rate_history": [r for r in row.get("rate_series") or [] if r is not None],
+            "recommended": rec.get("recommended"),
+            "recommendation_workings": {k: rec.get(k) for k in (
+                "peak_heads", "peak_day", "needed_on_shift", "cover_factor", "trend_pct",
+                "pool_limited", "periods_used", "confident", "cost_to_close", "cost_of_spare")}
+            if rec else None,
+            "arithmetic_judgement": row["review"]["judgement"],
+            "own_department_hours": c.get("home_hours"), "own_department_share": c.get("home_share"),
+            "cross_trained_hours": c.get("outside_hours"), "cross_trained_share": c.get("outside_share"),
+            "cross_trained_from": [{"department": o["department"], "hours": o["hours"], "share": o["share"]}
+                                   for o in c.get("outside_by_department") or []],
+        })
+        if len(paths) >= CLM_LLM_MAX_PATHS:
+            break
+    return {"period": model["period_label"], "latest_period": model["latest_label"],
+            "hours_window": model["hours_window"],
+            "cover_factor": model["cost_model"]["cover_factor"],
+            "shift_hours": model["cost_model"]["shift_hours"],
+            "paths": paths}
+
+
+def _clm_forecast_payload(forecast):
+    keep = ("label", "shift", "process", "home_department", "volume", "rate", "hours_needed",
+            "shift_hours", "on_shift", "cover_factor", "target", "current_target", "trained",
+            "pool", "pool_limited", "short_by", "train_hours", "hourly_cost", "cost_to_close",
+            "recent_rate", "plan_rate", "home_share", "outside_share", "suggested_source",
+            "raise_home_headcount", "raise_home_reasons")
+    payload = {k: forecast[k] for k in keep}
+    payload["candidates"] = forecast["candidates"]
+    return payload
+
+
+_NUMBER = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?%?")
+
+
+def _clm_numbers(value, out=None):
+    """Every number anywhere in a payload, in the forms a sentence might
+    quote it: as given, and a share (0..1) also as a percentage."""
+    out = set() if out is None else out
+    if isinstance(value, bool) or value is None:
+        return out
+    if isinstance(value, (int, float)):
+        out.add(round(float(value), 1))
+        out.add(float(round(value)))
+        if 0 <= value <= 1:
+            out.add(round(value * 100, 1))
+            out.add(float(round(value * 100)))
+        return out
+    if isinstance(value, dict):
+        for v in value.values():
+            _clm_numbers(v, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _clm_numbers(v, out)
+    elif isinstance(value, str):
+        for token in _NUMBER.findall(value):
+            _clm_numbers(float(token.rstrip("%").replace(",", "")), out)
+    return out
+
+
+def _clm_sentence_checks(sentence, allowed):
+    """The numbers in a sentence that the payload does not contain.
+    Empty means every figure it quotes is one the page is showing."""
+    bad = []
+    for token in _NUMBER.findall(sentence or ""):
+        try:
+            value = float(token.rstrip("%").replace(",", ""))
+        except ValueError:
+            continue
+        # Small counting words written as digits ("two periods", "1 of
+        # 3 reasons") carry no figure worth checking.
+        if value.is_integer() and 0 <= value <= 3:
+            continue
+        if round(value, 1) not in allowed and float(round(value)) not in allowed:
+            bad.append(token)
+    return bad
+
+
+def _clm_vet_reasons(sentences, allowed, limit):
+    """Keep the sentences whose every number is one the app computed.
+    Returns (kept, dropped_count)."""
+    kept, dropped = [], 0
+    for sentence in (sentences or [])[:limit]:
+        if not isinstance(sentence, str) or not sentence.strip():
+            continue
+        if _clm_sentence_checks(sentence, allowed):
+            dropped += 1
+            continue
+        kept.append(sentence.strip())
+    return kept, dropped
+
+
+def _clm_vet_review(answer, payload):
+    """Check the model's review against the figures it was given.
+
+    A judgement that contradicts its own recommended target (calling a
+    target too high and recommending a bigger one) is dropped; a target
+    that departs from the arithmetic is kept only with at least one
+    surviving reason, and is always shown beside the computed one, never
+    in place of it."""
+    by_key = {p["key"]: p for p in payload["paths"]}
+    result, dropped = {}, 0
+    for item in (answer.get("paths") if isinstance(answer, dict) else None) or []:
+        if not isinstance(item, dict) or item.get("key") not in by_key:
+            continue
+        data = by_key[item["key"]]
+        allowed = _clm_numbers(data) | _clm_numbers({k: v for k, v in payload.items() if k != "paths"})
+        reasons, lost = _clm_vet_reasons(item.get("reasons"), allowed, 3)
+        dropped += lost
+        reading, lost = _clm_vet_reasons([item.get("home_share_reading")], allowed, 1)
+        dropped += lost
+        judgement = item.get("judgement") if item.get("judgement") in CLM_JUDGEMENTS else None
+        proposed = item.get("recommended_target")
+        if isinstance(proposed, bool) or not isinstance(proposed, (int, float)) or proposed < 0:
+            proposed = None
+        else:
+            proposed = int(round(proposed))
+        current = data.get("current_target")
+        if judgement and proposed is not None and current:
+            if (judgement == "too_high" and proposed >= current) or \
+               (judgement == "too_low" and proposed <= current):
+                judgement, proposed = None, None
+                dropped += 1
+        if proposed is not None and data.get("recommended") is not None \
+                and proposed != data["recommended"] and not reasons:
+            proposed = None
+            dropped += 1
+        if not (judgement or reasons or reading):
+            continue
+        result[item["key"]] = {
+            "judgement": judgement, "judgement_label": CLM_JUDGEMENTS.get(judgement),
+            "recommended_target": proposed,
+            "computed_target": data.get("recommended"),
+            "disagrees": (proposed is not None and data.get("recommended") is not None
+                          and proposed != data["recommended"]),
+            "disagrees_with_arithmetic": bool(judgement and data.get("arithmetic_judgement")
+                                              not in (None, "cannot_judge", judgement)),
+            "reasons": reasons, "home_share_reading": reading[0] if reading else None,
+        }
+    overview, lost = _clm_vet_reasons([answer.get("overview") if isinstance(answer, dict) else None],
+                                      _clm_numbers(payload), 1)
+    dropped += lost
+    return {"paths": result, "overview": overview[0] if overview else None, "dropped": dropped}
+
+
+def _clm_vet_forecast(answer, payload):
+    """Check the forecast advice: departments must be ones the payload
+    named, and every figure must be one the app computed."""
+    if not isinstance(answer, dict):
+        return None
+    allowed = _clm_numbers(payload)
+    known = {c["department"].lower(): c["department"] for c in payload["candidates"]}
+    if payload.get("home_department"):
+        known.setdefault(payload["home_department"].lower(), payload["home_department"])
+    dropped = 0
+
+    def department(name):
+        nonlocal dropped
+        if not name or not isinstance(name, str):
+            return None
+        found = known.get(name.strip().lower())
+        if found is None:
+            dropped += 1
+        return found
+
+    source = department(answer.get("source_department"))
+    grow = department(answer.get("department_to_grow"))
+    reasons, lost = _clm_vet_reasons(answer.get("reasons"), allowed, 4)
+    dropped += lost
+    verdict, lost = _clm_vet_reasons([answer.get("target_verdict")], allowed, 1)
+    dropped += lost
+    summary, lost = _clm_vet_reasons([answer.get("summary")], allowed, 1)
+    dropped += lost
+    raise_home = answer.get("raise_home_headcount")
+    raise_home = raise_home if isinstance(raise_home, bool) else None
+    if not (reasons or summary or verdict):
+        return None
+    return {
+        "source_department": source, "department_to_grow": grow,
+        "raise_home_headcount": raise_home,
+        "agrees_on_source": source is not None and source == payload.get("suggested_source"),
+        "agrees_on_headcount": raise_home is None or raise_home == payload.get("raise_home_headcount"),
+        "target_verdict": verdict[0] if verdict else None,
+        "reasons": reasons, "summary": summary[0] if summary else None,
+        "dropped": dropped,
+    }
+
+
+CLM_LLM_UNAVAILABLE = {
+    "off": None,
+    "iam": "the server is not permitted to call the model",
+    "model_access": "model access is not enabled for this account",
+    "marketplace": "the model's first use needs AWS Marketplace permissions",
+    "needs_profile": "the configured model needs an inference profile id",
+    "timeout": "the model took too long to answer",
+    "throttled": "the model is busy",
+    "refused": "the model declined to answer",
+    "bad_json": "the model's answer could not be read",
+    "max_tokens": "the model's answer was cut short",
+    "error": "the model could not be reached",
+}
+
+
+def _clm_model_from_request():
+    period = request.args.get("period") or "month"
+    scenario = request.args.get("scenario", "general")
+    if scenario not in dict(db.XT_SCENARIOS):
+        scenario = "general"
+    return build_cross_learning_model(period, scenario=scenario)
+
+
+def _clm_forecast_args():
+    """The forecast form's inputs, or None if it was not filled in."""
+    key = (request.args.get("fc_path") or "").strip()
+    try:
+        volume = float(request.args.get("fc_volume") or 0)
+        rate = float(request.args.get("fc_rate") or 0)
+    except ValueError:
+        return key, None, None
+    return key, volume, rate
+
+
+def _clm_review_in_batches(payload):
+    """Ask about the paths a batch at a time, all batches at once.
+
+    One call for sixty paths is one long answer, and a long answer from
+    a reasoning model can outrun both the client timeout and gunicorn's
+    120 seconds, which kills the worker rather than failing the call. In
+    batches of CLM_LLM_BATCH each answer stays short, the batches run
+    side by side so the wait is the slowest one rather than the sum, and
+    each is cached on its own so a change to one path re-asks about its
+    batch only. The first batch holds the cards — the paths the page
+    shows first — so the overview is written about those.
+
+    Returns (vetted, status): vetted is None only if every batch failed,
+    and status is then the first batch's reason."""
+    from concurrent.futures import ThreadPoolExecutor
+    shared = {k: v for k, v in payload.items() if k != "paths"}
+    batches = [dict(shared, paths=payload["paths"][i:i + CLM_LLM_BATCH])
+               for i in range(0, len(payload["paths"]), CLM_LLM_BATCH)]
+    with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+        answers = list(pool.map(lambda b: bedrock_client.ask_json(CLM_LLM_SYSTEM_REVIEW, b), batches))
+    merged = {"paths": {}, "overview": None, "dropped": 0}
+    statuses = []
+    for batch, (answer, status) in zip(batches, answers):
+        statuses.append(status)
+        if answer is None:
+            continue
+        vetted = _clm_vet_review(answer, batch)
+        merged["paths"].update(vetted["paths"])
+        merged["dropped"] += vetted["dropped"]
+        if merged["overview"] is None:
+            merged["overview"] = vetted["overview"]
+    answered = [s for s in statuses if s in ("ok", "cached")]
+    if not answered:
+        return None, statuses[0]
+    merged["partial"] = len(answered) < len(statuses)
+    return merged, "ok" if "ok" in answered else "cached"
+
+
+@application.route("/ld-management/cross-training/model/explain")
+def xt_model_explain():
+    """The generated review of every target, as HTML fragments keyed by
+    the slot each belongs in. Fetched by the page after it has loaded,
+    so a slow model never holds the tab up; any failure answers with no
+    fragments and the page simply keeps what it already shows."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"status": "login"}), 401
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return jsonify({"status": "denied"}), 403
+    try:
+        model = _clm_model_from_request()
+        payload = _clm_review_payload(model)
+        if not payload["paths"]:
+            return jsonify({"status": "nothing", "slots": {}})
+        vetted, status = _clm_review_in_batches(payload)
+        if vetted is None:
+            return jsonify({"status": status, "note": CLM_LLM_UNAVAILABLE.get(status, "unavailable"),
+                            "slots": {}})
+    except Exception:
+        application.logger.exception("Cross learning model explanation failed")
+        return jsonify({"status": "error", "note": CLM_LLM_UNAVAILABLE["error"], "slots": {}})
+    slots = {}
+    for key, item in vetted["paths"].items():
+        slots[f"card:{key}"] = render_template("_xt_model_llm.html", part="card", item=item)
+        slots[f"review:{key}"] = render_template("_xt_model_llm.html", part="review", item=item)
+    if vetted["overview"] or vetted["dropped"] or vetted.get("partial"):
+        slots["overview"] = render_template("_xt_model_llm.html", part="overview",
+                                            overview=vetted["overview"], dropped=vetted["dropped"],
+                                            partial=vetted.get("partial"),
+                                            model_id=bedrock_client.model_id())
+    return jsonify({"status": status, "slots": slots, "dropped": vetted["dropped"]})
+
+
+@application.route("/ld-management/cross-training/model/forecast-explain")
+def xt_model_forecast_explain():
+    """The generated advice on a forecast the page has already worked
+    out deterministically. Same contract as xt_model_explain."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"status": "login"}), 401
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return jsonify({"status": "denied"}), 403
+    try:
+        model = _clm_model_from_request()
+        key, volume, rate = _clm_forecast_args()
+        forecast = _clm_forecast(model, key, volume, rate)
+        if forecast is None:
+            return jsonify({"status": "nothing", "slots": {}})
+        payload = _clm_forecast_payload(forecast)
+        answer, status = bedrock_client.ask_json(CLM_LLM_SYSTEM_FORECAST, payload, max_tokens=4000)
+        if answer is None:
+            return jsonify({"status": status, "note": CLM_LLM_UNAVAILABLE.get(status, "unavailable"),
+                            "slots": {}})
+        vetted = _clm_vet_forecast(answer, payload)
+        if vetted is None:
+            return jsonify({"status": "bad_json", "note": CLM_LLM_UNAVAILABLE["bad_json"], "slots": {}})
+    except Exception:
+        application.logger.exception("Cross learning model forecast explanation failed")
+        return jsonify({"status": "error", "note": CLM_LLM_UNAVAILABLE["error"], "slots": {}})
+    return jsonify({"status": status, "dropped": vetted["dropped"], "slots": {
+        "forecast": render_template("_xt_model_llm.html", part="forecast", item=vetted,
+                                    forecast=forecast, model_id=bedrock_client.model_id())}})
 
 @application.route("/ld-management/cross-training/volume/upload", methods=["POST"])
 def xt_volume_upload():

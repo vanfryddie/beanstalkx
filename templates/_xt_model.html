@@ -40,6 +40,10 @@
 </div>
 
 <h3 class="dash-section-label">What it concluded</h3>
+{% if m.llm_enabled %}
+<p class="clm-llm-status" data-llm-status hidden></p>
+<div data-llm-slot="overview" hidden></div>
+{% endif %}
 <div class="viz-row">
   <figure class="viz-card viz-wide">
     <figcaption>Every path, by what the model made of it</figcaption>
@@ -141,6 +145,7 @@
     </div>
 
     <p class="clm-detail">{{ sit.detail }}</p>
+    {% if m.llm_enabled %}<div data-llm-slot="card:{{ row.path_key }}" hidden></div>{% endif %}
 
     {% if row.constellation %}
     {% set c = row.constellation %}
@@ -224,6 +229,8 @@
 </details>
 {% endif %}
 
+{% include "_xt_model_targets.html" %}
+
 <details class="xi-more">
   <summary>The rules it is applying</summary>
   <p class="xi-note">
@@ -275,4 +282,45 @@
     <div style="margin-top:14px;"><button class="btn btn-gold btn-sm" type="submit">Save the plan</button></div>
   </form>
 </details>
+{% endif %}
+
+
+{% if m.llm_enabled %}
+<script>
+/* Generated explanations arrive after the page, from one request per
+   section. Anything that goes wrong leaves the page as it already is:
+   the slots stay hidden and a single quiet line says why. */
+(function () {
+  var status = document.querySelector('[data-llm-status]');
+  function fill(url, label) {
+    if (status) { status.hidden = false; status.textContent = 'Writing the ' + label + '…'; }
+    var controller = window.AbortController ? new AbortController() : null;
+    var timer = controller ? setTimeout(function () { controller.abort(); }, 90000) : null;
+    return fetch(url, {credentials: 'same-origin', signal: controller ? controller.signal : undefined})
+      .then(function (r) { return r.ok ? r.json() : {status: 'error', slots: {}}; })
+      .catch(function () { return {status: 'timeout', note: 'the model took too long to answer', slots: {}}; })
+      .then(function (data) {
+        if (timer) clearTimeout(timer);
+        var filled = 0;
+        Object.keys(data.slots || {}).forEach(function (key) {
+          var slot = document.querySelector('[data-llm-slot="' + key.replace(/"/g, '') + '"]');
+          if (slot) { slot.innerHTML = data.slots[key]; slot.hidden = false; filled++; }
+        });
+        if (status) {
+          if (filled) { status.hidden = true; }
+          else if (data.note) { status.hidden = false; status.textContent = 'No generated ' + label + ': ' + data.note + '. Everything else on this page is unaffected.'; }
+          else { status.hidden = true; }
+        }
+      });
+  }
+  var base = {{ url_for('xt_model_explain', period=m.period, scenario=scenario) | tojson }};
+  var chain = fill(base, 'explanations');
+  {% if forecast %}
+  var fc = {{ url_for('xt_model_forecast_explain', period=m.period, scenario=scenario,
+                      fc_path=forecast_args.path, fc_volume=forecast_args.volume,
+                      fc_rate=forecast_args.rate) | tojson }};
+  chain.then(function () { return fill(fc, 'forecast advice'); });
+  {% endif %}
+})();
+</script>
 {% endif %}

@@ -1,0 +1,53 @@
+{#- Generated reasoning for the Cross Learning Model, one fragment at a
+    time, rendered on the server so everything the model wrote is escaped
+    like any other text on the page. Every fragment says it was generated
+    and sits beside the computed figures, never in place of them. -#}
+{% if part == "card" %}
+<div class="clm-llm">
+  <div class="clm-llm-head">
+    <span class="clm-llm-tag">Generated explanation</span>
+    {% if item.judgement_label %}<strong>{{ item.judgement_label }}</strong>{% endif %}
+    {% if item.recommended_target is not none %}
+    <span class="clm-llm-target">suggests {{ item.recommended_target }}{% if item.computed_target is not none %} · computed {{ item.computed_target }}{% endif %}</span>
+    {% endif %}
+  </div>
+  {% if item.disagrees or item.disagrees_with_arithmetic %}
+  <p class="clm-llm-flag">This departs from the arithmetic. The computed figure above still stands; the reasons below are the argument for reading it differently.</p>
+  {% endif %}
+  {% if item.reasons %}
+  <ul>{% for reason in item.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if item.home_share_reading %}<p class="clm-llm-share">{{ item.home_share_reading }}</p>{% endif %}
+</div>
+{% elif part == "review" %}
+<span class="clm-llm-cell">
+  {% if item.judgement_label %}<strong>{{ item.judgement_label }}</strong>{% endif %}
+  {% if item.recommended_target is not none and item.disagrees %}<span class="clm-llm-flag-inline">suggests {{ item.recommended_target }}</span>{% endif %}
+  {% if item.reasons %}<span class="clm-llm-why">{{ item.reasons[0] }}</span>{% endif %}
+</span>
+{% elif part == "overview" %}
+<div class="clm-llm clm-llm-overview">
+  <div class="clm-llm-head"><span class="clm-llm-tag">Generated explanation</span>
+    {% if model_id %}<span class="clm-llm-model mono">{{ model_id }}</span>{% endif %}</div>
+  {% if overview %}<p>{{ overview }}</p>{% endif %}
+  <p class="clm-llm-note">Written by a language model from the figures on this page, and checked against them:
+    any sentence quoting a number the page does not show was removed{% if dropped %} ({{ dropped }} this time){% endif %}.
+    The verdicts, targets and costs are the computed ones.{% if partial %} Some paths have no
+    generated reading this time because part of the request did not come back.{% endif %}</p>
+</div>
+{% elif part == "forecast" %}
+<div class="clm-llm">
+  <div class="clm-llm-head"><span class="clm-llm-tag">Generated explanation</span>
+    {% if model_id %}<span class="clm-llm-model mono">{{ model_id }}</span>{% endif %}</div>
+  {% if item.summary %}<p class="clm-llm-summary">{{ item.summary }}</p>{% endif %}
+  <dl class="clm-llm-calls">
+    <dt>Draw people from</dt>
+    <dd>{{ item.source_department or 'no department' }}{% if item.source_department and not item.agrees_on_source %} <span class="clm-llm-flag-inline">computed first pick: {{ forecast.suggested_source or 'none' }}</span>{% endif %}</dd>
+    <dt>Raise home headcount instead</dt>
+    <dd>{% if item.raise_home_headcount is none %}—{% elif item.raise_home_headcount %}Yes{% if item.department_to_grow %}, in {{ item.department_to_grow }}{% endif %}{% else %}No{% endif %}{% if not item.agrees_on_headcount %} <span class="clm-llm-flag-inline">the arithmetic says {{ 'yes' if forecast.raise_home_headcount else 'no' }}</span>{% endif %}</dd>
+  </dl>
+  {% if item.target_verdict %}<p>{{ item.target_verdict }}</p>{% endif %}
+  {% if item.reasons %}<ul>{% for reason in item.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+  {% if item.dropped %}<p class="clm-llm-note">{{ item.dropped }} statement(s) quoting figures or departments the page does not show were removed.</p>{% endif %}
+</div>
+{% endif %}

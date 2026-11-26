@@ -4967,3 +4967,35 @@ html[data-theme="dark"], :root:not([data-theme="light"]) {
 .stc-stale-name { font-size: 12.5px; font-weight: 620; color: var(--ink); }
 .stc-stale-meta { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-lo); }
 .stc-stale-list form { margin: 0; flex: none; }
+
+/* Cross Learning Model — target review, forecast, and generated text.
+   Generated text is marked as generated and set apart by a neutral rule,
+   not a status colour: it is an argument, not a verdict. */
+.clm-review .clm-judgement { font-size: 12px; white-space: nowrap; }
+.clm-judgement-too_high { color: var(--viz-series-2); }
+.clm-judgement-too_low { color: var(--viz-series-1); }
+.clm-judgement-about_right { color: var(--text-lo); }
+.clm-review sup { margin-left: 2px; font-size: 9px; color: var(--text-lo); }
+.clm-forecast-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 0 0 16px; }
+.clm-forecast-form label { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--text-lo); min-width: 0; }
+.clm-forecast-form select { max-width: 100%; min-width: 0; }
+.clm-forecast-form input { width: 12ch; }
+.clm-forecast { margin-bottom: 18px; }
+.clm-llm { margin: 13px 0 0; padding: 11px 13px; border: 1px dashed rgba(127,138,153,.45); border-radius: 10px; font-size: 12.5px; line-height: 1.55; color: var(--ink); }
+.clm-llm ul { margin: 7px 0 0; padding-left: 18px; }
+.clm-llm li + li { margin-top: 4px; }
+.clm-llm p { margin: 7px 0 0; }
+.clm-llm-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.clm-llm-tag { padding: 1px 7px; border-radius: 999px; font-size: 10px; letter-spacing: .02em; color: var(--text-lo); background: rgba(127,138,153,.14); }
+.clm-llm-target, .clm-llm-model { font-size: 11px; color: var(--text-lo); }
+.clm-llm-model { overflow-wrap: anywhere; }
+.clm-llm-flag, .clm-llm-note, .clm-llm-share { font-size: 11.5px; color: var(--text-lo); }
+.clm-llm-flag-inline { font-size: 11px; color: var(--viz-series-2); }
+.clm-llm-summary { font-weight: 600; }
+.clm-llm-calls { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
+.clm-llm-calls dt { color: var(--text-lo); }
+.clm-llm-calls dd { margin: 0; }
+.clm-llm-cell { display: flex; flex-direction: column; gap: 2px; font-size: 12px; max-width: 46ch; }
+.clm-llm-why { color: var(--text-lo); font-size: 11.5px; }
+.clm-llm-status { margin: -4px 2px 12px; font-size: 12px; color: var(--text-lo); }
+.clm-llm-overview { margin: 0 0 14px; }

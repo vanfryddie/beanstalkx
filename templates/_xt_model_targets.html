@@ -1,0 +1,144 @@
+{#- Are the targets right, and what would a forecast need?
+
+    Both sections are computed on the server and stand on their own. The
+    generated column and the generated forecast advice fill in afterwards
+    where a model is configured; without one, nothing here changes. -#}
+
+<h3 class="dash-section-label" id="targets">Are the targets right?</h3>
+<p class="xi-note" style="margin-top:-6px;">
+  Each target against what the work needed: the busiest day of history in people, times the
+  volume trend, times cover of {{ m.cost_model.cover_factor }}, capped by the source pool. The
+  same arithmetic as the Insights tab. "Own department" is the share of the {{ m.hours_window }}'s
+  hours worked by the path's source departments; the rest came from people cross-trained in.
+  {% if m.unreviewed %}{{ m.unreviewed }} path(s) are left out because no volume matches them or
+  they have no target.{% endif %}
+</p>
+{% if m.reviews %}
+<div class="dash-table-scroll">
+  <table class="dash-table xi-table clm-review">
+    <thead><tr>
+      <th scope="col">Path</th><th scope="col">Shift</th>
+      <th scope="col" class="num">Target</th><th scope="col" class="num">Trained</th>
+      <th scope="col" class="num">Work needs</th><th scope="col">By the arithmetic</th>
+      <th scope="col" class="num">Own department</th>
+      {% if m.llm_enabled %}<th scope="col">Generated reading</th>{% endif %}
+    </tr></thead>
+    <tbody>
+      {% for row in m.reviews %}
+      {% set rec = row.recommendation %}
+      <tr>
+        <th scope="row">{{ row.label }}{% if row.process %} <span class="xi-dim">{{ row.process }}</span>{% endif %}</th>
+        <td>{{ shifts.get(row.shift, row.shift) }}</td>
+        <td class="num mono">{{ row.target }}</td>
+        <td class="num mono">{{ row.trained }}</td>
+        <td class="num mono" title="peak {{ rec.peak_heads }} on shift ({{ rec.peak_day or rec.peak_period }}){% if rec.trend_pct is not none %}, trend {{ '%+.1f' % rec.trend_pct }}%{% endif %}, cover {{ rec.cover_factor }}{% if rec.pool_limited %}, capped by the pool of {{ rec.pool }}{% endif %}">{{ rec.recommended }}{% if rec.pool_limited %}<sup>pool</sup>{% endif %}{% if not rec.confident %}<sup>thin</sup>{% endif %}</td>
+        <td><span class="clm-judgement clm-judgement-{{ row.review.judgement }}">{{ m.judgements[row.review.judgement] }}</span>
+          {% if row.review.move %}<span class="xi-dim mono">{{ '%+d' % row.review.move }}</span>{% endif %}</td>
+        <td class="num">{% if row.constellation and row.constellation.home_share is not none %}{{ viz.meter(row.constellation.home_share * 100, 100, row.label ~ ' own department share', '%', 0) }}{% else %}—{% endif %}</td>
+        {% if m.llm_enabled %}<td class="wrap"><span data-llm-slot="review:{{ row.path_key }}" hidden></span></td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="xi-note"><sup>pool</sup> the work needs more than the source departments hold — the answer is more people, not more training.
+  <sup>thin</sup> fewer than four complete periods of history behind it.</p>
+{% else %}
+<p class="viz-empty">No path has both a target and matching volume yet, so no target can be weighed against the work.</p>
+{% endif %}
+
+<h3 class="dash-section-label" id="forecast">Plan for a forecast</h3>
+<p class="xi-note" style="margin-top:-6px;">
+  Enter the volume you expect on the busiest day of one shift and the rate you expect it to run
+  at. The target is worked out the same way as above; then every department that could supply
+  the people is listed with the evidence for and against it.
+</p>
+<form class="clm-forecast-form" method="GET" action="{{ url_for('cross_training') }}#forecast">
+  <input type="hidden" name="tab" value="model">
+  <input type="hidden" name="scenario" value="{{ scenario }}">
+  <input type="hidden" name="period" value="{{ m.period }}">
+  <label>Path and shift
+    <select name="fc_path" required>
+      <option value="">Choose…</option>
+      {% for row in m.rows %}
+      <option value="{{ row.path_key }}" {{ 'selected' if forecast_args and forecast_args.path == row.path_key }}>{{ row.label }} · {{ shifts.get(row.shift, row.shift) }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Units per day
+    <input type="number" name="fc_volume" min="1" step="1" required value="{{ forecast_args.volume if forecast_args else '' }}">
+  </label>
+  <label>Rate (units/hour)
+    <input type="number" name="fc_rate" min="0.1" step="0.1" required value="{{ forecast_args.rate if forecast_args else '' }}">
+  </label>
+  <button class="btn btn-gold btn-sm" type="submit">Work it out</button>
+</form>
+
+{% if forecast_args and forecast_args.path and not forecast %}
+<p class="viz-empty">That forecast cannot be worked out — choose a path and give a volume and a rate above zero.</p>
+{% endif %}
+
+{% if forecast %}
+{% set f = forecast %}
+<article class="clm-card clm-forecast">
+  <header>
+    <div class="clm-card-title">
+      <h4>{{ f.label }}</h4>
+      <span class="clm-card-meta">{{ shifts.get(f.shift, f.shift) }}{% if f.process %} · {{ f.process }}{% endif %}{% if f.home_department %} · home department {{ f.home_department }}{% endif %}</span>
+    </div>
+    <span class="clm-verdict">{{ '{:,}'.format(f.volume) }} units at {{ f.rate }}/h</span>
+  </header>
+  <div class="clm-figures">
+    <div class="clm-fig"><span class="clm-fig-label">Hours of work</span><strong>{{ '{:,.1f}'.format(f.hours_needed) }}</strong><em>volume ÷ rate</em></div>
+    <div class="clm-fig"><span class="clm-fig-label">On shift</span><strong>{{ f.on_shift }}</strong><em>÷ {{ f.shift_hours }}h shift</em></div>
+    <div class="clm-fig"><span class="clm-fig-label">Cross-training target</span><strong>{{ f.target }}</strong><em>× cover {{ f.cover_factor }}{% if f.pool_limited %}, capped at the pool of {{ f.pool }}{% endif %}{% if f.current_target is not none %} · today {{ f.current_target }}{% endif %}</em></div>
+    <div class="clm-fig"><span class="clm-fig-label">To train</span><strong>{{ f.short_by }}</strong><em>{{ f.trained }} trained now{% if f.short_by %} · about {{ '{:,}'.format(f.cost_to_close) }} at {{ f.train_hours }}h a head{% endif %}</em></div>
+  </div>
+  <p class="clm-detail">
+    {% if f.recent_rate %}The path ran at {{ f.recent_rate }}/h most recently{% if f.plan_rate %} against a plan of {{ f.plan_rate }}{% endif %}; this forecast assumes {{ f.rate }}.{% endif %}
+    {% if f.home_share is not none %} {{ (f.home_share * 100) | round | int }}% of its hours came from its own source departments, {{ (f.outside_share * 100) | round | int }}% from people cross-trained in.{% endif %}
+  </p>
+
+  <ul class="clm-actions">
+    {% if f.raise_home_headcount %}
+    <li class="clm-action clm-action-close_gap">
+      Staff the department rather than cross-train for this:
+      {% for reason in f.raise_home_reasons %}
+        {%- if reason == 'pool_limited' %} the source departments hold {{ f.pool }} people and the forecast needs {{ f.target }} trained, so training cannot get there.
+        {%- elif reason == 'no_pool' %} the standard's source departments have nobody in them.
+        {%- elif reason == 'every_source_stretched' %} every department that could lend people is short on its own work.
+        {%- elif reason == 'no_candidates' %} no department is named as a source or already works this path.
+        {%- endif %}
+      {% endfor %}
+      {% if f.home_department %}Raising {{ f.home_department }}'s own headcount is the first thing to look at.{% endif %}
+    </li>
+    {% elif f.suggested_source %}
+    <li class="clm-action clm-action-add_source">
+      First pick by the evidence: <strong>{{ f.suggested_source }}</strong> — not short on its own work{% set top = f.candidates | selectattr('department', 'equalto', f.suggested_source) | first %}{% if top.trained_on_path %}, and {{ top.trained_on_path }} of its people are already trained on this path, so they can be moved rather than trained{% elif top.hours_on_path %}, and it already works {{ '{:,.0f}'.format(top.hours_on_path) }}h on this path{% endif %}.
+    </li>
+    {% endif %}
+  </ul>
+
+  {% if f.candidates %}
+  <div class="dash-table-scroll" style="margin-top:12px;">
+    <table class="dash-table">
+      <thead><tr><th scope="col">Department</th><th scope="col">Named in standard</th>
+        <th scope="col" class="num">Hours on this path</th><th scope="col" class="num">Trained on it</th>
+        <th scope="col">Its own work this shift</th></tr></thead>
+      <tbody>
+        {% for c in f.candidates %}
+        <tr>
+          <th scope="row">{{ c.department }}{% if c.department == f.suggested_source %} <span class="clm-xt">first pick</span>{% endif %}</th>
+          <td>{{ 'Yes' if c.named_in_standard else 'No' }}</td>
+          <td class="num mono">{{ '{:,.0f}'.format(c.hours_on_path) }}{% if c.share_of_path_hours %} <span class="xi-dim">{{ (c.share_of_path_hours * 100) | round | int }}%</span>{% endif %}</td>
+          <td class="num mono">{{ c.trained_on_path }}{% if c.people_on_path %} of {{ c.people_on_path }}{% endif %}</td>
+          <td class="wrap">{% if c.own_work %}{% for w in c.own_work %}{{ w.process }}: {{ w.verdict }}{% if w.pct_to_plan is not none %} ({{ w.pct_to_plan }}% to plan){% endif %}{{ '; ' if not loop.last }}{% endfor %}{% else %}<span class="xi-dim">no path describes it</span>{% endif %}{% if c.stretched %} <span class="clm-xt is-warn">short itself</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if m.llm_enabled %}<div data-llm-slot="forecast" hidden></div>{% endif %}
+</article>
+{% endif %}
