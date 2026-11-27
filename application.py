@@ -6841,6 +6841,7 @@ def _floor_reader_source():
     script = script.replace("__LDIS_FCLM_PLAN__", base + url_for("fclm_sync_plan"))
     script = script.replace("__LDIS_FCLM_DAY__", base + url_for("fclm_sync_day"))
     script = script.replace("__LDIS_FCLM_ROSTER__", base + url_for("fclm_sync_roster"))
+    script = script.replace("__LDIS_FCLM_WEEK__", base + url_for("fclm_sync_week"))
     return script.replace("__LDIS_BUILD__", version.split("-", 1)[1]), version
 
 
@@ -7092,6 +7093,8 @@ def fclm_sync_plan():
         "warehouse_id": db.get_current_site(),
         "processes": db.get_floor_processes(),
         "days": db.fclm_due_days(),
+        "weeks": db.fclm_due_weeks(),
+        "concurrency": settings["concurrency"],
         "roster_due": db.fclm_roster_due(),
     })
 
@@ -7141,9 +7144,65 @@ def fclm_sync_day():
         "process_ids": [str(x)[:20] for x in (i.get("process_ids") or [])[:60] if str(x).isdigit()],
     } for i in ppr if isinstance(i, dict)]
     failed = [_floor_text(f, 60) for f in (payload.get("failed") or [])[:60]]
-    result = db.record_fclm_day(day.isoformat(), clean_rows, clean_ppr, failed, taken_by=login_id)
+    result = db.record_fclm_day(day.isoformat(), clean_rows, clean_ppr, failed, taken_by=login_id,
+                                timing=_fclm_timing(payload.get("timing")),
+                                skipped=[_floor_text(x, 60) for x in (payload.get("skipped") or [])[:60]])
     # Hours on Function follows the history it is derived from; the
     # setting and the 180-day coverage decide whether it is rebuilt yet.
+    result["hours"] = db.rebuild_hours_from_fclm(taken_by=login_id)
+    _XT_PREP_CACHE.clear()
+    return jsonify({"ok": True, **result})
+
+
+def _fclm_timing(raw):
+    """What the reader says FCLM cost it — numbers only, bounded."""
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for key in ("reports", "ms", "bytes", "slowest_ms", "skipped", "seconds"):
+        value = raw.get(key)
+        if isinstance(value, (int, float)) and 0 <= value < 1e12:
+            out[key] = value
+    if isinstance(raw.get("slowest"), str):
+        out["slowest"] = raw["slowest"][:60]
+    return out
+
+
+@application.route("/fclm/sync/week", methods=["POST"])
+def fclm_sync_week():
+    """A week of older history, read as one week-span report per process
+    path. Same checks as a day; the week must start inside the backfill
+    window and before the daily range."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    if not _fclm_may_post(login_id):
+        return jsonify({"error": "not allowed to post FCLM data"}), 403
+    payload = request.get_json(silent=True) or {}
+    try:
+        start = date.fromisoformat(str(payload.get("week_start") or ""))
+    except ValueError:
+        return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
+    settings = db.get_fclm_sync_settings()
+    if not (date.today() - timedelta(days=settings["backfill_days"] + 7) <= start < date.today() - timedelta(days=7)):
+        return jsonify({"error": "week is outside the sync window"}), 400
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return jsonify({"error": "rows must be a list"}), 400
+    if len(rows) > FCLM_MAX_ROWS:
+        return jsonify({"error": "too many rows"}), 413
+    clean_rows = [{"employee_id": _floor_text(r.get("employee_id"), 20),
+                   "function_name": _floor_text(r.get("function_name"), 120),
+                   "paid_hours": r.get("paid_hours") if isinstance(r.get("paid_hours"), (int, float)) else None,
+                   "units": r.get("units") if isinstance(r.get("units"), (int, float)) else None}
+                  for r in rows if isinstance(r, dict)]
+    spans = [{"span": _floor_text(x.get("span"), 20), "start": _floor_text(x.get("start"), 10)}
+             for x in (payload.get("spans") or [])[:100] if isinstance(x, dict)
+             and re.match(r"^\d{4}-\d{2}-\d{2}$", str(x.get("start") or ""))]
+    result = db.record_fclm_week(start.isoformat(), clean_rows, spans,
+                                 [_floor_text(f, 60) for f in (payload.get("failed") or [])[:60]],
+                                 timing=_fclm_timing(payload.get("timing")),
+                                 skipped=[_floor_text(x, 60) for x in (payload.get("skipped") or [])[:60]],
+                                 taken_by=login_id)
     result["hours"] = db.rebuild_hours_from_fclm(taken_by=login_id)
     _XT_PREP_CACHE.clear()
     return jsonify({"ok": True, **result})
@@ -7177,7 +7236,8 @@ def fclm_sync_settings_save():
     values = {"enabled": request.form.get("enabled") == "1"}
     if request.form.get("hours_source") in db.FCLM_HOURS_SOURCES:
         values["hours_source"] = request.form.get("hours_source")
-    for field, low, high in (("backfill_days", 1, 400), ("days_per_run", 1, 14)):
+    for field, low, high in (("backfill_days", 1, 400), ("days_per_run", 1, 14), ("concurrency", 1, 8),
+                             ("detail_days", 28, 400)):
         raw = (request.form.get(field) or "").strip()
         if raw:
             try:
@@ -8188,7 +8248,8 @@ def ld_settings():
         fclm_status=db.fclm_sync_status() if tab == "data" else None,
         fclm_ppr_map=db.get_fclm_ppr_map() if tab == "data" else {},
         fclm_areas=db.learn_area_departments(login_id) if tab == "data" else {},
-        fclm_coverage=db.fclm_history_coverage() if tab == "data" else 0,
+        fclm_coverage=db.fclm_history_coverage(db.get_fclm_sync_settings()["backfill_days"]) if tab == "data" else 0,
+        fclm_weeks=db.fclm_weeks_supported() if tab == "data" else None,
         floor_reader_version=_floor_reader_version() if tab == "data" else None,
         planning_kinds=XT_PLANNING_KINDS,
         weekdays=db.WEEKDAYS,

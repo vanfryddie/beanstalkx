@@ -78,13 +78,22 @@ with sync_playwright() as p:
     pg.goto("about:blank")
     pg.add_script_tag(content=harness("headerIndex", "gridIndex", "unitsKey", "functionNameFor", "parseRollup",
                                       "cleanStation", "numberAt", "ownText", "pprNumber", "parsePPR",
-                                      "parseRosterPage", "pprDayUrl", "rosterPageUrl", "pad", "fclmDate", "rollupUrl"))
+                                      "parseRosterPage", "pprDayUrl", "rosterPageUrl", "pad", "fclmDate", "rollupUrl",
+                                      "activePaths", "reportSpan", "rollupWeekUrl"))
     rollup = pg.evaluate("(h) => parseRollup(h, {key: 'each_stp', label: 'Each StP'})", ROLLUP)
     old = pg.evaluate("(h) => parseRollup(h, {key: 'pick', label: 'Pick'})", OLD_ROLLUP)
     ppr = pg.evaluate("(h) => parsePPR(h)", PPR)
     roster = pg.evaluate("(h) => parseRosterPage(h)", ROSTER)
     urls = pg.evaluate("""() => ({ppr: pprDayUrl('SCN2', '2026-11-26'), roster: rosterPageUrl('SCN2'),
         rollup: rollupUrl('SCN2', '1003016', new Date('2026-11-26T06:00'), new Date('2026-11-27T06:00'))})""")
+    gate = pg.evaluate("""() => activePaths([
+        {key: 'dock', process_id: '1003010'}, {key: 'idle', process_id: '1003063'},
+        {key: 'unknown', process_id: '1999999'}, {key: 'padded', process_id: '01003010'}],
+        [{process_ids: ['1003010', '1003063'], hours: 0}, {process_ids: ['1003010'], hours: 7.5},
+         {process_ids: ['1003063'], hours: 0}])""")
+    spans = pg.evaluate("""(h) => [reportSpan(h), reportSpan(h.replace('| Day 2026/11/27', '| Week 2026/11/22')),
+                                   reportSpan('<html>no header</html>')]""", ROLLUP)
+    week_url = pg.evaluate("() => rollupWeekUrl('SCN2', '1003016', '2026-08-09')")
     b.close()
 
 want = expected_rollup()
@@ -125,6 +134,13 @@ check("by header, not class: the shift pattern is not the Exempt flag the page a
 check("with login, id, start date and management area", roster[0]["user_id"] == "zqanna"
       and roster[0]["employee_id"] == "900000001" and roster[0]["start_date"] == "2026/01/27"
       and roster[0]["management_area_id"] == "18")
+check("a process path the PPR shows no hours on is skipped, not read", gate["skipped"] == ["idle"], gate)
+check("one with hours is read, and so is one the PPR does not mention",
+      [p["key"] for p in gate["read"]] == ["dock", "unknown", "padded"], gate["read"])
+check("a report's own header says what span it covers",
+      spans[0] == {"span": "day", "start": "2026-11-27"} and spans[1] == {"span": "week", "start": "2026-11-22"}
+      and spans[2] is None, spans)
+check("a week is asked for as a week", "spanType=Week" in week_url and "startDateWeek=2026%2F08%2F09" in week_url)
 check("the PPR is asked for one whole day", "spanType=Day" in urls["ppr"] and "startDateDay=2026%2F11%2F26" in urls["ppr"])
 check("the roster asks for every column the sync reads",
       all(c.replace(" ", "+") in urls["roster"] for c in ("Shift+Pattern", "User+ID", "Employee+ID")))
@@ -143,10 +159,12 @@ db.init_db()
 
 def wipe():
     conn = db.get_db()
-    for table in ("employee_roster", "associate_day", "process_volume", "fclm_sync_log", "xt_hours", "shift_calendar"):
+    for table in ("employee_roster", "associate_day", "associate_week", "process_volume", "fclm_sync_log",
+                  "xt_hours", "shift_calendar"):
         conn.execute(f"DELETE FROM {table}")
-    conn.execute("DELETE FROM app_settings WHERE key IN (?, ?, ?)",
-                 ("fclm_sync_settings", "fclm_ppr_map", "xt_function_process_map"))
+    conn.execute("DELETE FROM app_settings WHERE key IN (?, ?, ?, ?, ?)",
+                 ("fclm_sync_settings", "fclm_ppr_map", "xt_function_process_map", "fclm_week_state",
+                  "fclm_area_departments"))
     conn.commit()
     conn.close()
 
@@ -448,6 +466,63 @@ check("the settings form saves the source and the area map", db.get_fclm_sync_se
 r = c.post("/fclm/sync/settings", data={"enabled": "1", "rebuild_hours": "1"}, follow_redirects=True)
 check("and 'rebuild now' rebuilds whatever the setting", "Hours on Function rebuilt from FCLM" in r.get_data(as_text=True))
 
+print("\n3c. Older history, a week at a time")
+wipe()
+db.set_current_site(SITE)
+db.record_fclm_roster(roster, taken_by="test")
+first_daily = db.fclm_daily_start()
+check("days are read on their own back to a week boundary near the detail limit",
+      first_daily.weekday() == 6 and 98 <= (date.today() - first_daily).days < 105, first_daily)
+due_days = db.fclm_due_days()
+check("so the plan's days never reach past it", all(d["date"] >= first_daily.isoformat() for d in due_days))
+weeks = db.fclm_due_weeks()
+check("and the weeks before it are planned as weeks, newest first, touching the boundary",
+      weeks and weeks[0]["week_start"] == (first_daily - timedelta(days=7)).isoformat()
+      and weeks[0]["week_start"] > weeks[-1]["week_start"], weeks[:2])
+wk = weeks[0]["week_start"]
+week_rows = [{"employee_id": r["employee_id"], "function_name": r["function_name"], "paid_hours": 10.0, "units": 1000}
+             for r in rollup]
+res = db.record_fclm_week(wk, week_rows, [{"span": "week", "start": wk}], [], taken_by="test")
+conn = db.get_db()
+stored_week = [dict(x) for x in conn.execute("SELECT * FROM associate_week").fetchall()]
+conn.close()
+check("a week FCLM confirms as a week is stored as one", res["status"] == "complete" and stored_week
+      and all(x["week_start"] == wk for x in stored_week), res)
+check("and the site is marked as answering week spans", db.fclm_weeks_supported() is True)
+check("and coverage counts it as seven days", db.fclm_history_coverage(180) == 7)
+c2 = (date.fromisoformat(wk) - timedelta(days=7)).isoformat()
+res = db.record_fclm_week(c2, week_rows, [{"span": "day", "start": c2}], [], taken_by="test")
+check("a 'week' that comes back as a day is not stored as a week", res["status"] == "unsupported")
+check("and the site goes back to reading every day", db.fclm_weeks_supported() is False and not db.fclm_due_weeks()
+      and len(db.fclm_due_days()) == db.get_fclm_sync_settings()["days_per_run"])
+db.set_app_setting("fclm_week_state", json.dumps({"supported": True, "weekday": 6}), "test")
+db.set_app_setting("fclm_area_departments", json.dumps({"18": "Pack Singles", "3": "RSP", "2": "Receive"}), "test")
+asof = date.today() - timedelta(days=1)
+conn = db.get_db()
+conn.execute("INSERT INTO associate_day (work_date, shift, employee_login, process, units, hours, source) VALUES "
+             "(?,?,?,?,?,?,?)", ((asof - timedelta(days=5)).isoformat(), "early", "zqanna", "Stow Each Nike", 10, 4, "fclm"))
+conn.execute("INSERT INTO associate_week (week_start, employee_login, process, units, hours, source) VALUES (?,?,?,?,?,?)",
+             (first_daily.isoformat(), "zqanna", "Stow Each Nike", 10, 50, "fclm"))     # overlaps the daily range
+conn.commit()
+conn.close()
+derived, _ = db.derive_hours_on_function()
+anna = next(r for r in derived if r["employee login"] == "zqanna" and r["Merged Functions"] == "Stow Each Nike")
+week_hours = sum(x["hours"] for x in stored_week if x["employee_login"] == "zqanna" and x["process"] == "Stow Each Nike")
+check("weeks before the daily range add to the 180-day total, not to the 60-day one",
+      anna["Total_Hours_60"] == 4 and anna["Total_Hours_180"] == 4 + week_hours, anna)
+check("and a week that overlaps the daily range is not counted on top of its days",
+      anna["Total_Hours_180"] < 4 + week_hours + 50)
+r = client().post("/fclm/sync/week", json={"week_start": "2001-01-07", "rows": []})
+check("a week outside the window is refused", r.status_code == 400)
+r = client().post("/fclm/sync/week", json={"week_start": weeks[1]["week_start"], "rows": week_rows,
+                                           "spans": [{"span": "week", "start": weeks[1]["week_start"]}],
+                                           "timing": {"reports": 3, "ms": 4500, "bytes": 3000000, "seconds": 2.1,
+                                                      "evil": "<script>"}})
+check("the week route stores a week, with its timings and nothing else", r.status_code == 200
+      and r.get_json()["status"] == "complete" and r.get_json()["timing"] == {"reports": 3, "ms": 4500,
+                                                                             "bytes": 3000000, "seconds": 2.1},
+      r.get_json())
+
 print("\n4. The whole loop, in a browser")
 wipe()
 db.set_current_site(SITE)
@@ -473,8 +548,14 @@ window.__synced = new Promise(function (resolve) {
 window.GM_xmlhttpRequest = function (opts) {
   window.__fclmAsked.push(opts.url);
   var body = '<html><body>nothing here</body></html>';
-  if (opts.url.indexOf('functionRollup') >= 0 && opts.url.indexOf('processId=1003016') >= 0) body = window.__fx.rollup;
-  else if (opts.url.indexOf('processPathRollup') >= 0) body = window.__fx.ppr;
+  var week = /startDateWeek=(\\d{4})%2F(\\d{2})%2F(\\d{2})/.exec(opts.url);
+  if (opts.url.indexOf('functionRollup') >= 0 && opts.url.indexOf('processId=1003016') >= 0)
+    body = week ? window.__fx.rollup.replace('| Day 2026/11/27', '| Week ' + week[1] + '/' + week[2] + '/' + week[3])
+                : window.__fx.rollup;
+  else if (opts.url.indexOf('processPathRollup') >= 0) body = window.__fx.ppr.replace('</tbody>',
+    '<tr class="lineItem"><td class="lineItemName"><div><a onmouseover="firePopup(\\'VRET\\',\\'1003034#1003056#\\',\\'x\\');">' +
+    'VRET Idle</a></div></td><td class="unitType">EACH</td><td class="actualVolume numeric"><div class="original">0</div></td>' +
+    '<td class="numeric actualTimeSeconds"><div class="original">0</div></td></tr></tbody>');
   else if (opts.url.indexOf('employeeRoster') >= 0) body = window.__fx.roster;
   setTimeout(function () { opts.onload({responseText: body, status: 200}); }, 120);
 };
@@ -534,15 +615,25 @@ conn = db.get_db()
 stored = conn.execute("SELECT COUNT(*) AS n FROM associate_day").fetchone()["n"]
 logins = {x["employee_login"] for x in conn.execute("SELECT DISTINCT employee_login FROM associate_day").fetchall()}
 synced_days = conn.execute("SELECT COUNT(*) AS n FROM fclm_sync_log WHERE kind = 'day' AND status = 'complete'").fetchone()["n"]
+synced_weeks = conn.execute("SELECT COUNT(*) AS n FROM fclm_sync_log WHERE kind = 'week' AND status = 'complete'").fetchone()["n"]
+week_rows_stored = conn.execute("SELECT COUNT(*) AS n FROM associate_week").fetchone()["n"]
 rostered = conn.execute("SELECT COUNT(*) AS n FROM employee_roster").fetchone()["n"]
 conn.close()
 check("it read the roster first, so the day's people could be named", rostered == 6, rostered)
-check("then the due days, each stored complete", synced_days == len(done.get("days") or []) >= 1, (synced_days, done))
+results = [x for x in (done.get("days") or []) if x]
+check("then the due days and weeks, each stored complete", synced_days >= 1 and synced_weeks >= 1
+      and synced_days + synced_weeks == len(results), (synced_days, synced_weeks, len(results)))
+check("weeks are stored as weeks", week_rows_stored > 0 and db.fclm_weeks_supported() is True, week_rows_stored)
 check("and the people in them", logins >= {"zqanna", "zqbert"} and stored > 0, logins)
-check("it asked FCLM for one rollup per process per day, one PPR per day, and the roster once",
+skipped = sum(len(x.get("skipped") or []) for x in results)
+check("it read each PPR first, and skipped the process paths it showed no work on",
+      skipped > 0 and all("each_stp" not in (x.get("skipped") or []) for x in results), skipped)
+check("so FCLM was asked for one PPR per day or week, one rollup per working path, and the roster once",
       sum("employeeRoster" in u for u in asked) == 1
-      and sum("processPathRollup" in u for u in asked) == synced_days
-      and sum("functionRollup" in u for u in asked) == synced_days * len(db.get_floor_processes()), len(asked))
+      and sum("processPathRollup" in u for u in asked) == len(results)
+      and sum("functionRollup" in u for u in asked) == len(results) * len(db.get_floor_processes()) - skipped,
+      (len(asked), skipped))
+check("and each read reports what it cost", all((x.get("timing") or {}).get("reports") for x in results))
 check("and nothing but FCLM", all(u.startswith("https://fclm-portal.amazon.com/") for u in asked))
 
 wipe()

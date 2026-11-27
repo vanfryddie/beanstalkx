@@ -13,15 +13,18 @@
     <button type="button" class="btn btn-gold btn-sm" id="fclmSyncNow">Sync now</button>
   </div>
   <div class="fsync-stats">
-    <span><strong>{{ f.complete }}</strong> of {{ f.window_days }} days stored{% if f.newest_complete %} · newest {{ f.newest_complete }}{% endif %}</span>
+    <span><strong>{{ fclm_coverage }}</strong> of {{ f.settings.backfill_days }} days of history stored{% if f.newest_complete %} · newest {{ f.newest_complete }}{% endif %}
+      <span class="xi-dim">({{ f.complete }} read day by day{% if fclm_weeks is sameas false %}; FCLM does not answer week spans here, so every day is read{% else %}, the older history by week{% endif %})</span></span>
     {% if f.partial %}<span class="fsync-warn">{{ f.partial | length }} incomplete ({{ f.partial[:3] | join(', ') }}{{ '…' if f.partial | length > 3 }}) — read again on the next run</span>{% endif %}
-    {% if f.missing %}<span>{{ f.missing }} still to read, {{ f.settings.days_per_run }} per run</span>{% endif %}
+    {% if fclm_coverage < f.settings.backfill_days %}<span>{{ f.settings.backfill_days - fclm_coverage }} days still to read, {{ f.settings.days_per_run }} days or weeks per run</span>{% endif %}
     <span>Trained status: {% if f.settings.hours_source == 'upload' %}from the LDMT upload{% elif f.settings.hours_source == 'fclm' or fclm_coverage >= 177 %}derived from FCLM hours{% else %}from the upload until 180 days are stored ({{ fclm_coverage }} so far){% endif %}</span>
     <span>Roster: {% if f.roster %}{{ f.roster.status }} {{ f.roster.sync_date }}{% if f.roster.status == 'complete' %} · {{ '{:,}'.format(f.roster.row_count or 0) }} people{% elif f.roster.status == 'refused' %} — the page returned {{ f.roster_detail.received }} people against {{ f.roster_detail.current }} on record, so the roster was kept{% endif %}{% else %}not read yet{% endif %}</span>
   </div>
   {% if f.latest %}
   {% set d = f.latest_detail %}
   <p class="fsync-detail">Last day read, {{ f.latest.sync_date }}: {{ d.people or 0 }} people on {{ d.processes or 0 }} processes.
+    {% if d.timing and d.timing.reports %}It took {{ d.timing.seconds }} s: {{ d.timing.reports }} reports from FCLM at
+    {{ ((d.timing.ms / d.timing.reports) / 1000) | round(1) }} s each, {{ ((d.timing.bytes or 0) / 1048576) | round(1) }} MB{% if d.timing.skipped %}, {{ d.timing.skipped }} quiet process paths skipped{% endif %}.{% endif %}
     {% if d.unresolved_ids %}{{ d.unresolved_ids }} FCLM employee id(s) not on the roster were left out.{% endif %}
     {% if d.no_shift %}{{ d.no_shift }} person(s) with no shift pattern were left out.{% endif %}
     {% if d.failed %}Not read: {{ d.failed | join(', ') }}.{% endif %}
@@ -35,7 +38,9 @@
     <form method="POST" action="{{ url_for('fclm_sync_settings_save') }}" class="xs-config">
       <label class="fsync-check"><input type="checkbox" name="enabled" value="1" {{ 'checked' if f.settings.enabled }}> Sync daily</label>
       <label>Days of history to keep filled <input type="number" name="backfill_days" min="1" max="120" value="{{ f.settings.backfill_days }}"></label>
-      <label>Days read per run <input type="number" name="days_per_run" min="1" max="14" value="{{ f.settings.days_per_run }}"></label>
+      <label>Days (or weeks) read per run <input type="number" name="days_per_run" min="1" max="14" value="{{ f.settings.days_per_run }}"></label>
+      <label>Reports read at once <input type="number" name="concurrency" min="1" max="8" value="{{ f.settings.concurrency }}" title="More is faster, and more load on FCLM"></label>
+      <label>Read day by day for the last (days) <input type="number" name="detail_days" min="28" max="400" value="{{ f.settings.detail_days }}" title="Older history is read a week at a time"></label>
       <label>Trained status from
         <select name="hours_source">
           <option value="auto" {{ 'selected' if f.settings.hours_source == 'auto' }}>FCLM once 180 days are stored (now {{ fclm_coverage }})</option>

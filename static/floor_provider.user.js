@@ -45,6 +45,7 @@
     var FCLM_PLAN_URL = '__LDIS_FCLM_PLAN__';
     var FCLM_DAY_URL = '__LDIS_FCLM_DAY__';
     var FCLM_ROSTER_URL = '__LDIS_FCLM_ROSTER__';
+    var FCLM_WEEK_URL = '__LDIS_FCLM_WEEK__';
     var state = { running: false, lastRun: 0 };
 
     function log() {
@@ -1026,40 +1027,119 @@
     var syncState = { running: false };
     var SYNC_EVERY_MS = 30 * 60 * 1000;
 
-    function syncDay(plan, day) {
-        var from = new Date(day.window_start);
-        var to = new Date(day.window_end);
-        var rows = [];
-        var failed = [];
-        var done = 0;
-        announce({ phase: 'fclm-day', date: day.date, done: 0, total: plan.processes.length });
-        return runPooled(plan.processes, 3, function (process) {
-            return fetchText(rollupUrl(plan.warehouse_id, process.process_id, from, to))
-                .then(function (html) {
-                    parseRollup(html, process).forEach(function (r) {
-                        rows.push({
-                            employee_id: r.employee_id, process_key: process.key,
-                            process_id: process.process_id, function_name: r.function_name,
-                            paid_hours: r.paid_hours, units: r.units, unit_type: r.unit_type
-                        });
-                    });
-                })
-                .catch(function (e) { log('fclm rollup failed', process.key, e); failed.push(process.key); })
-                .then(function () {
-                    done += 1;
-                    announce({ phase: 'fclm-day', date: day.date, done: done, total: plan.processes.length });
-                });
-        }).then(function () {
-            return fetchText(pprDayUrl(plan.warehouse_id, day.date))
-                .then(parsePPR)
-                .catch(function (e) { log('fclm ppr failed', e); failed.push('ppr'); return []; });
-        }).then(function (ppr) {
-            return postJson(FCLM_DAY_URL, {
-                date: day.date, window_start: day.window_start, window_end: day.window_end,
-                rows: rows, ppr: ppr, failed: failed, reader_version: READER_VERSION
-            });
+    /* A fetch that also records how long FCLM took and how much it sent,
+       so the console can show where a slow sync spends its time. */
+    function timedFetch(url, stats) {
+        var t0 = Date.now();
+        return fetchText(url).then(function (text) {
+            var ms = Date.now() - t0;
+            stats.reports += 1;
+            stats.ms += ms;
+            stats.bytes += (text || '').length;
+            if (ms > stats.slowest_ms) { stats.slowest_ms = ms; stats.slowest = url.split('?')[0].split('/').pop(); }
+            return text;
         });
     }
+
+    function rollupWeekUrl(warehouseId, processId, weekStart) {
+        return 'https://fclm-portal.amazon.com/reports/functionRollup?reportFormat=HTML'
+            + '&warehouseId=' + encodeURIComponent(warehouseId)
+            + '&processId=' + encodeURIComponent(processId)
+            + '&spanType=Week&startDateWeek=' + encodeURIComponent(weekStart.replace(/-/g, '/'));
+    }
+
+    function pprWeekUrl(warehouseId, weekStart) {
+        return 'https://fclm-portal.amazon.com/reports/processPathRollup?reportFormat=HTML'
+            + '&warehouseId=' + encodeURIComponent(warehouseId)
+            + '&spanType=Week&startDateWeek=' + encodeURIComponent(weekStart.replace(/-/g, '/'))
+            + '&employmentType=AllEmployees';
+    }
+
+    /* The span a report actually covers, from its own header line —
+       "SCN2 | Stow to Prime[1003016] | Day 2026/11/27". A week read is
+       only stored as a week if FCLM says it is one: asking for a span it
+       does not honour would otherwise file one day's hours as a week's. */
+    function reportSpan(html) {
+        var m = /\|\s*(Day|Week|Month|Intraday)\s+(\d{4})\/(\d{2})\/(\d{2})/.exec(html || '');
+        return m ? { span: m[1].toLowerCase(), start: m[2] + '-' + m[3] + '-' + m[4] } : null;
+    }
+
+    /* Which process paths did any work, from the Process Path Rollup:
+       every line item names the paths behind it, so a path whose every
+       line shows no hours had nobody on it, and its rollup — a couple of
+       megabytes of FCLM's time — can be skipped. A path the PPR does not
+       mention at all is read anyway: no news is not proof of no work. */
+    function activePaths(processes, ppr) {
+        var known = {}, active = {};
+        (ppr || []).forEach(function (item) {
+            (item.process_ids || []).forEach(function (id) {
+                id = String(id).replace(/^0+/, '');
+                known[id] = true;
+                if ((item.hours || 0) > 0) active[id] = true;
+            });
+        });
+        var read = [], skipped = [];
+        processes.forEach(function (p) {
+            var id = String(p.process_id).replace(/^0+/, '');
+            if (known[id] && !active[id]) skipped.push(p.key); else read.push(p);
+        });
+        return { read: read, skipped: skipped };
+    }
+
+    function syncSpan(plan, unit) {
+        var isWeek = unit.kind === 'week';
+        var label = isWeek ? 'week of ' + unit.week_start : unit.date;
+        var rows = [], failed = [], spans = [];
+        var stats = { reports: 0, ms: 0, bytes: 0, slowest_ms: 0, slowest: null, skipped: 0 };
+        var started = Date.now();
+        var pprUrl = isWeek ? pprWeekUrl(plan.warehouse_id, unit.week_start) : pprDayUrl(plan.warehouse_id, unit.date);
+        announce({ phase: 'fclm-day', date: label, done: 0, total: plan.processes.length });
+        return timedFetch(pprUrl, stats)
+            .then(parsePPR)
+            .catch(function (e) { log('fclm ppr failed', e); failed.push('ppr'); return []; })
+            .then(function (ppr) {
+                var paths = activePaths(plan.processes, ppr);
+                stats.skipped = paths.skipped.length;
+                var done = paths.skipped.length;
+                announce({ phase: 'fclm-day', date: label, done: done, total: plan.processes.length });
+                return runPooled(paths.read, plan.concurrency || 5, function (process) {
+                    var url = isWeek ? rollupWeekUrl(plan.warehouse_id, process.process_id, unit.week_start)
+                        : rollupUrl(plan.warehouse_id, process.process_id, new Date(unit.window_start), new Date(unit.window_end));
+                    return timedFetch(url, stats)
+                        .then(function (html) {
+                            var span = reportSpan(html);
+                            if (span) spans.push(span);
+                            parseRollup(html, process).forEach(function (r) {
+                                rows.push({
+                                    employee_id: r.employee_id, process_key: process.key,
+                                    process_id: process.process_id, function_name: r.function_name,
+                                    paid_hours: r.paid_hours, units: r.units, unit_type: r.unit_type
+                                });
+                            });
+                        })
+                        .catch(function (e) { log('fclm rollup failed', process.key, e); failed.push(process.key); })
+                        .then(function () {
+                            done += 1;
+                            announce({ phase: 'fclm-day', date: label, done: done, total: plan.processes.length });
+                        });
+                }).then(function () {
+                    stats.seconds = Math.round((Date.now() - started) / 100) / 10;
+                    var body = { rows: rows, ppr: ppr, failed: failed, skipped: paths.skipped,
+                                 timing: stats, reader_version: READER_VERSION };
+                    if (isWeek) {
+                        body.week_start = unit.week_start;
+                        body.spans = spans;
+                        return postJson(FCLM_WEEK_URL, body);
+                    }
+                    body.date = unit.date;
+                    body.window_start = unit.window_start;
+                    body.window_end = unit.window_end;
+                    return postJson(FCLM_DAY_URL, body);
+                });
+            });
+    }
+
+    function syncDay(plan, day) { return syncSpan(plan, { kind: 'day', date: day.date, window_start: day.window_start, window_end: day.window_end }); }
 
     function fclmDailySync(force) {
         if (syncState.running) return Promise.resolve(null);
@@ -1089,6 +1169,13 @@
                         return syncDay(plan, day)
                             .then(function (result) { summary.days.push(result); })
                             .catch(function (e) { log('fclm day failed', day.date, e); });
+                    });
+                });
+                (plan.weeks || []).forEach(function (week) {
+                    chain = chain.then(function () {
+                        return syncSpan(plan, { kind: 'week', week_start: week.week_start })
+                            .then(function (result) { summary.days.push(result); })
+                            .catch(function (e) { log('fclm week failed', week.week_start, e); });
                     });
                 });
                 return chain.then(function () { return summary; });

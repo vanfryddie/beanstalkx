@@ -2513,6 +2513,16 @@ def init_db():
             plan_rate REAL,
             PRIMARY KEY (scenario_id, process, shift)
         );
+        CREATE TABLE IF NOT EXISTS associate_week (
+            week_start TEXT NOT NULL,
+            employee_login TEXT NOT NULL,
+            process TEXT NOT NULL,
+            units REAL,
+            hours REAL,
+            source TEXT,
+            uploaded_at TEXT,
+            PRIMARY KEY (week_start, employee_login, process)
+        );
         CREATE TABLE IF NOT EXISTS fclm_sync_log (
             sync_date TEXT NOT NULL,
             kind TEXT NOT NULL,
@@ -10855,8 +10865,12 @@ def load_planning_data(since=None):
 
 # 180 days of history, because the proficiency rule reads 180 days of
 # hours; six days a run so the first fill takes about thirty runs.
+# detail_days: how far back each day is read on its own. The replay and
+# the labour mix need days for a quarter; beyond that the history only
+# feeds the 180-day trained status, which a week-span read serves at a
+# seventh of the requests. concurrency: reports read from FCLM at once.
 FCLM_SYNC_DEFAULTS = {"enabled": True, "backfill_days": 180, "days_per_run": 6, "day_start": "06:00",
-                      "hours_source": "auto"}
+                      "hours_source": "auto", "detail_days": 98, "concurrency": 5}
 FCLM_HOURS_SOURCES = ("auto", "upload", "fclm")
 FCLM_ROSTER_SHRINK_LIMIT = 0.5
 
@@ -10871,6 +10885,8 @@ def get_fclm_sync_settings():
     settings["backfill_days"] = max(1, min(400, int(settings["backfill_days"] or 180)))
     if settings.get("hours_source") not in FCLM_HOURS_SOURCES:
         settings["hours_source"] = "auto"
+    settings["detail_days"] = max(28, min(400, int(settings.get("detail_days") or 98)))
+    settings["concurrency"] = max(1, min(8, int(settings.get("concurrency") or 5)))
     settings["days_per_run"] = max(1, min(14, int(settings["days_per_run"] or 3)))
     if not re.match(r"^\d{1,2}:\d{2}$", str(settings.get("day_start") or "")):
         settings["day_start"] = FCLM_SYNC_DEFAULTS["day_start"]
@@ -10928,7 +10944,10 @@ def fclm_due_days(today=None):
         "SELECT sync_date FROM fclm_sync_log WHERE kind = 'day' AND status = 'complete'").fetchall()}
     conn.close()
     due = []
-    for back in range(1, settings["backfill_days"] + 1):
+    daily_back = settings["backfill_days"]
+    if fclm_weeks_supported() is not False:
+        daily_back = min(daily_back, (today - fclm_daily_start(today)).days)
+    for back in range(1, daily_back + 1):
         day = (today - timedelta(days=back)).isoformat()
         if day in done:
             continue
@@ -11016,7 +11035,7 @@ def fclm_plan_rate(process_ids, ppr, manual_items=None):
     return (round(rate, 2) if rate else None), best.get("name")
 
 
-def record_fclm_day(day, rows, ppr, failed, taken_by=None):
+def record_fclm_day(day, rows, ppr, failed, taken_by=None, timing=None, skipped=None):
     """Store one operating day read from FCLM as associate day and
     process day, replacing whatever an earlier read of that day stored.
 
@@ -11101,7 +11120,8 @@ def record_fclm_day(day, rows, ppr, failed, taken_by=None):
     failed = [str(f)[:60] for f in (failed or [])][:50]
     detail = {"failed": failed, "unresolved_ids": len(unresolved), "no_shift": len(no_shift),
               "unmapped_functions": sorted(unmapped)[:30], "no_plan_rate": sorted(no_plan)[:30],
-              "people": len({k[1] for k in work}), "processes": len({k[1] for k in by_process})}
+              "people": len({k[1] for k in work}), "processes": len({k[1] for k in by_process}),
+              "timing": timing or {}, "skipped": list(skipped or [])[:60]}
     status = "complete" if not failed and rows else ("partial" if rows else "empty")
     _fclm_log(conn, day, "day", status, len(work), detail, taken_by)
     conn.commit()
@@ -11319,8 +11339,10 @@ def fclm_history_coverage(days=180, today=None):
     conn = get_db()
     n = conn.execute("SELECT COUNT(*) AS n FROM fclm_sync_log WHERE kind = 'day' AND status = 'complete' "
                      "AND sync_date >= ? AND sync_date < ?", (since, today.isoformat())).fetchone()["n"]
+    weeks = conn.execute("SELECT COUNT(*) AS n FROM fclm_sync_log WHERE kind = 'week' AND status = 'complete' "
+                         "AND sync_date >= ?", ((today - timedelta(days=days + 6)).isoformat(),)).fetchone()["n"]
     conn.close()
-    return n
+    return min(days, n + 7 * weeks)
 
 
 def _name_key(name):
@@ -11342,10 +11364,27 @@ def derive_hours_on_function(today=None):
     areas = get_area_departments()
     conn = get_db()
     roster = {r["employee_login"]: dict(r) for r in conn.execute("SELECT * FROM employee_roster").fetchall()}
-    work = conn.execute(
+    work = [dict(r) for r in conn.execute(
         "SELECT employee_login, process, work_date, SUM(hours) AS hours FROM associate_day "
         "WHERE work_date >= ? AND work_date <= ? GROUP BY employee_login, process, work_date",
-        (since, asof.isoformat())).fetchall()
+        (since, asof.isoformat())).fetchall()]
+    # Weeks read as weeks stand in for the days before the daily range.
+    # Only weeks wholly before it count, so no day is counted twice; a
+    # week is dated by its middle, so it falls inside a 180-day window
+    # when most of it does — the far edge of the window is exact to
+    # within half a week, which moves nobody across 20 hours unless they
+    # were already within a few of it.
+    first_daily = min((w["work_date"] for w in work), default=asof.isoformat())
+    first_daily = min(first_daily, fclm_daily_start(today).isoformat())
+    for w in conn.execute("SELECT week_start, employee_login, process, hours FROM associate_week "
+                          "WHERE week_start < ?", (first_daily,)).fetchall():
+        start = date.fromisoformat(w["week_start"])
+        if (start + timedelta(days=6)).isoformat() >= first_daily:
+            continue
+        middle = start + timedelta(days=3)
+        if middle.isoformat() >= since:
+            work.append({"employee_login": w["employee_login"], "process": w["process"],
+                         "work_date": middle.isoformat(), "hours": w["hours"]})
     conn.close()
     managers = {}
     for login, r in roster.items():
@@ -11429,3 +11468,110 @@ def rebuild_hours_from_fclm(taken_by=None, force=False, today=None):
     conn.commit()
     conn.close()
     return {"status": "complete", **report}
+
+
+
+# ---- weekly history ------------------------------------------------------
+
+def fclm_weeks_supported():
+    """None until FCLM has answered a week-span request, then whether it
+    honoured it. A site whose FCLM ignores spanType=Week goes back to
+    reading every day, which is slower but right."""
+    raw = get_app_setting("fclm_week_state")
+    if not raw:
+        return None
+    try:
+        return bool(json.loads(raw).get("supported"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def fclm_week_weekday():
+    """The weekday FCLM's weeks start on (Monday 0 … Sunday 6), as its
+    reports have said; Sunday until one has."""
+    try:
+        return int(json.loads(get_app_setting("fclm_week_state") or "{}").get("weekday", 6))
+    except (ValueError, AttributeError, TypeError):
+        return 6
+
+
+def fclm_daily_start(today=None):
+    """The first day read on its own: the detail limit, moved back to the
+    start of FCLM's week, so the weeks before it and the days after it
+    meet without a gap or an overlap."""
+    today = today or date.today()
+    edge = today - timedelta(days=get_fclm_sync_settings()["detail_days"])
+    return edge - timedelta(days=(edge.weekday() - fclm_week_weekday()) % 7)
+
+
+def fclm_due_weeks(today=None):
+    """Week-span reads still due, newest first: every week before the
+    daily range that reaches into the backfill window."""
+    if fclm_weeks_supported() is False:
+        return []
+    settings = get_fclm_sync_settings()
+    today = today or date.today()
+    first_daily = fclm_daily_start(today)
+    oldest = today - timedelta(days=settings["backfill_days"])
+    conn = get_db()
+    done = {r["sync_date"] for r in conn.execute(
+        "SELECT sync_date FROM fclm_sync_log WHERE kind = 'week' AND status = 'complete'").fetchall()}
+    conn.close()
+    weeks, start = [], first_daily - timedelta(days=7)
+    while start + timedelta(days=6) >= oldest and len(weeks) < settings["days_per_run"]:
+        if start.isoformat() not in done:
+            weeks.append({"week_start": start.isoformat()})
+        start -= timedelta(days=7)
+    return weeks
+
+
+def record_fclm_week(requested_start, rows, spans, failed, timing=None, skipped=None, taken_by=None):
+    """One week of FCLM history, read as a week. Stored only if every
+    rollup said it covered a week; the first time FCLM answers with
+    something else, weeks are switched off for the site and the days are
+    read one by one instead."""
+    spans = [x for x in (spans or []) if isinstance(x, dict)]
+    conn = get_db()
+    if spans and any(x.get("span") != "week" for x in spans):
+        set_app_setting("fclm_week_state", json.dumps({"supported": False}), taken_by or "system")
+        _fclm_log(conn, requested_start, "week", "unsupported", 0,
+                  {"spans": sorted({x.get("span") for x in spans if x.get("span")})}, taken_by)
+        conn.commit()
+        conn.close()
+        return {"week_start": requested_start, "status": "unsupported"}
+    actual = spans[0].get("start") if spans else requested_start
+    if spans:
+        weekday = date.fromisoformat(actual).weekday()
+        set_app_setting("fclm_week_state", json.dumps({"supported": True, "weekday": weekday}), taken_by or "system")
+    conn.close()
+    people = fclm_people()
+    canonical = _fclm_process_names()
+    mapping = get_function_process_map()
+    totals, unresolved = defaultdict(lambda: [0.0, 0.0]), set()
+    for row in rows:
+        emp = str(row.get("employee_id") or "").strip().lstrip("0")
+        hours = _as_number(row.get("paid_hours")) or 0.0
+        if not emp or hours <= 0:
+            continue
+        person = people.get(emp)
+        if not person:
+            unresolved.add(emp)
+            continue
+        function = (row.get("function_name") or "").strip()
+        process = canonical.get(function.lower()) or mapping.get(function.lower()) or function or "unknown"
+        totals[(person[0], process)][0] += _as_number(row.get("units")) or 0.0
+        totals[(person[0], process)][1] += hours
+    conn = get_db()
+    now = _now()
+    conn.execute("DELETE FROM associate_week WHERE week_start = ?", (actual,))
+    for (login, process), (units, hours) in totals.items():
+        conn.execute("INSERT INTO associate_week (week_start, employee_login, process, units, hours, source, uploaded_at) "
+                     "VALUES (?,?,?,?,?,?,?)", (actual, login, process, round(units, 2), round(hours, 2), "fclm", now))
+    failed = [str(f)[:60] for f in (failed or [])][:50]
+    status = "complete" if not failed else "partial"
+    detail = {"failed": failed, "unresolved_ids": len(unresolved), "people": len({k[0] for k in totals}),
+              "week_start": actual, "timing": timing or {}, "skipped": list(skipped or [])[:60]}
+    _fclm_log(conn, requested_start, "week", status, len(totals), detail, taken_by)
+    conn.commit()
+    conn.close()
+    return {"week_start": requested_start, "status": status, "rows": len(totals), **detail}

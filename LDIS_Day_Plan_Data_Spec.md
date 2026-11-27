@@ -452,3 +452,24 @@ picks what the standards are judged on: the past (the replay), the
 The language model does not produce volumes. It explains the verdicts,
 told whether the shifts were past or planned, and its sentences go
 through the same number check.
+
+
+## How long the sync takes, and why (27 Nov)
+
+Each report is a few megabytes of HTML that FCLM builds on request, so
+time is FCLM's, not the browser's. Three things keep it down:
+
+- **The Process Path Rollup is read first.** Process paths it shows no
+  hours on are not read: no rollup request for a path nobody worked.
+  A path it does not mention is read anyway.
+- **Five reports at a time** (setting: 1–8).
+- **Older history is read a week at a time.** Days are read one by one
+  for the last 98 days (setting), back to the start of FCLM's week;
+  before that, one week-span report per process path replaces seven
+  daily ones. That history only feeds the 180-day trained status. A
+  week is stored only if FCLM's report header says it covered a week;
+  if FCLM answers with anything else, weeks are switched off and every
+  day is read.
+
+The Data Upload card shows each read's cost: reports, seconds, megabytes,
+and paths skipped.
