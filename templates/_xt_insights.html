@@ -140,10 +140,9 @@
 <div class="dash-empty dash-empty-page">
   <strong>No cross-training census has been stored yet.</strong>
   <p style="margin:8px 0 0; font-size:13px; color:var(--text-lo); max-width:68ch;">
-    Each Hours-on-Function upload replaces the last one, so this page keeps a small rollup of
-    every import to measure movement against. The first one is taken on the next upload from
-    <a href="{{ url_for('ld_settings', tab='data') }}">Manage source data</a>, and the recap
-    fills in from there.
+    Trained status is rebuilt from FCLM after every sync and replaces what was there, so this page
+    keeps a small rollup — one a day — to measure movement against. The first one is taken on the
+    next <a href="{{ url_for('ld_settings', tab='data') }}">FCLM sync</a>, and the recap fills in from there.
   </p>
 </div>
 {% endif %}

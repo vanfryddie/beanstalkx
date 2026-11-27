@@ -632,12 +632,14 @@ SECTIONS = {
 # Overview — it's just sourced some other way, not through manual upload.
 UPLOADABLE_SECTIONS = ["compliance_safety", "planning_de_tech", "planning_indirect_roles", "planning_bts"]
 
-# CSV import specifically also offers xt_hours (a different table shape —
-# long-format proficiency data, not a tracked_items compliance record) —
-# it's CSV-only, so it's kept out of UPLOADABLE_SECTIONS (which also
-# drives the single-record manual-entry form and the per-section Clear
-# buttons, neither of which make sense for that shape of data).
-CSV_IMPORT_SECTIONS = UPLOADABLE_SECTIONS + ["xt_hours"]
+# CSV import once also offered xt_hours, the LDMT Hours on Function
+# export. It no longer does: xt_hours is built from the FCLM history
+# (rebuild_hours_from_fclm) and from nowhere else, so every page that
+# reads trained status, hours on a process or home department — the
+# standards, retention, ambassador readiness — reads FCLM. An upload
+# beside the sync would be overwritten by the next sync, or worse,
+# would quietly win until it was.
+CSV_IMPORT_SECTIONS = list(UPLOADABLE_SECTIONS)
 
 PLANNING_SECTIONS = ["planning_compliance", "planning_de_tech", "planning_indirect_roles", "planning_bts"]
 TRAINING_SECTIONS = ["training_learn", "training_curiosity", "training_compliance_self"]
@@ -3364,10 +3366,14 @@ def xt_hours_freshness():
     conn = get_db()
     row = conn.execute("SELECT COUNT(*) n FROM xt_hours").fetchone()
     up = conn.execute(
-        "SELECT uploaded_at FROM uploads WHERE section='xt_hours' ORDER BY uploaded_at DESC LIMIT 1"
+        "SELECT uploaded_at, filename FROM uploads WHERE section='xt_hours' ORDER BY uploaded_at DESC LIMIT 1"
     ).fetchone()
     conn.close()
-    return {"n": row["n"], "ts": up["uploaded_at"] if up else None}
+    # Whether what the pages read today came from FCLM or is an LDMT
+    # file left from before the upload was removed: a site that has not
+    # synced yet still has one, and the sync card says so.
+    return {"n": row["n"], "ts": up["uploaded_at"] if up else None,
+            "from_fclm": bool(up and (up["filename"] or "").startswith(FCLM_HOURS_FILENAME))}
 
 
 def reset_xt_hours():
@@ -4733,6 +4739,17 @@ def record_xt_rollup(conn, filename=None, taken_by=None):
     than one census and the question this answers — how many, where,
     trained and current — is a counting question."""
     cur = conn.cursor()
+    if filename == FCLM_HOURS_FILENAME:
+        # Rebuilt from FCLM after every sync, which during a backfill is
+        # every few minutes: one census a day — the day's latest — is the
+        # movement Insights measures, and dozens would bury it.
+        today = _now()[:10]
+        old = [r["id"] for r in conn.execute(
+            "SELECT id FROM xt_rollup_snapshots WHERE filename = ? AND taken_at >= ?",
+            (filename, today)).fetchall()]
+        for snapshot in old:
+            conn.execute("DELETE FROM xt_rollup_counts WHERE snapshot_id = ?", (snapshot,))
+            conn.execute("DELETE FROM xt_rollup_snapshots WHERE id = ?", (snapshot,))
     cur.execute(
         "INSERT INTO xt_rollup_snapshots (taken_at, filename, row_count, taken_by) "
         "VALUES (?,?,?,?)",
@@ -10898,8 +10915,7 @@ def load_planning_data(since=None):
 # feeds the 180-day trained status, which a week-span read serves at a
 # seventh of the requests. concurrency: reports read from FCLM at once.
 FCLM_SYNC_DEFAULTS = {"enabled": True, "backfill_days": 180, "days_per_run": 6, "day_start": "06:00",
-                      "hours_source": "auto", "detail_days": 98, "concurrency": 5}
-FCLM_HOURS_SOURCES = ("auto", "upload", "fclm")
+                      "detail_days": 98, "concurrency": 5}
 FCLM_ROSTER_SHRINK_LIMIT = 0.5
 
 
@@ -10911,8 +10927,6 @@ def get_fclm_sync_settings():
     except (ValueError, AttributeError):
         pass
     settings["backfill_days"] = max(1, min(400, int(settings["backfill_days"] or 180)))
-    if settings.get("hours_source") not in FCLM_HOURS_SOURCES:
-        settings["hours_source"] = "auto"
     settings["detail_days"] = max(28, min(400, int(settings.get("detail_days") or 98)))
     settings["concurrency"] = max(1, min(8, int(settings.get("concurrency") or 5)))
     settings["days_per_run"] = max(1, min(14, int(settings["days_per_run"] or 3)))
@@ -11224,10 +11238,17 @@ def fclm_sync_status(today=None):
     detail = json.loads(latest["detail"]) if latest and latest.get("detail") else {}
     roster = logs.get((today.isoformat(), "roster")) or next(
         (v for (d, k), v in sorted(logs.items(), reverse=True) if k == "roster"), None)
+    conn = get_db()
+    hours_build = conn.execute("SELECT * FROM fclm_sync_log WHERE kind = 'hours' "
+                               "ORDER BY sync_date DESC, taken_at DESC LIMIT 1").fetchone()
+    conn.close()
+    hours_build = dict(hours_build) if hours_build else None
     return {"settings": settings, "window_days": len(window), "complete": len(complete),
             "partial": partial, "missing": len(window) - len(complete) - len(partial),
             "newest_complete": complete[0] if complete else None, "latest": latest, "latest_detail": detail,
-            "roster": roster, "roster_detail": json.loads(roster["detail"]) if roster and roster.get("detail") else {}}
+            "roster": roster, "roster_detail": json.loads(roster["detail"]) if roster and roster.get("detail") else {},
+            "hours": hours_build, "hours_detail": json.loads(hours_build["detail"]) if hours_build and hours_build.get("detail") else {},
+            "hours_table": xt_hours_freshness()}
 
 
 
@@ -11454,26 +11475,38 @@ def derive_hours_on_function(today=None):
                   "asof": asof.isoformat()}
 
 
-def rebuild_hours_from_fclm(taken_by=None, force=False, today=None):
-    """Replace Hours on Function with the FCLM-derived version, when the
-    setting allows: always for "fclm", never for "upload", and for "auto"
-    once 180 days of complete history are stored — before that the
-    totals would be short, and someone trained four months ago would read
-    as Lapsed for want of the days not yet read. At most once a day."""
-    settings = get_fclm_sync_settings()
-    today = today or date.today()
-    source = settings["hours_source"]
-    coverage = fclm_history_coverage(HOURS_WINDOWS[-1], today)
-    if source == "upload" and not force:
-        return {"status": "skipped", "reason": "Hours on Function comes from uploads (setting)"}
-    if source == "auto" and coverage < HOURS_WINDOWS[-1] - 3 and not force:
-        return {"status": "waiting", "reason": f"{coverage} of 180 days of FCLM history stored", "coverage": coverage}
+FCLM_HOURS_FILENAME = "FCLM-derived Hours on Function"
+
+
+def _fclm_data_mark():
+    """What FCLM data is stored, as one comparable value: how many days,
+    weeks and rosters have been read and when the latest was. Trained
+    status is rebuilt whenever this moves, not once a day."""
     conn = get_db()
-    done = conn.execute("SELECT status FROM fclm_sync_log WHERE kind = 'hours' AND sync_date = ?",
-                        (today.isoformat(),)).fetchone()
+    row = conn.execute("SELECT COUNT(*) AS n, MAX(taken_at) AS latest FROM fclm_sync_log "
+                       "WHERE kind IN ('day', 'week', 'roster') AND status = 'complete'").fetchone()
     conn.close()
-    if done and done["status"] == "complete" and not force:
-        return {"status": "done today"}
+    return f"{row['n'] or 0}|{row['latest'] or ''}"
+
+
+def rebuild_hours_from_fclm(taken_by=None, force=False, today=None):
+    """Replace the trained-status table (xt_hours, laid out like the old
+    LDMT Hours on Function export) with the version derived from FCLM.
+
+    FCLM is its only source. It used to wait, on the default setting,
+    until 180 days of history were stored, keeping the last LDMT upload
+    until then — and at six days a run that took a day or more of a
+    browser left open, during which every standard, retention figure and
+    ambassador readiness tile read the old file and looked as though it
+    never updated. Now it is rebuilt whenever new FCLM data has arrived.
+    With under 180 days stored the 90- and 180-day totals are short, so
+    some Practice and Refresh people read as Lapsed until the history is
+    filled; the report says how many days it had, and the sync card shows it."""
+    today = today or date.today()
+    coverage = fclm_history_coverage(HOURS_WINDOWS[-1], today)
+    mark = _fclm_data_mark()
+    if not force and get_app_setting("fclm_hours_built_from") == mark:
+        return {"status": "up to date", "coverage": coverage}
     learn_area_departments(taken_by or "system")
     rows, report = derive_hours_on_function(today)
     conn = get_db()
@@ -11488,13 +11521,14 @@ def rebuild_hours_from_fclm(taken_by=None, force=False, today=None):
     writer = csv.DictWriter(out, fieldnames=header)
     writer.writeheader()
     writer.writerows(rows)
-    loaded = ingest_xt_hours_csv(out.getvalue().encode("utf-8"), "FCLM-derived Hours on Function",
+    loaded = ingest_xt_hours_csv(out.getvalue().encode("utf-8"), FCLM_HOURS_FILENAME,
                                  uploaded_by=taken_by)
     report.update(coverage=coverage, loaded=loaded)
     conn = get_db()
     _fclm_log(conn, today.isoformat(), "hours", "complete", loaded, report, taken_by)
     conn.commit()
     conn.close()
+    set_app_setting("fclm_hours_built_from", mark, taken_by or "system")
     return {"status": "complete", **report}
 
 

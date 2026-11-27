@@ -65,6 +65,7 @@
     <a href="{{ url_for('ld_settings', tab='data') }}#planning-data">Settings → Data Upload</a>, or switch on
     <strong>Sample data</strong> above to see how it works.</p>
 </div>
+{% include "_xt_policies.html" %}
 {% include "_xt_labour_mix.html" %}
 {% else %}
 {% set r = v.result %}
@@ -283,6 +284,8 @@
 </article>
 {% endif %}
 
+{% include "_xt_policies.html" %}
+
 {% if can_manage_xt %}
 <details class="xi-more" id="xs-config">
   <summary>Configuration</summary>
@@ -292,10 +295,6 @@
     <label>Default window (weeks) <input type="number" name="window_weeks" min="2" max="52" step="1" value="{{ v.settings.window_weeks }}"></label>
     <label>Training hours a person <input type="number" name="default_train_hours" min="1" max="400" step="1" value="{{ v.settings.default_train_hours | round | int }}"></label>
     <label>Protect pools this many weeks before a season <input type="number" name="protect_weeks" min="0" max="26" step="1" value="{{ v.settings.protect_weeks }}"></label>
-    <label class="xs-wide">Staffing policies, one per line: who may staff a process. "home" means its own department only;
-      "dept:" applies to every process a department owns.
-      <textarea name="policies" rows="5" placeholder="SPP = Pack Singles&#10;Rebin = home&#10;dept:Ship Dock = home">{{ v.settings.policy_text }}</textarea>
-      {% if v.unmatched_policies %}<span class="xm-below">Not in the data, so doing nothing: {{ v.unmatched_policies | join(', ') }}</span>{% endif %}</label>
     <label class="xs-wide">Seasons, one per line, month-day to month-day. "protect" holds every cross-training pool on and before it.
       <textarea name="seasons" rows="2" placeholder="Peak = 11-20 to 01-03 protect">{{ v.settings.season_text }}</textarea></label>
     <label class="xs-wide">FCLM function → process, one per line (for associate-day files that only carry FCLM names)

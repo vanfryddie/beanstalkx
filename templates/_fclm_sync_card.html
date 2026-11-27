@@ -17,7 +17,11 @@
       <span class="xi-dim">({{ f.complete }} read day by day{% if fclm_weeks is sameas false %}; FCLM does not answer week spans here, so every day is read{% else %}, the older history by week{% endif %})</span></span>
     {% if f.partial %}<span class="fsync-warn">{{ f.partial | length }} incomplete ({{ f.partial[:3] | join(', ') }}{{ '…' if f.partial | length > 3 }}) — read again on the next run</span>{% endif %}
     {% if fclm_coverage < f.settings.backfill_days %}<span>{{ f.settings.backfill_days - fclm_coverage }} days still to read, {{ f.settings.days_per_run }} days or weeks per run</span>{% endif %}
-    <span>Trained status: {% if f.settings.hours_source == 'upload' %}from the LDMT upload{% elif f.settings.hours_source == 'fclm' or fclm_coverage >= 177 %}derived from FCLM hours{% else %}from the upload until 180 days are stored ({{ fclm_coverage }} so far){% endif %}</span>
+    {% set hb = f.hours_detail %}
+    <span>Trained status: {% if f.hours_table.from_fclm %}from FCLM{% if f.hours %}, rebuilt {{ (f.hours.taken_at or '')[:16].replace('T', ' ') }}{% if hb.people %} · {{ '{:,}'.format(hb.people) }} people{% endif %}{% endif %}
+      {% if fclm_coverage < 177 %}<span class="fsync-warn">· on {{ fclm_coverage }} of 180 days: until the history is filled, some people trained 2–6 months ago read as Lapsed</span>{% endif %}
+      {% elif f.hours_table.n %}<span class="fsync-warn">still the last LDMT upload — replaced on the first sync that brings FCLM history</span>{% else %}none yet — built on the first sync{% endif %}
+      {% if hb.areas_without_department %}<span class="fsync-warn">· management areas with no department (map them below): {{ hb.areas_without_department | join(', ') }}</span>{% endif %}</span>
     <span>Roster: {% if f.roster %}{{ f.roster.status }} {{ f.roster.sync_date }}{% if f.roster.status == 'complete' %} · {{ '{:,}'.format(f.roster.row_count or 0) }} people{% elif f.roster.status == 'refused' %} — the page returned {{ f.roster_detail.received }} people against {{ f.roster_detail.current }} on record, so the roster was kept{% endif %}{% else %}not read yet{% endif %}</span>
   </div>
   {% if f.latest %}
@@ -29,7 +33,7 @@
     {% if d.no_shift %}{{ d.no_shift }} person(s) with no shift pattern were left out.{% endif %}
     {% if d.failed %}Not read: {{ d.failed | join(', ') }}.{% endif %}
     {% if d.no_plan_rate %}No planned rate found for: {{ d.no_plan_rate | join(', ') }} — map them below.{% endif %}
-    {% if d.unmapped_functions %}FCLM functions stored under their own name (not a Hours on Function process): {{ d.unmapped_functions | join(', ') }}.{% endif %}</p>
+    {% if d.unmapped_functions %}FCLM functions stored under their own name (not a known process): {{ d.unmapped_functions | join(', ') }}.{% endif %}</p>
   {% endif %}
   <p class="fsync-script" id="fclmScript">Looking for the LDIS Floor Sync script in this browser…</p>
   <p class="fsync-status" id="fclmSyncStatus" aria-live="polite"></p>
@@ -37,25 +41,19 @@
     <summary>Sync settings</summary>
     <form method="POST" action="{{ url_for('fclm_sync_settings_save') }}" class="xs-config">
       <label class="fsync-check"><input type="checkbox" name="enabled" value="1" {{ 'checked' if f.settings.enabled }}> Sync daily</label>
-      <label>Days of history to keep filled <input type="number" name="backfill_days" min="1" max="120" value="{{ f.settings.backfill_days }}"></label>
+      <label>Days of history to keep filled <input type="number" name="backfill_days" min="1" max="400" value="{{ f.settings.backfill_days }}"></label>
       <label>Days (or weeks) read per run <input type="number" name="days_per_run" min="1" max="14" value="{{ f.settings.days_per_run }}"></label>
       <label>Reports read at once <input type="number" name="concurrency" min="1" max="8" value="{{ f.settings.concurrency }}" title="More is faster, and more load on FCLM"></label>
       <label>Read day by day for the last (days) <input type="number" name="detail_days" min="28" max="400" value="{{ f.settings.detail_days }}" title="Older history is read a week at a time"></label>
-      <label>Trained status from
-        <select name="hours_source">
-          <option value="auto" {{ 'selected' if f.settings.hours_source == 'auto' }}>FCLM once 180 days are stored (now {{ fclm_coverage }})</option>
-          <option value="fclm" {{ 'selected' if f.settings.hours_source == 'fclm' }}>FCLM now, whatever is stored</option>
-          <option value="upload" {{ 'selected' if f.settings.hours_source == 'upload' }}>The LDMT upload</option>
-        </select></label>
       <label>Day starts at (when the calendar cannot say) <input type="text" name="day_start" value="{{ f.settings.day_start }}" pattern="\d{1,2}:\d{2}"></label>
       <label class="xs-wide">Planned rate overrides — PPR line item = process, one per line (only where the automatic match is wrong or missing)
         <textarea name="ppr_map" rows="3" placeholder="Pack Singles - Total = Pack Singles">{% for k, p in fclm_ppr_map.items() %}{{ k }} = {{ p }}
 {% endfor %}</textarea></label>
-      <label class="xs-wide">Management area = home department, one per line (learned from Hours on Function where it can be; correct any that are wrong)
+      <label class="xs-wide">Management area = home department, one per line (learned once from the old Hours on Function data where it could be; correct any that are wrong)
         <textarea name="area_map" rows="4">{% for k, d in fclm_areas.items() | sort %}{{ k }} = {{ d }}
 {% endfor %}</textarea></label>
       <label class="fsync-check"><input type="checkbox" name="resync" value="1"> Read every day in the window again</label>
-      <label class="fsync-check"><input type="checkbox" name="rebuild_hours" value="1"> Rebuild Hours on Function from FCLM now</label>
+      <label class="fsync-check"><input type="checkbox" name="rebuild_hours" value="1"> Rebuild trained status from FCLM now</label>
       <div><button class="btn btn-gold btn-sm" type="submit">Save</button></div>
     </form>
     <p class="xi-note">Needs the <a href="{{ url_for('floor_userscript') }}">LDIS Floor Sync</a> userscript (version 1.3 or later)

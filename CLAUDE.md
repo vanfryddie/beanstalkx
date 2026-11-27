@@ -112,7 +112,11 @@ without pruning, and says so. Every removal is reported in the upload's own
 message — this is the only place the app deletes data on its own, and it is
 never silent.
 
-`xt_hours` and the IR tables are full-replace instead. `org_map` is a
+`xt_hours` and the IR tables are full-replace instead. **`xt_hours` has
+one writer: `rebuild_hours_from_fclm`.** The LDMT Hours on Function
+upload was removed. Every page that reads trained status, proficiency,
+hours on a process or home department, ambassador readiness included,
+therefore reads FCLM. Do not add another way to write it. `org_map` is a
 deliberately accumulating lookup that nothing clears, so it must never be
 used to answer "is this person still here" — `logins_in_current_data()`
 reads only the tables an upload replaces or prunes.
@@ -168,9 +172,14 @@ holds a Midway session.
   button on L&D Settings. A test that injects the script by hand cannot
   see that; `test_fclm_sync.py` checks the served @match lines against
   the pages the sync is used from.
-- Hours on Function can be **derived from FCLM** (`db.rebuild_hours_from_fclm`):
+- Trained status is **derived from FCLM only** (`db.rebuild_hours_from_fclm`):
   the proficiency formula over 60/90/180-day hours, written in the LDMT
   layout and loaded through `ingest_xt_hours_csv`.
+  - It is rebuilt whenever the FCLM data moves (`_fclm_data_mark`), after
+    day, week and roster syncs.
+  - It once waited for 180 days of history, during which every page read a
+    stale LDMT file and looked frozen. Do not bring that wait back.
+  - Insights keeps one census a day of it.
 - **Scenarios** (`xt_planning.scenario_days`) are judged by the same
   rules as the replay, on future days played against past same weekdays.
   The forecast is a small graded model, not an LLM.
@@ -182,8 +191,11 @@ Configured on the model tab (Evaluation settings), parsed by
 uses `DEFAULT_POLICIES` / `DEFAULT_SEASONS`; an empty saved value means
 cleared and must stay cleared.
 
-- **Staffing policies**: `SPP = Pack Singles`, `Rebin = home`,
-  `dept:Ship Dock = home`. A forbidden source contributes nobody, the
+- **Staffing policies**: `SPP = Pack Singles`, `Rebin = Chutings`,
+  `Induct = Chutings` (AFE is Chutings in FCLM's names),
+  `dept:Ship Dock = home`. They are shown to everyone on the model tab
+  (`_xt_policies.html`) and edited there by rule or as text
+  (`/model/policies`). A forbidden source contributes nobody, the
   alternatives and the day plan's lenders are limited to allowed
   departments, and a home-only process gets `home_only`. That verdict
   means remove the standard; when the home team is short it also gives a

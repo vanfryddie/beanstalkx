@@ -656,7 +656,7 @@
   <div class="panel-row">
     <div class="panel">
       <h2 class="panel-title">Import a CSV</h2>
-      <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">Columns: employee_login, full_name, fc, am_login, subcategory, status, due_date, value, notes (extras ignored). For "Safety Training Compliance", "DE Technical Briefing", "BTS Compliance", and "Cross-Training — Hours on Function", upload the exports as-is — their own columns (Emp Login / Employee Login / employee login / Login, Detailed Topic / Technical Briefing / Merged Functions / Course Name, Expiry Date In Use / Refresher needed / Trained Status / Training Recommendation Date, Supervisor Login / Supervisor / supervisor login / Manager Login, Shift Pattern / shift / Shift Code, etc.) are read directly.</p>
+      <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">Columns: employee_login, full_name, fc, am_login, subcategory, status, due_date, value, notes (extras ignored). For "Safety Training Compliance", "DE Technical Briefing", and "BTS Compliance", upload the exports as-is — their own columns (Emp Login / Employee Login / employee login / Login, Detailed Topic / Technical Briefing / Merged Functions / Course Name, Expiry Date In Use / Refresher needed / Trained Status / Training Recommendation Date, Supervisor Login / Supervisor / supervisor login / Manager Login, Shift Pattern / shift / Shift Code, etc.) are read directly.</p>
       <form method="POST" action="{{ url_for('data_upload') }}" enctype="multipart/form-data">
         <input type="hidden" name="mode" value="csv">
         <div class="field">
@@ -699,16 +699,13 @@
 
   <div class="panel">
     <h2 class="panel-title">Current data set</h2>
-    <p style="color:var(--text-lo); font-size:13.5px;">{{ freshness.n or 0 }} rows imported via CSV so far{% if freshness.ts %}, last import {{ freshness.ts[:16].replace('T',' ') }} UTC{% endif %}. Cross-Training data: {{ xt_freshness.n or 0 }} rows{% if xt_freshness.ts %}, last import {{ xt_freshness.ts[:16].replace('T',' ') }} UTC{% endif %} — each upload fully replaces it (a census, not a delta). Manually-added single records aren't counted in the totals above but do feed the scorecards.</p>
+    <p style="color:var(--text-lo); font-size:13.5px;">{{ freshness.n or 0 }} rows imported via CSV so far{% if freshness.ts %}, last import {{ freshness.ts[:16].replace('T',' ') }} UTC{% endif %}. Cross-training trained status: {{ xt_freshness.n or 0 }} rows{% if xt_freshness.ts %}, built {{ xt_freshness.ts[:16].replace('T',' ') }} UTC{% endif %}{% if xt_freshness.from_fclm %} from FCLM{% elif xt_freshness.n %} — still the last LDMT upload, until the FCLM sync has history to replace it{% endif %}. Manually-added single records aren't counted in the totals above but do feed the scorecards.</p>
     <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;">
       {% for key, label in upload_sections.items() %}
       <form method="POST" action="{{ url_for('data_reset', section=key) }}" onsubmit="return confirm('Clear all records in {{ label }}?');">
         <button class="btn btn-danger btn-sm" type="submit">Clear {{ label }}</button>
       </form>
       {% endfor %}
-      <form method="POST" action="{{ url_for('data_reset', section='xt_hours') }}" onsubmit="return confirm('Clear all Cross-Training hours-on-function data?');">
-        <button class="btn btn-danger btn-sm" type="submit">Clear Cross-Training — Hours on Function</button>
-      </form>
     </div>
   </div>
 

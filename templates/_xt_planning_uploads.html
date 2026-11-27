@@ -6,7 +6,7 @@
 <div class="panel" id="planning-data">
   <h2 class="panel-title">Cross-training planning data</h2>
   <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">
-    The five files behind <a href="{{ url_for('cross_training', tab='model') }}">Cross Training → Cross Learning Model</a>.
+    The five inputs behind <a href="{{ url_for('cross_training', tab='model') }}">Cross Training → Cross Learning Model</a>.
     Column names are read case-insensitively, and the exports can be uploaded as they come.
     The full description is in <code>LDIS_Day_Plan_Data_Spec.md</code>.
   </p>
@@ -24,12 +24,16 @@
           {% else %}Not loaded yet{% endif %}
         </span>
       </div>
+      {% if k.derived %}
+      <p class="xp-form xp-note">Rebuilt from FCLM after every sync — nothing to upload.</p>
+      {% else %}
       <form class="xp-form" method="POST" action="{{ url_for('xt_planning_upload') }}" enctype="multipart/form-data">
         <input type="hidden" name="kind" value="{{ k.key }}">
         <input type="file" name="file" accept=".csv" required aria-label="{{ k.label }} file">
         <button class="btn btn-gold btn-sm" type="submit">Upload</button>
         {% if k.template %}<a class="btn btn-ghost btn-sm" href="{{ url_for('xt_planning_template', kind=k.key) }}">Template</a>{% endif %}
       </form>
+      {% endif %}
     </div>
     {% endfor %}
   </div>

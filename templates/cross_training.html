@@ -8,7 +8,7 @@
 <h1 class="page-title">Cross-Training</h1>
 <p class="page-sub">
 {% if tab == 'directory' %}Look up a specific associate's trained processes, or see cross-training coverage by department and process — including anything happening outside the ten approved standards below.
-{% else %}Approved cross-training paths, target % of source headcount, and where actuals currently stand — recalculated live from the uploaded hours-on-function data.
+{% else %}Approved cross-training paths, target % of source headcount, and where actuals currently stand — recalculated live from trained status built from FCLM.
   Positive gaps mean you're ahead of target; negative means behind. Click a path name for all three shifts, or an Actuals number for just that shift.{% endif %}
 </p>
 
@@ -454,10 +454,10 @@
   <h2 class="panel-title" style="margin-bottom:10px;">What these terms actually mean</h2>
 
   <h3 style="font-size:13px; margin:0 0 4px;">Trained / Not Trained</h3>
-  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 14px;">Comes straight from the uploaded hours-on-function export's "Trained Status" column — this app doesn't calculate it from hours or apply any threshold of its own. Whatever the source system says (Trained or Not Trained) is what shows here, unchanged.</p>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 14px;">Worked out from FCLM hours on each process: Trained is Proficient, Practice or Refresh (20 hours or more in the last 60, 90 or 180 days), Not Trained is Lapsed. It is rebuilt after every FCLM sync.</p>
 
   <h3 style="font-size:13px; margin:0 0 4px;">Proficiency status (Proficient / Practice / Refresh / Lapsed)</h3>
-  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 6px;">Imported directly from the "Proficiency Status" column — this app doesn't decide which tier someone is in, that determination is made upstream. The actual upstream logic, a cascading check from the most recent window down:</p>
+  <p style="font-size:12.5px; color:var(--text-lo); margin:0 0 6px;">Worked out here from each person's FCLM hours on the process, with the same cascading rule the LDMT export used, checked from the most recent window down:</p>
   <pre style="font-size:12px; background:rgba(255,255,255,.05); border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:0 0 10px; overflow-x:auto;">ifelse(
     {Total_Hours_60} &gt;= 20, "Proficient",
     {Total_Hours_90} &gt;= 20, "Practice",

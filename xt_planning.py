@@ -354,9 +354,12 @@ def _days(prep, process, shift, sources, vet_rate, rates, scenario, keep_day=Non
 # -- context the arithmetic must respect: seasons and staffing policies --------
 
 # SCN2's own rules, as a manager wrote them: Smart Paper is staffed from
-# Pack Singles alone, Rebin and Induct by their home team only, and Ship
-# Dock takes no cross-trainees. Defaults a site edits, not facts.
-DEFAULT_POLICIES = "SPP = Pack Singles\nSmart Paper = Pack Singles\nRebin = home\nInduct = home\ndept:Ship Dock = home"
+# Pack Singles alone, Rebin and Induct from AFE alone, and Ship Dock
+# takes no cross-trainees. AFE is Chutings in FCLM's department names
+# (the standards reference in db.py maps it the same way). Defaults a
+# site edits, not facts.
+DEFAULT_POLICIES = ("SPP = Pack Singles\nSmart Paper = Pack Singles\nRebin = Chutings\nInduct = Chutings\n"
+                    "dept:Ship Dock = home")
 # Peak runs from 20 November into the new year. "protect" means no
 # cross-training pool is cut while it is on or in the weeks before it.
 DEFAULT_SEASONS = "Peak = 11-20 to 01-03 protect"
@@ -382,6 +385,34 @@ def parse_policies(text):
         allowed = [_key(x) for x in rest.split(",") if _key(x) and _key(x) != "home"]
         policies[f"{kind}:{_key(name)}"] = allowed
     return policies, bad
+
+
+def policy_rules(text):
+    """The policy lines as written, for showing and editing: each with
+    what it applies to (a process, or every process of a department) and
+    the departments allowed, in the user's own spelling. Unreadable
+    lines are kept as they are so an edit never loses them."""
+    rules = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, rest = line.partition("=")
+        name = name.strip()
+        if not sep or not name:
+            rules.append({"kind": None, "name": line, "allowed": [], "raw": line})
+            continue
+        kind = "dept" if name.lower().startswith("dept:") else "process"
+        name = name.split(":", 1)[1].strip() if kind == "dept" else name
+        allowed = [x.strip() for x in rest.split(",") if x.strip() and x.strip().lower() != "home"]
+        rules.append({"kind": kind, "name": name, "allowed": allowed, "raw": line})
+    return rules
+
+
+def format_policy(kind, name, allowed):
+    """One rule back into the line parse_policies reads."""
+    head = f"dept:{name}" if kind == "dept" else name
+    return f"{head} = {', '.join(allowed) if allowed else 'home'}"
 
 
 def parse_seasons(text):

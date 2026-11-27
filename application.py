@@ -5198,9 +5198,10 @@ XT_PLANNING_KINDS = [
     {"key": "roster", "source": "FCLM Employee Roster — synced daily", "label": "Employee roster", "export": "or upload the employeeList CSV",
      "grain": "one row per associate", "status": "roster",
      "detail": "Who is employed today, and on which shift pattern. Replaces the previous roster."},
-    {"key": "hours", "source": "Derived from FCLM hours once 180 days are stored — or upload", "label": "Hours on Function", "export": "LDMT Hours on Function CSV",
-     "grain": "one row per associate and function", "status": "hours",
-     "detail": "Home department, and who is trained on what. Replaces the previous file."},
+    {"key": "hours", "source": "Built from FCLM — no upload", "label": "Trained status", "export": "FCLM hours on each process, last 60/90/180 days",
+     "grain": "one row per associate and process", "status": "hours", "derived": True,
+     "detail": "Home department and proficiency (Proficient, Practice, Refresh, Lapsed), worked out from FCLM "
+               "after every sync. Every cross-training page and ambassador readiness reads this."},
     {"key": "calendar", "source": "Upload — the schedule is in SSPOT, not FCLM", "label": "Shift calendar", "export": "SSPOT Information CSV",
      "grain": "one row per shift cohort per working day", "status": "calendar",
      "detail": "Who is scheduled on which day, and for how long. Days are added or replaced; history is kept."},
@@ -5214,7 +5215,6 @@ XT_PLANNING_KINDS = [
 ]
 _XT_PLANNING_INGEST = {
     "roster": db.ingest_roster_csv,
-    "hours": db.ingest_xt_hours_csv,
     "calendar": db.ingest_shift_calendar_csv,
     "process_day": db.ingest_process_volume_csv,
     "associate_day": db.ingest_associate_day_csv,
@@ -5370,7 +5370,9 @@ def build_standards_view(scenario="general"):
             "shift": shift, "settings": settings, "status": status, "ready": ready or sample,
             "result": None, "rows": [], "changes": [], "day_plan": None, "departments": [],
             "llm_enabled": bedrock_client.enabled(), "basis": basis, "scenario": None,
-            "scenarios": db.list_scenarios(), "forecast": [], "editing": None}
+            "scenarios": db.list_scenarios(), "forecast": [], "editing": None,
+            "policy_rules": [], "policy_processes": [], "unmatched_policies": []}
+    view["policy_rules"] = _xt_policy_rules(settings["policy_text"])
     if not (ready or sample):
         return view
     # A scenario is judged on the longer window: its weekday profiles,
@@ -5419,6 +5421,8 @@ def build_standards_view(scenario="general"):
     # A policy naming a process or department the data does not have is
     # doing nothing; the configuration says so instead of letting it pass.
     view["unmatched_policies"] = xt_planning.unmatched_policies(prep, settings["policies"])
+    view["policy_rules"] = _xt_policy_rules(settings["policy_text"], prep)
+    view["policy_processes"] = sorted({n for n in prep.process_names.values() if n}, key=str.lower)
     view["departments"] = sorted({d for d in prep.departments.values() if d}, key=str.lower)
     by_process = {}
     for (process, s), cell in result["cells"].items():
@@ -5447,6 +5451,30 @@ def build_standards_view(scenario="general"):
     view["edit_start"], view["edit_weeks"] = start.isoformat(), weeks_ahead
     view["forecast"] = xt_planning.forecast_table(fprep, start=start, weeks=weeks_ahead)
     return view
+
+
+def _xt_policy_rules(text, prep=None):
+    """The staffing policies as a table: each rule, what it applies to,
+    who may staff it, and — when there is data to check against — the
+    department that owns it and whether the names exist at all. A rule
+    naming something the data does not have is doing nothing, and the
+    table says so rather than letting it look in force."""
+    rules = xt_planning.policy_rules(text)
+    for i, rule in enumerate(rules):
+        rule["index"] = i
+        rule["owner"], rule["known"], rule["unknown_departments"] = None, None, []
+        if prep is None or rule["kind"] is None:
+            continue
+        key = rule["name"].strip().lower()
+        if rule["kind"] == "process":
+            rule["known"] = key in prep.owner
+            owner = prep.owner.get(key)
+            rule["owner"] = prep.departments.get(owner, owner) if owner else None
+        else:
+            rule["known"] = key in prep.departments
+            rule["owner"] = prep.departments.get(key)
+        rule["unknown_departments"] = [d for d in rule["allowed"] if d.strip().lower() not in prep.departments]
+    return rules
 
 
 def _xt_learning_empty():
@@ -5843,6 +5871,74 @@ def _xt_ai_label(p):
             "hire": f"Hire {p.get('hire') or '?'}", "remove": "Remove standard"}[a]
 
 
+@application.route("/ld-management/cross-training/model/policies", methods=["POST"])
+def xt_policies_save():
+    """Add, replace or remove one staffing policy, or save them all as
+    text. Stored as the same lines the text editor shows, so either way
+    of editing sees the other's changes."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers "
+                     "can change the staffing policies.")
+    back_args = {"tab": "model"}
+    if request.form.get("sample") == "1":
+        back_args["sample"] = "1"
+    back = redirect(url_for("cross_training", **back_args) + "#xs-policies")
+    current = db.get_app_setting("xt_staffing_policies")
+    current = xt_planning.DEFAULT_POLICIES if current is None else current
+    rules = xt_planning.policy_rules(current)
+    action = request.form.get("action")
+    if action == "text":
+        text = (request.form.get("policies") or "").strip()
+        _parsed, bad = xt_planning.parse_policies(text)
+        if bad:
+            flash(f"Could not read {len(bad)} line(s): " + "; ".join(bad[:3])
+                  + ". A policy looks like 'SPP = Pack Singles', 'Rebin = home' or 'dept:Ship Dock = home'.", "warning")
+            return back
+        db.set_app_setting("xt_staffing_policies", text, updated_by=login_id)
+        flash("Staffing policies saved.", "success")
+        return back
+    if action == "remove":
+        try:
+            index = int(request.form.get("index"))
+        except (TypeError, ValueError):
+            index = -1
+        if not 0 <= index < len(rules):
+            flash("That policy is no longer there.", "warning")
+            return back
+        gone = rules.pop(index)
+        db.set_app_setting("xt_staffing_policies", "\n".join(r["raw"] for r in rules), updated_by=login_id)
+        flash(f"Removed: {gone['raw']}.", "success")
+        return back
+    if action == "add":
+        kind = "dept" if request.form.get("kind") == "dept" else "process"
+        name = (request.form.get("name") or "").strip()[:120]
+        if not name or "=" in name or "," in name:
+            flash("Name the process (or department) the policy is for.", "warning")
+            return back
+        allowed = []
+        if request.form.get("mode") != "home":
+            picked = request.form.getlist("departments") + (request.form.get("other") or "").split(",")
+            for d in picked:
+                d = d.strip()[:120]
+                if d and "=" not in d and d.lower() not in [a.lower() for a in allowed]:
+                    allowed.append(d)
+            if not allowed:
+                flash("Choose the departments allowed to staff it, or 'Home team only'.", "warning")
+                return back
+        line = xt_planning.format_policy(kind, name, allowed)
+        # One rule per process or department: a new one replaces the old.
+        kept = [r["raw"] for r in rules if not (r["kind"] == kind and r["name"].strip().lower() == name.lower())]
+        replaced = len(kept) < len(rules)
+        db.set_app_setting("xt_staffing_policies", "\n".join(kept + [line]), updated_by=login_id)
+        flash(("Replaced the policy for " if replaced else "Added: ") + (name if replaced else line) + ".", "success")
+        return back
+    flash("Nothing to change.", "warning")
+    return back
+
+
 @application.route("/ld-management/cross-training/model/scenario", methods=["POST"])
 def xt_scenario_save():
     """Save a scenario: planned units a day and planned rate per process
@@ -6050,6 +6146,9 @@ def xt_planning_upload():
     ingest = _XT_PLANNING_INGEST.get(kind)
     f = request.files.get("file")
     back = redirect(url_for("ld_settings", tab="data") + "#planning-data")
+    if kind == "hours":
+        flash("Trained status is built from FCLM after every sync; there is nothing to upload.", "warning")
+        return back
     if not ingest:
         flash("Choose which file this is.", "danger")
         return back
@@ -7539,8 +7638,8 @@ def fclm_sync_day():
     result = db.record_fclm_day(day.isoformat(), clean_rows, clean_ppr, failed, taken_by=login_id,
                                 timing=_fclm_timing(payload.get("timing")),
                                 skipped=[_floor_text(x, 60) for x in (payload.get("skipped") or [])[:60]])
-    # Hours on Function follows the history it is derived from; the
-    # setting and the 180-day coverage decide whether it is rebuilt yet.
+    # Trained status follows the history it is derived from: rebuilt as
+    # soon as a day arrives, so the standards and readiness move with it.
     result["hours"] = db.rebuild_hours_from_fclm(taken_by=login_id)
     _XT_PREP_CACHE.clear()
     return jsonify({"ok": True, **result})
@@ -7613,6 +7712,10 @@ def fclm_sync_roster():
     if len(rows) > 20000:
         return jsonify({"error": "too many rows"}), 413
     result = db.record_fclm_roster(rows, taken_by=login_id)
+    # Who is on the roster decides who has a trained status at all, and
+    # their home department: a new roster is a reason to rebuild it.
+    if result["status"] == "complete":
+        result["hours"] = db.rebuild_hours_from_fclm(taken_by=login_id)
     _XT_PREP_CACHE.clear()
     return jsonify({"ok": result["status"] == "complete", **result})
 
@@ -7626,8 +7729,6 @@ def fclm_sync_settings_save():
         return _deny("Only admins and trainers can change the FCLM sync.")
     back = redirect(url_for("ld_settings", tab="data") + "#fclm-sync")
     values = {"enabled": request.form.get("enabled") == "1"}
-    if request.form.get("hours_source") in db.FCLM_HOURS_SOURCES:
-        values["hours_source"] = request.form.get("hours_source")
     for field, low, high in (("backfill_days", 1, 400), ("days_per_run", 1, 14), ("concurrency", 1, 8),
                              ("detail_days", 28, 400)):
         raw = (request.form.get(field) or "").strip()
@@ -7667,7 +7768,7 @@ def fclm_sync_settings_save():
     if request.form.get("rebuild_hours"):
         result = db.rebuild_hours_from_fclm(taken_by=login_id, force=True)
         _XT_PREP_CACHE.clear()
-        flash(f"Hours on Function rebuilt from FCLM: {result.get('loaded', 0)} rows for "
+        flash(f"Trained status rebuilt from FCLM: {result.get('loaded', 0)} rows for "
               f"{result.get('people', 0)} people, as of {result.get('asof', '?')}."
               if result["status"] == "complete" else f"Nothing rebuilt: {result['status']}.",
               "success" if result["status"] == "complete" else "warning")
@@ -9864,8 +9965,6 @@ def data_upload():
                 result = db.ingest_de_tech_csv(f.read(), f.filename)
             elif section == "planning_bts":
                 result = db.ingest_bts_csv(f.read(), f.filename)
-            elif section == "xt_hours":
-                result = db.ingest_xt_hours_csv(f.read(), f.filename, uploaded_by=login_id)
             else:
                 result = db.ingest_items_csv(section, f.read(), f.filename)
             # The tracked_items imports return what they loaded and what
@@ -9948,10 +10047,10 @@ def ir_data_upload():
 def data_reset(section):
     if _effective_role() not in ADMIN_TIER_ROLES:
         return _deny("Uploading data is an L&D/Trainer function — you don't have access to it.")
-    if section == "xt_hours":
-        db.reset_xt_hours()
-        flash("Cleared all Cross-Training hours-on-function data.", "info")
-    elif section in db.UPLOADABLE_SECTIONS:
+    # Trained status (xt_hours) is not here: it is FCLM's, rebuilt after
+    # every sync, and clearing it would only blank every cross-training
+    # page until the next one.
+    if section in db.UPLOADABLE_SECTIONS:
         db.reset_section(section)
         flash(f"Cleared all records in {db.SECTIONS[section]}.", "info")
     return redirect(url_for("ld_settings", tab="data"))

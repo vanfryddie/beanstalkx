@@ -1,0 +1,74 @@
+{#- Staffing policies: who may staff a process at all, shown to everyone
+    who can see the model and edited by those who can change standards.
+    Shown whether or not there is data to replay, because a policy is a
+    decision about the floor, not a result of the data. -#}
+<section class="xs-card xs-policies" id="xs-policies">
+  <h3>Staffing policies</h3>
+  <p class="xs-sub">Who may staff a process at all. The replay, the recommendations, the AI's predictions and the day plan
+    all keep to these: a department not allowed contributes nobody, and a process staffed by its home team only gets no
+    cross-training standard. A process with no policy can be staffed by anyone trained on it.</p>
+  {% if v.policy_rules %}
+  <div class="dash-table-scroll">
+    <table class="xm-table xs-policy-table">
+      <thead><tr><th scope="col">Applies to</th><th scope="col">Who may staff it</th><th scope="col">Owned by</th>
+        {% if can_manage_xt %}<th scope="col"><span class="sr-only">Remove</span></th>{% endif %}</tr></thead>
+      <tbody>
+        {% for rule in v.policy_rules %}
+        <tr>
+          {% if rule.kind is none %}
+          <td colspan="3"><span class="xm-below">Not read:</span> <code>{{ rule.raw }}</code></td>
+          {% else %}
+          <th scope="row">{{ rule.name }}{% if rule.kind == 'dept' %} <span class="xm-dim">· every process it owns</span>{% endif %}
+            {% if rule.known is sameas false %}<span class="xs-policy-flag">not in the data — doing nothing</span>{% endif %}</th>
+          <td>{% if rule.allowed %}{{ rule.allowed | join(', ') }}{% if rule.kind == 'process' %} <span class="xm-dim">and its home team</span>{% endif %}{% else %}<strong>Home team only</strong>{% endif %}
+            {% if rule.unknown_departments %}<span class="xs-policy-flag">no department called {{ rule.unknown_departments | join(', ') }}</span>{% endif %}</td>
+          <td>{{ rule.owner or '—' }}</td>
+          {% endif %}
+          {% if can_manage_xt %}
+          <td class="num"><form method="POST" action="{{ url_for('xt_policies_save') }}">
+            <input type="hidden" name="action" value="remove"><input type="hidden" name="index" value="{{ rule.index }}">
+            {% if v.sample %}<input type="hidden" name="sample" value="1">{% endif %}
+            <button class="btn btn-ghost btn-sm" type="submit" aria-label="Remove the policy for {{ rule.name }}">Remove</button></form></td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="xs-sub"><strong>No staffing policies.</strong> Any department with trained people may staff any process.</p>
+  {% endif %}
+  {% if can_manage_xt %}
+  <details class="xs-policy-add" {{ 'open' if not v.policy_rules }}>
+    <summary>Add or change a policy</summary>
+    <form method="POST" action="{{ url_for('xt_policies_save') }}" class="xs-config">
+      <input type="hidden" name="action" value="add">
+      {% if v.sample %}<input type="hidden" name="sample" value="1">{% endif %}
+      <label>For <select name="kind"><option value="process">the process</option><option value="dept">every process of the department</option></select></label>
+      <label>Name <input type="text" name="name" required maxlength="120" list="xs-policy-names" placeholder="SPP"></label>
+      <datalist id="xs-policy-names">{% for p in v.policy_processes or [] %}<option value="{{ p }}">{% endfor %}{% for d in v.departments %}<option value="{{ d }}">{% endfor %}</datalist>
+      <fieldset class="xs-wide xs-policy-who"><legend>Who may staff it</legend>
+        <label><input type="radio" name="mode" value="home" checked> Home team only — no cross-trainees</label>
+        <label><input type="radio" name="mode" value="departments"> Only these departments:</label>
+        <div class="xs-policy-depts">
+          {% for d in v.departments %}<label><input type="checkbox" name="departments" value="{{ d }}"> {{ d }}</label>{% endfor %}
+          <label>Other <input type="text" name="other" maxlength="200" placeholder="Department, another"></label>
+        </div>
+      </fieldset>
+      <div><button class="btn btn-gold btn-sm" type="submit">Save policy</button>
+        <span class="xm-dim">A policy for a name that already has one replaces it.</span></div>
+    </form>
+  </details>
+  <details class="xs-policy-add">
+    <summary>Edit as text</summary>
+    <form method="POST" action="{{ url_for('xt_policies_save') }}" class="xs-config">
+      <input type="hidden" name="action" value="text">
+      {% if v.sample %}<input type="hidden" name="sample" value="1">{% endif %}
+      <label class="xs-wide">One per line. "home" means its own department only; "dept:" applies to every process a department owns.
+        <textarea name="policies" rows="6" placeholder="SPP = Pack Singles&#10;Rebin = Chutings&#10;dept:Ship Dock = home">{{ v.settings.policy_text }}</textarea></label>
+      <div><button class="btn btn-gold btn-sm" type="submit">Save</button></div>
+    </form>
+  </details>
+  {% endif %}
+</section>
+

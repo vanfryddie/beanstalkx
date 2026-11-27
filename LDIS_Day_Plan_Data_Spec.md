@@ -15,7 +15,7 @@ what each **associate** did on a day.
 |---|---|---|---|---|
 | 1 | Employee roster (`employeeList`) | associate | ✅ have | who is employed today, and on which shift pattern |
 | 1b | Shift calendar (`SSPOT_Information`) | shift pattern cohort × working day | ✅ have | who is scheduled on a date, and how long their shift is that day; a day off is a day with no row |
-| 2 | Hours on Function (`LDMT_Hours_on_Function`) | associate × function | ✅ have | home department, trained or not on each function, proficiency → who counts as a veteran or a cross-trainee for a process |
+| 2 | Trained status (once the LDMT `Hours_on_Function` export; now built from FCLM, no upload) | associate × function | ✅ from FCLM | home department, trained or not on each function, proficiency → who counts as a veteran or a cross-trainee for a process |
 | 3 | **Process day** | date × shift × process | ➕ new (extends today's volume upload) | volume, hours and plan for every process — the target process *and* every department that might lend people |
 | 4 | **Associate day** | date × shift × associate × process | ➕ new | who actually worked where and how fast → veteran vs cross-trainee rates, labour moves, and the mix on every past day |
 
@@ -358,7 +358,7 @@ session, so it cannot read FCLM on its own.
 | Roster | FCLM **Employee Roster** | once a day |
 | Associate day | FCLM **Function Rollup**, one request per process path the floor sweep covers | each past day, once |
 | Process day | the associate day summed, with the planned rate from FCLM **Process Path Rollup** | each past day, once |
-| Hours on Function | derived from the FCLM history (below) once 180 days are stored; uploaded until then | daily |
+| Trained status (Hours on Function) | derived from the FCLM history (below) — its only source | after every sync |
 | Shift calendar | still uploaded: the schedule is in SSPOT, not FCLM | weekly, with future weeks |
 
 **How a day is read.** One operating day runs from the usual start of
@@ -407,14 +407,29 @@ from FCLM:
 - **Manager:** the roster's manager name, matched to a login on the
   roster. An ambiguous name matches nobody.
 
-The rebuilt file goes through the upload's own importer, so exclusions,
-the Insights history and every page behave exactly as they do for an
-upload. Setting **Trained status from**: *auto* (the default) waits for
-180 days of complete history, because before then someone trained four
-months ago reads as Lapsed for want of days not yet read; *FCLM now*;
-or *the LDMT upload*. The sync's default history is therefore 180 days,
-six days per run. The first fill is about 5,000 requests to FCLM, spread
-over about thirty runs.
+The rebuilt file goes through the old upload's own importer, so
+exclusions, the Insights history and every page behave exactly as they
+did for an upload.
+
+**FCLM is the only source (27 Nov, later).** The LDMT upload, its Clear
+button and the *Trained status from* setting are gone. Trained status is
+rebuilt whenever new FCLM data arrives (a day, a week or a roster), not
+once a day and not after waiting for 180 days. That wait was why the
+standards, retention and ambassador readiness looked frozen. On the
+default setting they kept reading the last LDMT upload for the whole
+backfill, about thirty runs of a browser left open. Separately, the sync
+settings form capped "days of history" at 120 against a default of 180,
+so a browser refused to save the form at all.
+
+With under 180 days stored, the 90- and 180-day totals are short, so
+some people trained two to six months ago read as Lapsed until the
+history fills. The sync card shows how many days it is working from.
+Insights keeps one census a day, the day's latest, however often the
+table is rebuilt. A site whose table still holds an LDMT file keeps it
+only until the first sync that brings FCLM history; the Data Upload tab
+says which it is. The sync's default history is 180 days, six days per
+run. The first fill is about 5,000 requests to FCLM, spread over about
+thirty runs.
 
 Only the process paths the sync reads count. A function worked under a
 process path outside that list has no hours, so it derives as Lapsed.

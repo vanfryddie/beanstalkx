@@ -347,7 +347,7 @@ check("'read every day again' makes yesterday due again", DAY in [d["date"] for 
 html = c.get("/ld-management/settings?tab=data").get_data(as_text=True)
 check("the Data Upload tab shows the sync and where each file comes from",
       "Daily from FCLM" in html and "Sync now" in html and "synced daily" in html
-      and "Derived from FCLM hours" in html and "not FCLM" in html and "Trained status from" in html)
+      and "Built from FCLM — no upload" in html and "not FCLM" in html and "Trained status:" in html)
 served = c.get("/floor/provider.user.js").get_data(as_text=True)
 
 
@@ -422,32 +422,57 @@ check("the manager's login is found by name", by[("zqanna", "Pack Singles")]["su
       by[("zqanna", "Pack Singles")]["supervisor login"])
 check("an area with no department is reported", report["areas_without_department"] == [], report)
 
-db.set_fclm_sync_settings({"hours_source": "auto"}, "test")
-r = db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)
-check("on 'auto' it waits for 180 days of history before replacing the upload", r["status"] == "waiting", r)
-db.set_fclm_sync_settings({"hours_source": "upload"}, "test")
-check("on 'upload' it never replaces it", db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)["status"] == "skipped")
-db.set_fclm_sync_settings({"hours_source": "fclm"}, "test")
+# FCLM is the only source of trained status now: no setting holds it
+# back, and it does not wait for 180 days. It used to, and every page
+# that reads trained status sat on the last LDMT upload for the whole
+# backfill, looking as if the standards never updated.
+conn = db.get_db()
+conn.execute("DELETE FROM app_settings WHERE key = ?", ("fclm_hours_built_from",))
+conn.commit()
+conn.close()
 r = db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)
 conn = db.get_db()
 stored = {(x["employee_login"], x["merged_function"]): dict(x) for x in conn.execute("SELECT * FROM xt_hours").fetchall()}
 conn.close()
-check("on 'fclm' it rebuilds Hours on Function through the upload's own importer", r["status"] == "complete"
-      and len(stored) == len(rows), (r, len(stored)))
+check("trained status is rebuilt from FCLM straight away, short history or not, through the old importer",
+      r["status"] == "complete" and len(stored) == len(rows) and r["coverage"] < 177, (r.get("status"), len(stored)))
 check("and the pages read it as they read an upload: status, trained, hours, shift",
       stored[("zqbert", "Pack Singles")]["proficiency_status"] == "Practice"
       and stored[("zqbert", "Pack Singles")]["trained_status"] == "Trained"
       and stored[("zqbert", "Pack Singles")]["hours_90"] == 25 and stored[("zqbert", "Pack Singles")]["shift"] == "late")
-check("once a day", db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)["status"] == "done today")
+check("it says where it came from", db.xt_hours_freshness()["from_fclm"])
+check("with nothing new from FCLM it is not rebuilt again",
+      db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)["status"] == "up to date")
 conn = db.get_db()
-for d in range(1, 181):
-    conn.execute("INSERT INTO fclm_sync_log (sync_date, kind, status) VALUES (?,?,?) ON CONFLICT (sync_date, kind) "
-                 "DO UPDATE SET status = excluded.status", ((TODAY - timedelta(days=d)).isoformat(), "day", "complete"))
-conn.execute("DELETE FROM fclm_sync_log WHERE kind = 'hours'")
+conn.execute("INSERT INTO fclm_sync_log (sync_date, kind, status, taken_at) VALUES (?,?,?,?)",
+             ((TODAY - timedelta(days=1)).isoformat(), "day", "complete", "2999-01-01T00:00:00"))
 conn.commit()
 conn.close()
-db.set_fclm_sync_settings({"hours_source": "auto"}, "test")
-check("with 180 days stored, 'auto' rebuilds by itself", db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)["status"] == "complete")
+worked("zqdan", "Pack Singles", 1, 15)                                                   # now 25 in 60
+r = db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)
+conn = db.get_db()
+dan = conn.execute("SELECT proficiency_status FROM xt_hours WHERE employee_login = ? AND merged_function = ?",
+                   ("zqdan", "Pack Singles")).fetchone()
+conn.close()
+check("a new day from FCLM rebuilds it the same day, and someone's status moves with their hours",
+      r["status"] == "complete" and dan["proficiency_status"] == "Proficient", (r.get("status"), dict(dan or {})))
+import xt_planning
+prep = xt_planning.Prepared(db.load_planning_data(), today=TODAY)
+check("the cross-training standards read it: zqdan's FCLM hours make them trained on Pack Singles",
+      "zqdan" in prep.trained.get("pack singles", set()), sorted(prep.trained.get("pack singles", set())))
+db.add_ambassador_process_definition("Pack Singles", "Pack Singles", "test")
+hours = {p["process"]: p for p in db.get_ambassador_process_hours("zqanna", "Pack Singles")}
+check("and so does ambassador readiness: last-60-day hours on a tracked process come from FCLM",
+      hours.get("Pack Singles") and hours["Pack Singles"]["hours_60"] == 25, hours)
+conn = db.get_db()
+conn.execute("DELETE FROM ambassador_process_definitions WHERE department = ?", ("Pack Singles",))
+conn.commit()
+conn.close()
+conn = db.get_db()
+snaps = conn.execute("SELECT COUNT(*) AS n FROM xt_rollup_snapshots WHERE filename = ? AND taken_at >= ?",
+                     (db.FCLM_HOURS_FILENAME, db._now()[:10])).fetchone()["n"]
+conn.close()
+check("rebuilt twice today, Insights keeps one census for the day", snaps == 1, snaps)
 
 conn = db.get_db()
 conn.execute("DELETE FROM app_settings WHERE key = ?", ("fclm_area_departments",))
@@ -460,11 +485,23 @@ check("the area map is learned from Hours on Function where it is not set by han
       learned.get("18") == "Pack Singles" and learned.get("2") == "Receive", learned)
 check("and a mapping set by hand is kept", learned.get("3") == "RSP (by hand)")
 c = client()
-c.post("/fclm/sync/settings", data={"enabled": "1", "hours_source": "upload", "area_map": "18 = Pack Singles\n3 = RSP"})
-check("the settings form saves the source and the area map", db.get_fclm_sync_settings()["hours_source"] == "upload"
+c.post("/fclm/sync/settings", data={"enabled": "1", "backfill_days": "180", "area_map": "18 = Pack Singles\n3 = RSP"})
+check("the settings form saves 180 days of history and the area map", db.get_fclm_sync_settings()["backfill_days"] == 180
       and db.get_area_departments() == {"18": "Pack Singles", "3": "RSP"})
+r = c.get("/ld-management/settings?tab=data")
+html = r.get_data(as_text=True)
+check("and its form lets 180 days through (it once capped the field at 120, so the browser refused to save it)",
+      'name="backfill_days" min="1" max="400"' in html)
+check("there is no choice of source for trained status, and no upload for it",
+      'name="hours_source"' not in html and "Rebuilt from FCLM after every sync" in html
+      and "section='xt_hours'" not in html)
+check("the CSV import no longer offers Hours on Function", "xt_hours" not in db.CSV_IMPORT_SECTIONS
+      and '<option value="xt_hours"' not in html)
+r = c.post("/ld-management/cross-training/planning-data/upload", data={"kind": "hours"}, follow_redirects=True)
+check("and a posted Hours on Function file is refused with the reason",
+      "built from FCLM after every sync" in r.get_data(as_text=True))
 r = c.post("/fclm/sync/settings", data={"enabled": "1", "rebuild_hours": "1"}, follow_redirects=True)
-check("and 'rebuild now' rebuilds whatever the setting", "Hours on Function rebuilt from FCLM" in r.get_data(as_text=True))
+check("and 'rebuild now' rebuilds it", "Trained status rebuilt from FCLM" in r.get_data(as_text=True))
 
 print("\n3c. Older history, a week at a time")
 wipe()

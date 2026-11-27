@@ -845,6 +845,56 @@ db.set_current_site(SITE2)
 st = application._xt_eval_settings()
 check("saved policies and training hours are used; a cleared season list stays cleared",
       st["policies"] == {"process:rebin": []} and st["seasons"] == [] and st["default_train_hours"] == 32, st)
+
+def policy_text():
+    db.set_current_site(SITE2)
+    text = db.get_app_setting("xt_staffing_policies")
+    db.set_current_site("SCN2")
+    return text
+
+
+fc.post("/ld-management/cross-training/model/policies", data={"action": "text", "policies": "Rebin = Chutings"})
+r = fc.post("/ld-management/cross-training/model/policies",
+            data={"action": "add", "kind": "process", "name": "SPP", "mode": "departments",
+                  "departments": ["Pack Singles"], "other": "Pack Multis, pack singles"}, follow_redirects=True)
+check("a policy is added from the form, departments picked and typed, without repeats",
+      policy_text() == "Rebin = Chutings\nSPP = Pack Singles, Pack Multis", policy_text())
+fc.post("/ld-management/cross-training/model/policies",
+        data={"action": "add", "kind": "process", "name": "spp", "mode": "home"})
+check("a second policy for the same process replaces the first", policy_text() == "Rebin = Chutings\nspp = home",
+      policy_text())
+fc.post("/ld-management/cross-training/model/policies",
+        data={"action": "add", "kind": "dept", "name": "Ship Dock", "mode": "home"})
+check("a department-wide policy is written the way the engine reads it",
+      X.parse_policies(policy_text())[0].get("dept:ship dock") == [], policy_text())
+fc.post("/ld-management/cross-training/model/policies", data={"action": "remove", "index": "0"})
+check("and one is removed by its row", policy_text() == "spp = home\ndept:Ship Dock = home", policy_text())
+r = fc.post("/ld-management/cross-training/model/policies", data={"action": "add", "kind": "process", "name": "Pick",
+                                                                   "mode": "departments"}, follow_redirects=True)
+check("a 'these departments' policy with none chosen is refused, not saved as home-only",
+      "Choose the departments" in r.get_data(as_text=True) and "Pick" not in policy_text())
+r = fc.post("/ld-management/cross-training/model/policies", data={"action": "text", "policies": "nonsense"},
+            follow_redirects=True)
+check("text that cannot be read is refused", "Could not read 1 line" in r.get_data(as_text=True)
+      and "nonsense" not in policy_text())
+area_p = client(SITE2)
+with area_p.session_transaction() as sess:
+    sess["login"], sess["role"] = "am_x", "area_manager"
+area_p.post("/ld-management/cross-training/model/policies", data={"action": "text", "policies": ""})
+check("an area manager cannot change them", policy_text() == "spp = home\ndept:Ship Dock = home")
+html = pc.get("/ld-management/cross-training?tab=model&sample=1").get_data(as_text=True)
+check("the policies are on the page for everyone, with a rule naming nothing flagged as doing nothing",
+      'id="xs-policies"' in html and "Home team only" in html and "not in the data" in html)
+with application.application.test_request_context("/ld-management/cross-training?tab=model"):
+    view = {"policy_rules": application._xt_policy_rules("SPP = Pack Singles\nRebin = home"), "sample": False,
+            "settings": {"policy_text": ""}, "departments": [], "policy_processes": []}
+    readonly = application.render_template("_xt_policies.html", v=view, can_manage_xt=False)
+    editable = application.render_template("_xt_policies.html", v=view, can_manage_xt=True)
+check("someone who cannot change standards sees the policies but not the editor",
+      "Pack Singles" in readonly and "Home team only" in readonly and "/model/policies" not in readonly
+      and "/model/policies" in editable)
+# Leave the scratch site as found: the checks above end on SCN2.
+db.set_current_site(SITE2)
 conn = db.get_db()
 conn.execute("DELETE FROM app_settings WHERE key IN (?,?,?,?)",
              ("xt_staffing_policies", "xt_seasons", "xt_default_train_hours", "xt_protect_weeks"))
