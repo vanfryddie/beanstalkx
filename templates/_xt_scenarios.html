@@ -1,0 +1,77 @@
+{#- Planned volume & scenarios: the weeks ahead, as numbers someone can
+    change. Every input sits beside the forecast learned from this site's
+    history and how accurate that forecast has been on weeks it did not
+    see, so a planner knows how far to trust the default before
+    overriding it. Saved scenarios appear in the "Judge against" chip at
+    the top of the page. -#}
+{% set e = v.editing %}
+<section class="xm" id="scenarios">
+  <p class="xm-crumb">Cross-learning model / Planning ahead</p>
+  <div class="xm-titlerow"><h2 class="xs-title">Planned volume &amp; scenarios</h2>
+    {% if v.sample %}<span class="xm-badge">Sample data</span>{% endif %}</div>
+  <p class="xm-sub">Set the volume you expect, per process and shift, and judge every standard against it.
+    Blank lines use the forecast.</p>
+
+  {% if v.scenarios %}
+  <div class="xc-saved">
+    {% for sc in v.scenarios %}
+    <span class="xc-chip {{ 'is-on' if v.basis == sc.id|string }}">
+      <strong>{{ sc.name }}</strong> <span class="xm-dim">{{ sc.weeks }} wk from {{ sc.start_date }}{% if sc.multiplier and sc.multiplier != 1 %} · {{ (sc.multiplier * 100) | round | int }}%{% endif %}</span>
+      <a href="{{ url_for('cross_training', tab='model', basis=sc.id, sample='1' if v.sample else None) }}">Judge against</a>
+      <a href="{{ url_for('cross_training', tab='model', basis=v.basis, edit=sc.id, sample='1' if v.sample else None) }}#scenarios">Edit</a>
+    </span>
+    {% endfor %}
+    {% if e %}<a class="xc-new" href="{{ url_for('cross_training', tab='model', basis=v.basis, sample='1' if v.sample else None) }}#scenarios">New scenario</a>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="xs-card xm-card">
+    <form method="POST" action="{{ url_for('xt_scenario_save') }}">
+      <input type="hidden" name="scenario_id" value="{{ e.id if e else '' }}">
+      {% if v.sample %}<input type="hidden" name="sample" value="1">{% endif %}
+      <div class="xs-config xc-head">
+        <label>Name <input type="text" name="name" required maxlength="80" value="{{ e.name if e else '' }}" placeholder="Peak week +20%"></label>
+        <label>Starts <input type="date" name="start" required value="{{ v.edit_start }}"></label>
+        <label>Weeks <input type="number" name="weeks" min="1" max="26" value="{{ v.edit_weeks }}"></label>
+        <label>Volume % <input type="number" name="multiplier" min="10" max="500" step="1" value="{{ ((e.multiplier if e else 1) * 100) | round | int }}" title="Scales every line, forecast lines included"></label>
+        <label class="xs-wide">Notes <input type="text" name="notes" maxlength="500" value="{{ e.notes if e and e.notes else '' }}" placeholder="What this scenario assumes"></label>
+      </div>
+      {% if v.forecast %}
+      <div class="dash-table-scroll">
+        <table class="xm-table xc-table">
+          <thead><tr><th scope="col">Process</th><th scope="col">Shift</th>
+            <th scope="col" class="num">Forecast units/day</th><th scope="col">How reliable</th>
+            <th scope="col" class="num">Planned units/day</th><th scope="col" class="num">Planned rate</th></tr></thead>
+          <tbody>
+            {% for f in v.forecast %}
+            {% set line = e.lines.get((f.key, f.shift)) if e else none %}
+            <tr>
+              <th scope="row">{{ f.process }}</th>
+              <td>{{ f.shift | capitalize }}</td>
+              <td class="num">{{ '{:,}'.format(f.forecast) }}{% if f.trend_pct %} <span class="xm-dim">{{ '%+.1f' % f.trend_pct }}%/wk</span>{% endif %}</td>
+              <td>{% if f.quality %}<span class="{{ 'xm-below' if f.quality.accuracy < 0.85 }}">{{ (f.quality.accuracy * 100) | round | int }}% accurate</span>
+                <span class="xm-dim">· usually {{ (f.quality.low * 100) | round | int }}% to +{{ (f.quality.high * 100) | round | int }}%</span>{% else %}<span class="xm-dim">too little history to grade</span>{% endif %}
+                <span class="xm-dim">· from {{ f.learned_from }}</span></td>
+              <td class="num"><input type="number" min="0" step="1" name="units|{{ f.key }}|{{ f.shift }}" value="{{ line.planned_units | int if line and line.planned_units else '' }}" placeholder="{{ f.forecast }}" aria-label="Planned units a day, {{ f.process }} {{ f.shift }}"></td>
+              <td class="num"><input type="number" min="0" step="0.1" name="rate|{{ f.key }}|{{ f.shift }}" value="{{ line.plan_rate if line and line.plan_rate else '' }}" placeholder="{{ f.plan_rate | round(1) if f.plan_rate else '' }}" aria-label="Planned rate, {{ f.process }} {{ f.shift }}"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="xs-sub">No process has enough history yet to forecast. Planned volume can still be entered once there is a
+        process day for it.</p>
+      {% endif %}
+      <div class="xc-actions">
+        <button class="btn btn-gold btn-sm" type="submit">{{ 'Save changes' if e else 'Save scenario' }}</button>
+        {% if e %}<button class="btn btn-ghost btn-sm" type="submit" name="delete" value="1" onclick="return confirm('Delete this scenario?')">Delete</button>{% endif %}
+      </div>
+    </form>
+    <p class="xs-foot">How the forecast is learned: the average of the last two weeks, each weekday at its usual share of the
+      week, and the trend of the last eight weeks at half strength (at most ±5% a week). "How reliable" is that model refit
+      as of each of the last four weeks and scored on the week after, which it had not seen. Learned from planned units where
+      the data has them; from units done otherwise, which under-reads days the floor was short.
+      Planned rate defaults to the plan the data carries (FCLM's Process Path Rollup).</p>
+  </div>
+</section>

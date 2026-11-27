@@ -204,10 +204,15 @@ class Prepared:
 
     def plan_rate(self, process, row=None):
         """The rate a day's demand is converted to hours at: the day's own
-        plan, else what veterans actually do, else anyone."""
+        plan, else the plan the process usually carries, else what
+        veterans actually do, else anyone."""
         if row and row.get("plan_rate"):
             return row["plan_rate"]
-        return self.rate(process, "vet")[0] or self.rate(process, "all")[0]
+        cache = self.__dict__.setdefault("_usual_plan", {})
+        if process not in cache:
+            cache[process] = _median([r.get("plan_rate") for (d, s, p), r in self.pday.items()
+                                      if p == process and r.get("plan_rate")])
+        return cache[process] or self.rate(process, "vet")[0] or self.rate(process, "all")[0]
 
     @staticmethod
     def demand(row):
@@ -282,6 +287,7 @@ def _replay_days(prep, process, shift, sources, vet_rate, xt_rates):
                              if h and _key(prep.home.get(l)) != owner)
         days.append({
             "day": d, "demand": demand, "length": length,
+            "owner_share": prep.presence_share(owner, d, s),
             "vet_output": vets * length * (vet_rate or 0.0), "vets": vets,
             "share": {S: prep.presence_share(S, d, s) for S in sources},
             "spare": {S: prep.dept_spare(S, d, s) for S in sources},
@@ -321,8 +327,16 @@ def _min_target(days, weights, cap, bar):
     return low, _coverage(days, low, weights)
 
 
-def evaluate_cell(prep, process, shift, current_target, sources, settings):
-    """One process on one shift: the verdict and the evidence for it."""
+def _days(prep, process, shift, sources, vet_rate, rates, scenario):
+    if scenario is None:
+        return _replay_days(prep, process, shift, sources, vet_rate, rates)
+    return scenario_days(prep, process, shift, sources, vet_rate, rates, scenario)
+
+
+def evaluate_cell(prep, process, shift, current_target, sources, settings, scenario=None):
+    """One process on one shift: the verdict and the evidence for it.
+    With a scenario, the days judged are its future days rather than the
+    past ones; every rule after that is the same."""
     # The tolerance grows with the target: one person either way is noise
     # on a standard of 5 and on one of 50 alike, but 10% of 50 is not.
     bar = settings["coverage_bar"]
@@ -342,16 +356,18 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings):
     raw = {S: w for S, w in _weights(sources).items() if S in source_keys}
     weights = {S: w / sum(raw.values()) for S, w in raw.items()} if raw and sum(raw.values()) else raw
     rates = {S: xt_rate(S) for S in source_keys}
-    days = _replay_days(prep, process, shift, source_keys, vet_rate, rates)
+    days = _days(prep, process, shift, source_keys, vet_rate, rates, scenario)
     cell = {
         "process": prep.process_names.get(process, process), "shift": shift,
         "owner": prep.departments.get(owner, owner), "target": current_target,
         "sources": [prep.departments.get(S, S) for S in source_keys],
         "days": len(days), "vet_rate": vet_rate, "xt_rate": xt_all,
+        "basis": "scenario" if scenario is not None else "history",
     }
     if not days or not vet_rate:
         cell.update(verdict="no_data", coverage=None,
-                    why_missing="no volume for this process and shift in the window"
+                    why_missing=("no volume for this process and shift" +
+                                 (" in the scenario" if scenario is not None else " in the window"))
                     if not days else "no hours worked on it, so no rate")
         return cell
 
@@ -363,8 +379,10 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings):
                  for S in source_keys}
     cell.update(
         coverage=coverage, best=best, best_coverage=best_cov, cap=cap,
-        missed=sum(1 for d in days if d["missed"]),
-        peak_xt=max(d["xt_working"] for d in days),
+        missed=sum(1 for d in days if d["missed"]) if scenario is None else None,
+        # In a scenario the floor is the historical peak, not the
+        # scenario's own (it has no people yet), and only on decreases.
+        peak_xt=max(d["xt_working"] for d in days) if scenario is None else _historical_peak(prep, process, shift),
         lend_days=lend_days, assumed_rates=sorted(set(assumed)),
         curve=[(t, round(_coverage(days, t, weights) or 0, 3))
                for t in range(0, min(cap, max(current_target, best or 0) + 6) + 1)] if source_keys else [],
@@ -382,7 +400,7 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings):
         if s != shift or dept == owner or not population or (dept in source_keys and len(source_keys) == 1):
             continue
         alt_rates = {dept: xt_rate(dept)}
-        alt_days = _replay_days(prep, process, shift, [dept], vet_rate, alt_rates)
+        alt_days = _days(prep, process, shift, [dept], vet_rate, alt_rates, scenario)
         t, cov = _min_target(alt_days, {dept: 1.0}, len(population), bar)
         if t is None:
             continue
@@ -396,7 +414,7 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings):
             verdict = "switch"
         else:
             verdict = "hire"
-            owner_share = sum(prep.presence_share(owner, d["day"], shift) for d in days) / len(days)
+            owner_share = sum(d["owner_share"] for d in days) / len(days)
             for extra in range(1, 400):
                 if _coverage(days, cap, weights, extra_vets=extra, owner_share=owner_share,
                              vet_rate=vet_rate) >= bar:
@@ -436,8 +454,13 @@ def evidence(cell):
     allowed to quote."""
     lines = []
     n = cell["days"]
+    shifts_word = "scenario shifts" if cell.get("basis") == "scenario" else "replayed shifts"
     if cell.get("missed") is not None:
         lines.append(f"{cell['missed']} of {n} replayed shifts missed plan.")
+    if cell.get("basis") == "scenario" and cell.get("coverage") is not None:
+        met = round(cell["coverage"] * n)
+        lines.append(f"At the current target of {cell['target']}, {met} of {n} scenario shifts meet plan, "
+                     f"each future day played out against recent same weekdays.")
     for dept, k in (cell.get("lend_days") or {}).items():
         lines.append(f"After covering its own volume, {dept} could lend on {k} of {n} shifts.")
     alt = cell.get("alternative")
@@ -446,9 +469,10 @@ def evidence(cell):
                      f"of {alt['target']} from there covers {round(alt['coverage'] * 100)}% of them.")
     if cell["verdict"] in ("increase", "decrease") and cell.get("best") is not None:
         lines.append(f"A target of {cell['best']} covers {round(cell['best_coverage'] * 100)}% of "
-                     f"replayed shifts; {cell['target']} covers {round(cell['coverage'] * 100)}%.")
+                     f"{shifts_word}; {cell['target']} covers {round(cell['coverage'] * 100)}%.")
     if cell["verdict"] == "decrease":
-        lines.append(f"Peak use was {cell['peak_xt']} cross-trainees on one shift.")
+        lines.append(f"Peak use was {cell['peak_xt']} cross-trainees on one shift"
+                     f"{' in the history' if cell.get('basis') == 'scenario' else ''}.")
     if cell["verdict"] == "hire":
         lines.append(f"Even with all {cell['cap']} people in the source departments trained, coverage "
                      f"reaches {round((cell.get('best_coverage') or 0) * 100)}%. About "
@@ -459,7 +483,7 @@ def evidence(cell):
     return lines
 
 
-def evaluate(prep, standards, settings, department=None, shift=None):
+def evaluate(prep, standards, settings, department=None, shift=None, scenario=None):
     """Every cell. `standards` is the tool's defined paths: dicts with
     process, shift, target, source_departments."""
     settings = dict(DEFAULTS, **(settings or {}))
@@ -483,7 +507,7 @@ def evaluate(prep, standards, settings, department=None, shift=None):
             continue
         if shift and shift != s:
             continue
-        result = evaluate_cell(prep, p, s, int(round(info["target"])), dict(info["sources"]), settings)
+        result = evaluate_cell(prep, p, s, int(round(info["target"])), dict(info["sources"]), settings, scenario)
         result["labels"] = info["labels"]
         result["evidence"] = evidence(result)
         result["id"] = f"{p}|{s}"
@@ -501,8 +525,10 @@ def evaluate(prep, standards, settings, department=None, shift=None):
         "kept": sum(1 for r in results if r["verdict"] == "keep"),
         "no_data": sum(1 for r in results if r["verdict"] == "no_data"),
         "settings": settings,
-        "window": (prep.window_start, prep.window_end),
-        "replayed_days": len(prep.days),
+        "window": (prep.window_start, prep.window_end) if scenario is None else scenario_window(scenario),
+        "replayed_days": len(prep.days) if scenario is None else len(scenario_dates(scenario)) * len(SHIFTS),
+        "basis": "history" if scenario is None else "scenario",
+        "scenario": scenario,
     }
 
 
@@ -580,6 +606,8 @@ def day_plan(prep, process, shift, day, volume, rate=None, absence_pct=None,
                 vol, how = other_volumes[dept], "entered"
             elif (dept + "|" + q) in other_volumes:
                 vol, how = other_volumes[dept + "|" + q], "entered"
+            elif _model(prep, q, shift):
+                vol, how = round(forecast_value(_model(prep, q, shift), day_s)), "forecast"
             else:
                 samples = [prep.demand(prep.pday.get((d, shift, q))) for d, s in prep.days
                            if s == shift and date.fromisoformat(d).weekday() == weekday
@@ -994,3 +1022,303 @@ def labour_mix(prep, start, end, department=None, shift=None):
     detail.sort(key=lambda r: (-xt_by_process[r["process"]], r["process"].lower(), SHIFT_GROUPS.index(r["shift"])))
     return {"overview": overview, "detail": detail, "unknown_hours": round(unknown_hours, 1),
             "start": start, "end": end}
+
+
+# -- learning from the past: forecasts, and the future days they make ---------
+#
+# "Learn from the past" here means a model fitted to the site's own
+# history and graded on weeks it did not see, so every forecast comes
+# with how wrong it has been. It is deliberately small enough to explain
+# in one sentence on the page:
+#
+#     the average of the last two weeks, with each weekday's usual share
+#     of the week, and the trend of the last eight weeks at half
+#     strength (capped at ±5% a week).
+#
+# A language model is not asked for volumes: it cannot be graded on held-
+# out weeks the way this can, and a number nobody can check is the thing
+# this page exists to avoid. It explains the result instead.
+
+FORECAST = {"level_days": 14, "trend_weeks": 8, "trend_damping": 0.5, "trend_cap": 0.05,
+            "profile_shrink": 3, "backtest_weeks": 4, "min_days": 14}
+
+
+def history_series(prep, process, shift, before=None):
+    """(date, units) for every past day the process ran on that shift.
+
+    Planned units where the data has them, actual units otherwise. On a
+    day the floor was short, units done is less than the work there was,
+    so a forecast learned from it reads every shortfall as the normal
+    volume and recommends fewer cross-trainees than the work needs. With
+    FCLM alone there is no planned volume, so that bias remains; the
+    page says which a forecast was learned from."""
+    before = before or prep.today.isoformat()
+    out = []
+    for (d, s, p), row in prep.pday.items():
+        if p == process and s == shift and d < before:
+            value = row.get("plan_units") or row.get("units") or 0
+            if value > 0:
+                out.append((d, float(value)))
+    return sorted(out)
+
+
+def fit_forecast(series):
+    """The model above, from (date, units) pairs. None with too little
+    history to say anything."""
+    if len(series) < FORECAST["min_days"]:
+        return None
+    by_wd = defaultdict(list)
+    for d, v in series:
+        by_wd[date.fromisoformat(d).weekday()].append(v)
+    overall = sum(v for _d, v in series) / len(series)
+    k = FORECAST["profile_shrink"]
+    profile = [((sum(by_wd[w]) / len(by_wd[w]) / overall) * len(by_wd[w]) + k) / (len(by_wd[w]) + k)
+               if by_wd[w] else 1.0 for w in range(7)]
+    deseason = [(d, v / profile[date.fromisoformat(d).weekday()]) for d, v in series]
+    last = date.fromisoformat(series[-1][0])
+    recent = [x for d, x in deseason if (last - date.fromisoformat(d)).days < FORECAST["level_days"]]
+    level = sum(recent) / len(recent)
+    weekly = defaultdict(list)
+    for d, x in deseason:
+        weeks_back = (last - date.fromisoformat(d)).days // 7
+        if weeks_back < FORECAST["trend_weeks"]:
+            weekly[weeks_back].append(x)
+    points = [(-wb, sum(xs) / len(xs)) for wb, xs in weekly.items() if len(xs) >= 3]
+    trend = 0.0
+    if len(points) >= 3:
+        mx = sum(p[0] for p in points) / len(points)
+        my = sum(p[1] for p in points) / len(points)
+        den = sum((p[0] - mx) ** 2 for p in points)
+        if den and my:
+            trend = (sum((p[0] - mx) * (p[1] - my) for p in points) / den) / my * FORECAST["trend_damping"]
+            trend = max(-FORECAST["trend_cap"], min(FORECAST["trend_cap"], trend))
+    return {"profile": profile, "level": level, "trend": trend, "last": last.isoformat(), "days": len(series)}
+
+
+def forecast_value(model, day):
+    d = date.fromisoformat(day) if isinstance(day, str) else day
+    weeks = (d - date.fromisoformat(model["last"])).days / 7.0
+    return model["level"] * (1 + model["trend"]) ** weeks * model["profile"][d.weekday()]
+
+
+def backtest(prep, process, shift):
+    """How wrong the forecast has been: refit as of each of the last few
+    weeks and predict the week after, on days it did not see. Returns
+    accuracy (1 - weighted absolute error), and the 10th/90th percentile
+    of the relative error, which is the band the page prints."""
+    series = history_series(prep, process, shift)
+    if len(series) < FORECAST["min_days"] + 7:
+        return None
+    last = date.fromisoformat(series[-1][0])
+    abs_err = total = 0.0
+    rel = []
+    for k in range(1, FORECAST["backtest_weeks"] + 1):
+        cutoff = (last - timedelta(days=7 * k)).isoformat()
+        model = fit_forecast([x for x in series if x[0] <= cutoff])
+        if not model:
+            continue
+        horizon_end = (date.fromisoformat(cutoff) + timedelta(days=7)).isoformat()
+        for d, v in series:
+            if cutoff < d <= horizon_end:
+                pred = forecast_value(model, d)
+                abs_err += abs(v - pred)
+                total += v
+                if pred:
+                    rel.append((v - pred) / pred)
+    if not total or len(rel) < 5:
+        return None
+    rel.sort()
+    q = lambda f: rel[min(len(rel) - 1, max(0, int(round(f * (len(rel) - 1)))))]
+    return {"accuracy": round(1 - abs_err / total, 3), "low": round(q(0.1), 3), "high": round(q(0.9), 3),
+            "days": len(rel)}
+
+
+def _model(prep, process, shift):
+    cache = prep.__dict__.setdefault("_models", {})
+    if (process, shift) not in cache:
+        cache[(process, shift)] = fit_forecast(history_series(prep, process, shift))
+    return cache[(process, shift)]
+
+
+def forecast_table(prep, processes=None, start=None, weeks=4):
+    """Per process and shift: the forecast average units a day over the
+    horizon, and how accurate the model has been. What the scenario
+    editor shows beside each input."""
+    start = start or prep.today
+    dates = [start + timedelta(days=i) for i in range(7 * weeks)]
+    rows = []
+    for p in sorted(processes or prep.process_names, key=lambda x: prep.process_names.get(x, x).lower()):
+        for s in SHIFTS:
+            model = _model(prep, p, s)
+            if not model:
+                continue
+            avg = sum(forecast_value(model, d) for d in dates) / len(dates)
+            planned = sum(1 for (d, sh, q), r in prep.pday.items() if q == p and sh == s and r.get("plan_units"))
+            rows.append({"process": prep.process_names.get(p, p), "key": p, "shift": s,
+                         "learned_from": "planned units" if planned >= model["days"] / 2 else "units done",
+                         "forecast": round(avg), "trend_pct": round(model["trend"] * 100, 1),
+                         "history_days": model["days"], "quality": backtest(prep, p, s),
+                         "plan_rate": prep.plan_rate(p)})
+    return rows
+
+
+def scenario_dates(scenario):
+    start = date.fromisoformat(scenario["start"])
+    return [start + timedelta(days=i) for i in range(7 * int(scenario.get("weeks") or 4))]
+
+
+def scenario_window(scenario):
+    dates = scenario_dates(scenario)
+    return (dates[0].isoformat(), dates[-1].isoformat())
+
+
+def scenario_demand(prep, scenario, process, shift, day):
+    """Units a process is expected to need on a future day: the planned
+    average a day entered for the scenario, spread over the week by the
+    process's own weekday pattern, else the forecast; times the
+    scenario's multiplier."""
+    line = (scenario.get("lines") or {}).get((process, shift)) or {}
+    model = _model(prep, process, shift)
+    mult = float(scenario.get("multiplier") or 1.0)
+    if line.get("planned_units"):
+        profile = model["profile"][day.weekday()] if model else 1.0
+        return float(line["planned_units"]) * profile * mult
+    return forecast_value(model, day) * mult if model else 0.0
+
+
+def scenario_plan_rate(prep, scenario, process, shift):
+    line = (scenario.get("lines") or {}).get((process, shift)) or {}
+    return line.get("plan_rate") or prep.plan_rate(process)
+
+
+def _profile(prep, kind, key, weekday):
+    """Presence share and shift length by weekday, learned from the
+    history window; the future has no attendance yet, so a Tuesday is
+    expected to look like the Tuesdays before it."""
+    cache = prep.__dict__.setdefault("_profiles", {})
+    ck = (kind, key, weekday)
+    if ck not in cache:
+        values = []
+        for d, s in prep.days:
+            if date.fromisoformat(d).weekday() != weekday:
+                continue
+            if kind == "presence" and s == key[1]:
+                values.append(prep.presence_share(key[0], d, s))
+            elif kind == "length" and s == key:
+                values.append(prep.length(d, s))
+        if kind == "presence":
+            cache[ck] = sum(values) / len(values) if values else None
+        else:
+            cache[ck] = _median(values) or prep.shift_hours
+    return cache[ck]
+
+
+def presence_profile(prep, dept, shift, weekday):
+    value = _profile(prep, "presence", (dept, shift), weekday)
+    if value is None:
+        overall = [v for v in (_profile(prep, "presence", (dept, shift), w) for w in range(7) if w != weekday)
+                   if v is not None]
+        return sum(overall) / len(overall) if overall else 0.0
+    return value
+
+
+def _historical_peak(prep, process, shift):
+    owner = prep.owner.get(process)
+    peak = 0
+    for (d, s, p), rows in prep.work.items():
+        if p == process and s == shift:
+            peak = max(peak, sum(1 for l, _u, h in rows if h and _key(prep.home.get(l)) != owner))
+    return peak
+
+
+SCENARIO_VARIANTS = 8
+
+
+def _weekday_mean(prep, process, shift, weekday):
+    cache = prep.__dict__.setdefault("_wd_means", {})
+    key = (process, shift, weekday)
+    if key not in cache:
+        values = [v for d, v in history_series(prep, process, shift) if date.fromisoformat(d).weekday() == weekday]
+        cache[key] = sum(values) / len(values) if values else None
+    return cache[key]
+
+
+def _swing(prep, process, shift, past_day):
+    """How far a past day's volume sat from its weekday's usual: 1.12 for
+    a day 12% busier than the average Tuesday."""
+    row = prep.pday.get((past_day, shift, process))
+    mean = _weekday_mean(prep, process, shift, date.fromisoformat(past_day).weekday())
+    # The same measure the weekday mean is taken of (history_series):
+    # planned units where there are any. Dividing units done by a mean of
+    # planned units read every short day as a quiet one and took a fifth
+    # off every scenario's volume (found 27 Nov, comparing a forecast
+    # scenario cell by cell with the replay of the same weeks).
+    value = (row or {}).get("plan_units") or (row or {}).get("units")
+    return value / mean if value and mean else 1.0
+
+
+def scenario_days(prep, process, shift, sources, vet_rate, xt_rates, scenario):
+    """The scenario's future shifts, in the shape the replay uses, so the
+    same verdict rules judge them.
+
+    Each future day is played out once for each of the last eight past
+    days on the same weekday: with that day's swing in volume (for this
+    process and for every lender's own work) and that day's attendance
+    in every department. An average Tuesday never happens, and a plan
+    judged against one is judged against the only day cross-trainees are
+    not needed for; this way a scenario inherits the variability the
+    site has actually shown, and a target that covers 95% of these
+    covers the bad Tuesdays too."""
+    owner = prep.owner.get(process)
+    trained = prep.trained.get(process, set())
+    owner_people = prep.people.get((owner, shift), set())
+    vets_on_record = len(owner_people & trained) if trained else len(owner_people)
+    past_by_wd = defaultdict(list)
+    for d, s in sorted(prep.days, reverse=True):
+        if s == shift:
+            past_by_wd[date.fromisoformat(d).weekday()].append(d)
+    days = []
+    for day in scenario_dates(scenario):
+        base = scenario_demand(prep, scenario, process, shift, day)
+        if base <= 0:
+            continue
+        wd = day.weekday()
+        length = prep.length_by_day.get((day.isoformat(), shift)) or _profile(prep, "length", shift, wd)
+        pasts = past_by_wd.get(wd, [])[:SCENARIO_VARIANTS] or [None]
+        for past in pasts:
+            def demand_of(q):
+                value = scenario_demand(prep, scenario, q, shift, day)
+                return value * (_swing(prep, q, shift, past) if past else 1.0)
+
+            def share(dept):
+                return prep.presence_share(dept, past, shift) if past else presence_profile(prep, dept, shift, wd)
+            own_hours = {}
+            for q in prep.owned.get(owner, ()):
+                rate = scenario_plan_rate(prep, scenario, q, shift)
+                if rate:
+                    own_hours[q] = demand_of(q) / rate
+            split = own_hours.get(process, 0) / sum(own_hours.values()) if sum(own_hours.values()) else 1.0
+            vets = vets_on_record * share(owner) * split
+            spare = {}
+            for S in sources:
+                need = 0.0
+                for q in prep.owned.get(S, ()):
+                    rate = scenario_plan_rate(prep, scenario, q, shift)
+                    if rate:
+                        need += demand_of(q) / rate
+                spare[S] = len(prep.people.get((S, shift), ())) * share(S) - need / length
+            days.append({
+                "day": day.isoformat(), "as_on": past, "demand": demand_of(process), "length": length,
+                "owner_share": share(owner), "vet_output": vets * length * (vet_rate or 0.0), "vets": vets,
+                "share": {S: share(S) for S in sources}, "spare": spare, "rate": xt_rates,
+                "missed": False, "xt_working": 0, "xt_by_dept": {},
+            })
+    return days
+
+
+def forecast_scenario(prep, weeks=4, start=None):
+    """The scenario nobody has to write: the forecast itself, from
+    tomorrow, for the next few weeks."""
+    start = start or (prep.today + timedelta(days=1))
+    return {"id": "forecast", "name": f"Forecast, next {weeks} weeks", "start": start.isoformat(),
+            "weeks": weeks, "multiplier": 1.0, "lines": {}}

@@ -197,6 +197,87 @@ keys, default = X.available_periods(prep, "week")
 check("the default period is the newest that has finished", default == "2026-11-23" and keys[0] == "2026-11-23",
       (keys, default))
 
+print("\n2c. Learning from the past: the forecast")
+from datetime import date as _d
+base = _d(2026, 6, 1)                       # a Monday
+
+
+def series(weeks, monday=1200, other=1000, growth=0.0, noise=None):
+    out = []
+    for i in range(weeks * 7):
+        day = base + timedelta(days=i)
+        value = (monday if day.weekday() == 0 else other) * (1 + growth) ** (i / 7)
+        if noise:
+            value *= 1 + noise[i % len(noise)]
+        out.append((day.isoformat(), value))
+    return out
+
+
+m = X.fit_forecast(series(8))
+nxt = base + timedelta(days=56)
+check("a steady series forecasts its own level", abs(X.forecast_value(m, nxt + timedelta(days=1)) - 1000) < 30,
+      X.forecast_value(m, nxt + timedelta(days=1)))
+check("and keeps each weekday's usual share: Mondays stay busier",
+      X.forecast_value(m, nxt) > X.forecast_value(m, nxt + timedelta(days=1)) * 1.1)
+m = X.fit_forecast(series(8, growth=0.03))
+check("a growing series forecasts growth, at half strength", 0.01 < m["trend"] <= 0.02, m["trend"])
+m = X.fit_forecast(series(8, growth=0.4))
+check("and a runaway trend is capped at 5% a week", m["trend"] == 0.05, m["trend"])
+check("too little history forecasts nothing rather than guessing", X.fit_forecast(series(1)) is None)
+
+
+class Holder:
+    pass
+
+
+def graded(noise):
+    h = X.Prepared({"process_day": [{"work_date": d, "shift": "early", "process": "Pack", "units": v}
+                                    for d, v in series(10, noise=noise)]},
+                   today=base + timedelta(days=70), window_weeks=12)
+    return X.backtest(h, "pack", "early")
+calm, rough = graded([0.0]), graded([0.25, -0.2, 0.1, -0.15, 0.3, -0.25, 0.05])
+check("the forecast is graded on weeks it did not see", calm and calm["days"] >= 20)
+check("a calm history grades near-perfect", calm and calm["accuracy"] > 0.98, calm)
+check("a jumpy one grades lower, and says by how much it usually misses",
+      rough and rough["accuracy"] < calm["accuracy"] and rough["low"] < 0 < rough["high"], rough)
+
+print("\n2d. Scenarios: judging the weeks ahead")
+
+
+def plan(units=None, multiplier=1.0, weeks=1):
+    lines = {("pack", "early"): {"planned_units": units}} if units else {}
+    lines[("pickwork", "early")] = {"planned_units": 5000}
+    return {"id": 1, "name": "test", "start": FUTURE, "weeks": weeks, "multiplier": multiplier, "lines": lines}
+
+
+def judged(target, scenario):
+    paths = [{"process": "Pack", "shift": "early", "target": target, "source_departments": ["Pick"]}]
+    return X.evaluate(prep, paths, {}, scenario=scenario)["cells"][("Pack", "early")]
+
+
+c = judged(2, plan(6000))
+check("a scenario at the volume the past had reaches the past's verdict: keep 2", c["verdict"] == "keep"
+      and c["basis"] == "scenario", (c["verdict"], c.get("best")))
+c = judged(2, plan(7000))
+check("7,000 a day leaves a 2,000 gap: increase to 3", c["verdict"] == "increase" and c["new_target"] == 3,
+      (c["verdict"], c.get("new_target")))
+c = judged(2, plan(9000))
+check("9,000 a day leaves a 4,000 gap: increase to 5", c["verdict"] == "increase" and c["new_target"] == 5,
+      (c["verdict"], c.get("new_target")))
+c = judged(2, plan(6000, multiplier=1.5))
+check("the volume % scales every line, the lenders' own work too: at 150% Pick needs 7.5 of its 10 "
+      "and can spare too few, so hire", c["verdict"] == "hire", (c["verdict"], c.get("new_target")))
+c = judged(2, plan(6000, multiplier=2.0))
+check("12,000 is more than Pick can ever spare for: hire", c["verdict"] == "hire", c["verdict"])
+c = judged(2, plan(None))
+check("no plan and no forecast to fall back on is 'no data', not a guess", c["verdict"] == "no_data", c["verdict"])
+past = __import__("collections").Counter(_d.fromisoformat(d).weekday() for d in HISTORY)
+want_days = sum(min(8, past[(_d.fromisoformat(FUTURE) + timedelta(days=i)).weekday()]) for i in range(14))
+check("every scenario day is played out once per past same weekday (two Fridays in the history, two plays)",
+      judged(2, plan(6000, weeks=2))["days"] == want_days == 20, (judged(2, plan(6000, weeks=2))["days"], want_days))
+check("and the evidence says these are scenario shifts, not history",
+      any("scenario shifts" in line for line in judged(1, plan(6000))["evidence"]))
+
 print("\n3. The uploads, through a scratch site")
 SITE = "ZQ88"
 db.init_global_db()
@@ -391,6 +472,52 @@ month = c.get("/ld-management/cross-training?tab=model&sample=1&lm_kind=month&lm
 check("Month switches the period", 'class="active">Month' in month and "Shift overview" in month)
 bad = c.get("/ld-management/cross-training?tab=model&sample=1&lm_kind=week&lm_key=1999-01-04", follow_redirects=True)
 check("a period not in the data falls back to the default", bad.status_code == 200 and "Shift overview" in bad.get_data(as_text=True))
+
+from datetime import date as _today_cls
+for sc in db.list_scenarios():
+    db.delete_scenario(sc["id"])
+html = c.get("/ld-management/cross-training?tab=model&sample=1&basis=forecast", follow_redirects=True).get_data(as_text=True)
+check("the forecast can be judged against", "Forecast, next 4 weeks" in html and "scenario shifts" in html)
+check("and the scenario editor shows how reliable each forecast has been", "Planned volume &amp; scenarios" in html
+      and "% accurate" in html)
+start = (date.today() + timedelta(days=1)).isoformat()
+r = c.post("/ld-management/cross-training/model/scenario",
+           data={"sample": "1", "name": "Peak", "start": start, "weeks": "2", "multiplier": "130",
+                 "units|pack singles|early": "40000", "rate|pack singles|early": "150"}, follow_redirects=True)
+saved = db.list_scenarios()
+check("a scenario saves", len(saved) == 1 and saved[0]["name"] == "Peak" and abs(saved[0]["multiplier"] - 1.3) < 1e-9)
+got = db.get_scenario(saved[0]["id"]) if saved else {}
+check("with its lines, keyed as the evaluation reads them",
+      got.get("lines", {}).get(("pack singles", "early")) == {"planned_units": 40000.0, "plan_rate": 150.0},
+      got.get("lines"))
+check("and the page judges against it straight away", "volume at 130%" in r.get_data(as_text=True))
+bad = c.post("/ld-management/cross-training/model/scenario",
+             data={"sample": "1", "name": "Bad", "start": start, "weeks": "2", "multiplier": "130",
+                   "units|pack singles|early": "-5"}, follow_redirects=True)
+check("a negative volume is refused", "must be numbers" in bad.get_data(as_text=True) and len(db.list_scenarios()) == 1)
+bad = c.post("/ld-management/cross-training/model/scenario",
+             data={"sample": "1", "name": "", "start": start, "weeks": "40"}, follow_redirects=True)
+check("so is a nameless 40-week one", "Give the scenario a name" in bad.get_data(as_text=True))
+c.post("/ld-management/cross-training/model/scenario", data={"sample": "1", "scenario_id": str(saved[0]["id"]), "delete": "1"})
+check("and one can be deleted", not db.list_scenarios())
+check("an unknown basis falls back to the past", "Judge on the past" in
+      c.get("/ld-management/cross-training?tab=model&sample=1&basis=999", follow_redirects=True).get_data(as_text=True))
+
+ctx = application.application.test_request_context(); ctx.push(); db.begin_request_scope()
+paths = application._xt_paths_with_sources("general")
+homes = db.xt_process_home_departments()
+db.end_request_scope(); ctx.pop()
+sample = X.sample_data(paths, owners={p["process"]: homes.get(p["process"]) for p in paths if p.get("process")}, weeks=18)
+sprep = X.Prepared(sample, window_weeks=14)
+hist = X.evaluate(sprep, paths, {})
+ahead = X.evaluate(sprep, paths, {}, scenario=X.forecast_scenario(sprep))
+same = sum(1 for k, cell in hist["cells"].items() if ahead["cells"][k]["verdict"] == cell["verdict"])
+check("when the forecast says the weeks ahead look like the past, it reaches the past's verdicts (85%+)",
+      same >= 0.85 * len(hist["cells"]), (same, len(hist["cells"])))
+up = X.evaluate(sprep, paths, {}, scenario=dict(X.forecast_scenario(sprep), multiplier=1.3))
+check("and more volume moves verdicts towards more people, never fewer",
+      sum(1 for x in up["cells"].values() if x["verdict"] in ("increase", "hire", "switch")) >
+      sum(1 for x in ahead["cells"].values() if x["verdict"] in ("increase", "hire", "switch")))
 
 print("\n5. The generated reasons")
 view_changes = []

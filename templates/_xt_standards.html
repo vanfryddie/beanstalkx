@@ -12,7 +12,7 @@
   <form class="xs-filters" method="GET" action="{{ url_for('cross_training') }}">
     <input type="hidden" name="tab" value="model">
     <input type="hidden" name="scenario" value="{{ scenario }}">
-    <input type="hidden" name="_fields" value="dept,eval_shift,weeks,sample">
+    <input type="hidden" name="_fields" value="dept,eval_shift,weeks,sample,basis">
     <label class="xs-chip"><span class="sr-only">Department</span>
       <select name="dept" onchange="this.form.submit()">
         <option value="">All departments</option>
@@ -23,10 +23,18 @@
         <option value="">All shifts</option>
         {% for key, label in shifts.items() %}<option value="{{ key }}" {{ 'selected' if v.shift == key }}>{{ label }}</option>{% endfor %}
       </select></label>
+    <label class="xs-chip"><span class="sr-only">Judge against</span>
+      <select name="basis" onchange="this.form.submit()" title="What the standards are judged against">
+        <option value="history" {{ 'selected' if v.basis == 'history' }}>Judge on the past</option>
+        <option value="forecast" {{ 'selected' if v.basis == 'forecast' }}>Forecast, next 4 weeks</option>
+        {% for sc in v.scenarios %}<option value="{{ sc.id }}" {{ 'selected' if v.basis == sc.id|string }}>Scenario: {{ sc.name }}</option>{% endfor %}
+      </select></label>
+    {% if v.basis == 'history' %}
     <label class="xs-chip"><span class="sr-only">Window</span>
       <select name="weeks" onchange="this.form.submit()">
         {% for w in v.windows %}<option value="{{ w }}" {{ 'selected' if v.weeks == w }}>Last {{ w }} weeks</option>{% endfor %}
       </select></label>
+    {% else %}<input type="hidden" name="weeks" value="{{ v.weeks }}">{% endif %}
     <label class="xs-chip xs-toggle"><input type="checkbox" name="sample" value="1" {{ 'checked' if v.sample }} onchange="this.form.submit()"> Sample data</label>
     <span class="xs-actions">
       <a class="btn btn-ghost btn-sm" href="#xs-config" onclick="document.getElementById('xs-config').open = true">Configuration</a>
@@ -35,6 +43,12 @@
   </form>
 </div>
 
+{% if v.scenario %}
+<p class="xs-banner xs-banner-scenario"><strong>{{ v.scenario.name }}</strong> — {{ v.scenario.weeks }} weeks from {{ v.scenario.start }}{% if v.scenario.multiplier and v.scenario.multiplier != 1 %}, volume at {{ (v.scenario.multiplier * 100) | round | int }}%{% endif %}.
+  Each future day is played out against the last eight past days on the same weekday — their swings in volume and
+  their attendance — so a target that covers it covers the bad days too.
+  <a href="#scenarios">Change the planned volume</a>.</p>
+{% endif %}
 {% if v.sample %}
 <p class="xs-banner">Sample data: a made-up site built around your own departments, processes and
   standards, so the page can be seen working before your volume and associate-day files are loaded.
@@ -91,8 +105,13 @@
         </tbody>
       </table>
     </div>
+    {% if r.basis == 'scenario' %}
+    <p class="xs-foot">Coverage = % of scenario shifts meeting plan. Minimum {{ bar_pct }}%.
+      {{ r.window[0] }} to {{ r.window[1] }}, each day played out against recent same weekdays.</p>
+    {% else %}
     <p class="xs-foot">Coverage = % of replayed shifts meeting plan. Minimum {{ bar_pct }}%.
       {{ r.replayed_days }} shift-days in the window, {{ r.window[0] }} to {{ r.window[1] }}.</p>
+    {% endif %}
   </section>
 
   <aside class="xs-card xs-why">
@@ -127,6 +146,7 @@
 <p class="xs-note">Recommendations are for review.</p>
 
 {% include "_xt_labour_mix.html" %}
+{% include "_xt_scenarios.html" %}
 
 {# ------------------------------------------------------------------- #}
 <h3 class="dash-section-label" id="day-plan">Plan one day</h3>
@@ -261,7 +281,7 @@
 <script>
 (function () {
   var url = {{ url_for('xt_standards_explain', scenario=scenario, dept=v.department or '', eval_shift=v.shift or '',
-                       weeks=v.weeks, sample='1' if v.sample else '') | tojson }};
+                       weeks=v.weeks, basis=v.basis, sample='1' if v.sample else '') | tojson }};
   fetch(url, {credentials: 'same-origin'})
     .then(function (r) { return r.ok ? r.json() : {slots: {}}; })
     .catch(function () { return {slots: {}}; })

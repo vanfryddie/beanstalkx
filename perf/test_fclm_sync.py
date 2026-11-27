@@ -251,7 +251,8 @@ check("and is due again", DAY in [d["date"] for d in db.fclm_due_days()])
 db.record_fclm_day(DAY, rows, ppr_items, [], taken_by="test")
 check("once complete it is not due", DAY not in [d["date"] for d in db.fclm_due_days()])
 due = db.fclm_due_days()
-check("the newest missing days come first, a few per run", len(due) == 3 and due[0]["date"] > due[1]["date"])
+check("the newest missing days come first, a few per run",
+      len(due) == db.get_fclm_sync_settings()["days_per_run"] and due[0]["date"] > due[1]["date"], len(due))
 conn = db.get_db()
 d2 = (date.today() - timedelta(days=2)).isoformat()
 for code, start in (("D58F83YA", "05:00"), ("DXX1", "05:00"), ("DXX2", "06:00")):
@@ -316,7 +317,7 @@ check("someone who may not post floor data cannot post a day", r.status_code == 
 r = c.post("/fclm/sync/roster", json={"rows": roster})
 check("the roster route stores what it is given", r.get_json()["status"] == "complete")
 r = c.post("/fclm/sync/settings", data={"enabled": "1", "backfill_days": "500"}, follow_redirects=True)
-check("a backfill over 120 days is refused", "between 1 and 120" in r.get_data(as_text=True))
+check("a backfill over 400 days is refused", "between 1 and 400" in r.get_data(as_text=True))
 c.post("/fclm/sync/settings", data={"enabled": "1", "backfill_days": "10", "days_per_run": "2", "day_start": "05:30",
                                     "ppr_map": "Receive Dock = Stow Each Nike"})
 check("valid settings are kept", db.get_fclm_sync_settings()["backfill_days"] == 10
@@ -327,10 +328,125 @@ c.post("/fclm/sync/settings", data={"enabled": "1", "resync": "1"})
 check("'read every day again' makes yesterday due again", DAY in [d["date"] for d in db.fclm_due_days()])
 html = c.get("/ld-management/settings?tab=data").get_data(as_text=True)
 check("the Data Upload tab shows the sync and where each file comes from",
-      "Daily from FCLM" in html and "Sync now" in html and "synced daily" in html and "not in FCLM" in html)
+      "Daily from FCLM" in html and "Sync now" in html and "synced daily" in html
+      and "Derived from FCLM hours" in html and "not FCLM" in html and "Trained status from" in html)
 served = c.get("/floor/provider.user.js").get_data(as_text=True)
+
+
+def matched(script, url):
+    """Would the extension inject this script on `url`? Its @match lines,
+    as the extension reads them: scheme://host/path, `*` the only wildcard."""
+    for pattern in re.findall(r"(?m)^// @match\s+(\S+)", script):
+        if re.fullmatch(re.escape(pattern).replace(r"\*", ".*"), url.split("?")[0]):
+            return True
+    return False
+
+
+# The bug of 27 Nov: the script matched only /overview* and the
+# cross-training pages, so on L&D Settings, where its Sync now button
+# is, it never loaded — and the browser test, which injected it by hand,
+# could not see that.
+for page in ("/ld-management/settings", "/ld-management/cross-training", "/overview", "/scorecards"):
+    check(f"the served script is injected on {page}", matched(served, "http://localhost" + page))
 check("the served reader knows where to post", "/fclm/sync/plan" in served and "/fclm/sync/day" in served
       and "__LDIS_FCLM" not in served and "1.3.0-" in served)
+
+print("\n3b. Hours on Function, derived from FCLM")
+P = db.fclm_proficiency
+check("20 hours in 60 days is Proficient, exactly at the line", P(20, 20, 20) == "Proficient")
+check("19.9 in 60 but 20 in 90 is Practice", P(19.9, 20, 20) == "Practice")
+check("under 20 in 90 but 20 in 180 is Refresh", P(5, 19.9, 20) == "Refresh")
+check("under 20 in 180 is Lapsed", P(5, 10, 19.9) == "Lapsed")
+check("Proficient, Practice and Refresh are Trained; Lapsed is not",
+      [db.fclm_trained(x) for x in ("Proficient", "Practice", "Refresh", "Lapsed")] ==
+      ["Trained", "Trained", "Trained", "Not Trained"])
+
+wipe()
+db.set_current_site(SITE)
+db.record_fclm_roster(roster + [{"user_id": "zqmia", "employee_id": "900000099", "name": "Manager,Mia",
+                                 "shift_pattern": "D58F83YA", "management_area_id": "18"}], taken_by="test")
+TODAY = date.today()
+asof = TODAY - timedelta(days=1)
+
+
+def worked(login, process, days_ago, hours):
+    conn = db.get_db()
+    conn.execute("INSERT INTO associate_day (work_date, shift, employee_login, process, units, hours, source) "
+                 "VALUES (?,?,?,?,?,?,?) ON CONFLICT (work_date, shift, employee_login, process) DO UPDATE SET "
+                 "hours = associate_day.hours + excluded.hours",
+                 ((asof - timedelta(days=days_ago)).isoformat(), "early", login, process, 100, hours, "fclm"))
+    conn.commit()
+    conn.close()
+
+
+worked("zqanna", "Pack Singles", 3, 12); worked("zqanna", "Pack Singles", 40, 13)       # 25 in 60
+worked("zqbert", "Pack Singles", 10, 15); worked("zqbert", "Pack Singles", 70, 10)      # 15 in 60, 25 in 90
+worked("zqcara", "Pack Singles", 150, 25)                                                # 25 in 180 only
+worked("zqdan", "Pack Singles", 5, 10)                                                   # 10 in 180
+worked("zqanna", "Indirect", 2, 40)                                                      # not a function
+worked("zqanna", "Pack Singles", 200, 99)                                                # older than 180
+worked("zqgone", "Pack Singles", 3, 30)                                                  # not on the roster
+db.set_app_setting("fclm_area_departments", json.dumps({"18": "Pack Singles", "3": "RSP", "2": "Receive"}), "test")
+rows, report = db.derive_hours_on_function(TODAY)
+by = {(r["employee login"], r["Merged Functions"]): r for r in rows}
+check("60/90/180-day totals add the right days", by[("zqanna", "Pack Singles")]["Total_Hours_60"] == 25
+      and by[("zqanna", "Pack Singles")]["Total_Hours_180"] == 25, by.get(("zqanna", "Pack Singles")))
+check("and the statuses follow the formula",
+      [by[(l, "Pack Singles")]["Proficiency Status"] for l in ("zqanna", "zqbert", "zqcara", "zqdan")] ==
+      ["Proficient", "Practice", "Refresh", "Lapsed"])
+check("Lapsed is Not Trained", by[("zqdan", "Pack Singles")]["Trained Status"] == "Not Trained")
+check("indirect time is not a function anyone is trained on", ("zqanna", "Indirect") not in by)
+check("someone no longer on the roster is not in it", not any(r["employee login"] == "zqgone" for r in rows)
+      and report["not_on_roster"] == 1)
+check("home department comes from the roster's management area",
+      by[("zqanna", "Pack Singles")]["fclm mapped"] == "Pack Singles" and by[("zqbert", "Pack Singles")]["fclm mapped"] == "RSP")
+check("the manager's login is found by name", by[("zqanna", "Pack Singles")]["supervisor login"] == "zqmia",
+      by[("zqanna", "Pack Singles")]["supervisor login"])
+check("an area with no department is reported", report["areas_without_department"] == [], report)
+
+db.set_fclm_sync_settings({"hours_source": "auto"}, "test")
+r = db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)
+check("on 'auto' it waits for 180 days of history before replacing the upload", r["status"] == "waiting", r)
+db.set_fclm_sync_settings({"hours_source": "upload"}, "test")
+check("on 'upload' it never replaces it", db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)["status"] == "skipped")
+db.set_fclm_sync_settings({"hours_source": "fclm"}, "test")
+r = db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)
+conn = db.get_db()
+stored = {(x["employee_login"], x["merged_function"]): dict(x) for x in conn.execute("SELECT * FROM xt_hours").fetchall()}
+conn.close()
+check("on 'fclm' it rebuilds Hours on Function through the upload's own importer", r["status"] == "complete"
+      and len(stored) == len(rows), (r, len(stored)))
+check("and the pages read it as they read an upload: status, trained, hours, shift",
+      stored[("zqbert", "Pack Singles")]["proficiency_status"] == "Practice"
+      and stored[("zqbert", "Pack Singles")]["trained_status"] == "Trained"
+      and stored[("zqbert", "Pack Singles")]["hours_90"] == 25 and stored[("zqbert", "Pack Singles")]["shift"] == "late")
+check("once a day", db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)["status"] == "done today")
+conn = db.get_db()
+for d in range(1, 181):
+    conn.execute("INSERT INTO fclm_sync_log (sync_date, kind, status) VALUES (?,?,?) ON CONFLICT (sync_date, kind) "
+                 "DO UPDATE SET status = excluded.status", ((TODAY - timedelta(days=d)).isoformat(), "day", "complete"))
+conn.execute("DELETE FROM fclm_sync_log WHERE kind = 'hours'")
+conn.commit()
+conn.close()
+db.set_fclm_sync_settings({"hours_source": "auto"}, "test")
+check("with 180 days stored, 'auto' rebuilds by itself", db.rebuild_hours_from_fclm(taken_by="test", today=TODAY)["status"] == "complete")
+
+conn = db.get_db()
+conn.execute("DELETE FROM app_settings WHERE key = ?", ("fclm_area_departments",))
+conn.execute("UPDATE xt_hours SET fclm_mapped = ? WHERE employee_login = ?", ("Receive", "zqdan"))
+conn.commit()
+conn.close()
+db.set_app_setting("fclm_area_departments", json.dumps({"3": "RSP (by hand)"}), "test")
+learned = db.learn_area_departments("test")
+check("the area map is learned from Hours on Function where it is not set by hand",
+      learned.get("18") == "Pack Singles" and learned.get("2") == "Receive", learned)
+check("and a mapping set by hand is kept", learned.get("3") == "RSP (by hand)")
+c = client()
+c.post("/fclm/sync/settings", data={"enabled": "1", "hours_source": "upload", "area_map": "18 = Pack Singles\n3 = RSP"})
+check("the settings form saves the source and the area map", db.get_fclm_sync_settings()["hours_source"] == "upload"
+      and db.get_area_departments() == {"18": "Pack Singles", "3": "RSP"})
+r = c.post("/fclm/sync/settings", data={"enabled": "1", "rebuild_hours": "1"}, follow_redirects=True)
+check("and 'rebuild now' rebuilds whatever the setting", "Hours on Function rebuilt from FCLM" in r.get_data(as_text=True))
 
 print("\n4. The whole loop, in a browser")
 wipe()
@@ -348,13 +464,19 @@ time.sleep(0.5)
 base = f"http://127.0.0.1:{port}"
 STUB = """
 window.__fclmAsked = [];
+window.__phases = [];
+document.addEventListener('ldis-floor-status', function (e) { window.__phases.push(e.detail || {}); });
+window.__synced = new Promise(function (resolve) {
+  document.addEventListener('ldis-fclm-synced', function (e) { resolve(e.detail); });
+  setTimeout(function () { resolve({timeout: true}); }, 60000);
+});
 window.GM_xmlhttpRequest = function (opts) {
   window.__fclmAsked.push(opts.url);
   var body = '<html><body>nothing here</body></html>';
   if (opts.url.indexOf('functionRollup') >= 0 && opts.url.indexOf('processId=1003016') >= 0) body = window.__fx.rollup;
   else if (opts.url.indexOf('processPathRollup') >= 0) body = window.__fx.ppr;
   else if (opts.url.indexOf('employeeRoster') >= 0) body = window.__fx.roster;
-  setTimeout(function () { opts.onload({responseText: body, status: 200}); }, 5);
+  setTimeout(function () { opts.onload({responseText: body, status: 200}); }, 120);
 };
 """
 with sync_playwright() as p:
@@ -382,15 +504,29 @@ with sync_playwright() as p:
     pg.evaluate("() => {" + STUB + "}")
     pg.evaluate("() => { try { localStorage.removeItem('ldisFclmSyncCheckedAt'); } catch (e) {} }")
     served = pg.evaluate("(u) => fetch(u).then(r => r.text())", base + "/floor/provider.user.js")
-    done = pg.evaluate("""(src) => new Promise((resolve) => {
-        document.addEventListener('ldis-fclm-synced', (e) => resolve(e.detail));
-        const s = document.createElement('script'); s.textContent = src; document.head.appendChild(s);
-        setTimeout(() => resolve({timeout: true}), 60000);
-    })""", served)
+    pg.evaluate("""(src) => { const s = document.createElement('script'); s.textContent = src;
+                              document.head.appendChild(s); }""", served)
+    # The page's own check finds the script; then Sync now is pressed
+    # while the automatic run the script began on load is still reading.
+    pg.wait_for_timeout(1500)
+    presence = pg.inner_text("#fclmScript")
+    pg.click("#fclmSyncNow")
+    pg.wait_for_timeout(300)
+    answered = pg.inner_text("#fclmSyncStatus")
+    acks = pg.evaluate("() => window.__phases.filter(p => p.phase === 'fclm-ack')")
+    done = pg.evaluate("() => window.__synced")
+    finished = pg.inner_text("#fclmSyncStatus")
     asked = pg.evaluate("() => window.__fclmAsked")
     b.close()
 srv.shutdown()
 check("the reader ran without a page error", not errors, errors[:2])
+check("the Data Upload card finds the installed script and names its version",
+      "is installed in this browser" in presence and "1.3.0-" in presence, presence)
+check("Sync now, pressed while the automatic run is reading, is answered at once that it is already reading",
+      len(acks) == 1 and acks[0].get("running") is True, acks)
+check("and the card shows that, or the progress after it — never 'no answer'",
+      ("Already reading FCLM" in answered or "from FCLM:" in answered) and "No answer" not in answered, answered)
+check("and the card reports the result when it finishes", "Done:" in finished or "Nothing was due" in finished, finished)
 check("it finished a sync", done and not done.get("timeout"), done)
 site_now = db.get_current_site()
 db.set_current_site(SITE)

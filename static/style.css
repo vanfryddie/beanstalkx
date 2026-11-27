@@ -5127,3 +5127,19 @@ strong.xs-increase, strong.xs-switch, strong.xs-decrease, strong.xs-hire { backg
 .fsync-check { flex-direction: row !important; align-items: center; gap: 6px !important; }
 .xp-source { font-size: 11.5px; color: var(--text-lo); }
 .xp-source.is-fclm { color: var(--viz-series-1); }
+
+/* Planned volume & scenarios. */
+.xc-saved { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.xc-chip { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 9px; font-size: 12.5px; }
+.xc-chip.is-on { border-color: var(--viz-series-1); background: rgba(42,120,214,.08); }
+.xc-chip a, .xc-new { font-size: 12px; }
+.xc-new { align-self: center; }
+.xc-head { margin: 0 0 10px; }
+.xc-head input[type=text] { width: 22ch; max-width: 100%; }
+.xc-head .xs-wide input { width: 100%; max-width: 60ch; }
+.xc-table input { width: 10ch; text-align: right; }
+.xc-actions { display: flex; gap: 8px; margin-top: 12px; }
+.xs-banner-scenario { background: rgba(42,120,214,.10); color: inherit; }
+.fsync-script { margin: 6px 0 0; font-size: 12px; color: var(--text-lo); }
+.fsync-script.is-ok { color: var(--viz-series-1); }
+.fsync-script.is-old, .fsync-script.is-missing { color: var(--viz-series-2); }

@@ -5197,7 +5197,7 @@ XT_PLANNING_KINDS = [
     {"key": "roster", "source": "FCLM Employee Roster — synced daily", "label": "Employee roster", "export": "or upload the employeeList CSV",
      "grain": "one row per associate", "status": "roster",
      "detail": "Who is employed today, and on which shift pattern. Replaces the previous roster."},
-    {"key": "hours", "source": "Upload — trained status is not in FCLM", "label": "Hours on Function", "export": "LDMT Hours on Function CSV",
+    {"key": "hours", "source": "Derived from FCLM hours once 180 days are stored — or upload", "label": "Hours on Function", "export": "LDMT Hours on Function CSV",
      "grain": "one row per associate and function", "status": "hours",
      "detail": "Home department, and who is trained on what. Replaces the previous file."},
     {"key": "calendar", "source": "Upload — the schedule is in SSPOT, not FCLM", "label": "Shift calendar", "export": "SSPOT Information CSV",
@@ -5333,16 +5333,37 @@ def build_standards_view(scenario="general"):
     ready = bool((status["process_day"]["n"] or 0) and (status["associate_day"]["n"] or 0))
     paths = _xt_paths_with_sources(scenario)
 
+    basis = (request.args.get("basis") or "history").strip()
     view = {"sample": sample, "weeks": weeks, "windows": XT_EVAL_WINDOWS, "department": department,
             "shift": shift, "settings": settings, "status": status, "ready": ready or sample,
             "result": None, "rows": [], "changes": [], "day_plan": None, "departments": [],
-            "llm_enabled": bedrock_client.enabled()}
+            "llm_enabled": bedrock_client.enabled(), "basis": basis, "scenario": None,
+            "scenarios": db.list_scenarios(), "forecast": [], "editing": None}
     if not (ready or sample):
         return view
-    prep, memo = _xt_prepared(sample, weeks, paths, settings["shift_hours"])
-    eval_key = (department, shift, settings["coverage_bar"], settings["band"], settings["absence_pct"])
+    # A scenario is judged on the longer window: its weekday profiles,
+    # rates and forecasts learn from a quarter rather than the replay's
+    # eight weeks.
+    scenario = None
+    if basis != "history":
+        mix_prep, _ = _xt_prepared(sample, XT_MIX_WEEKS, paths, settings["shift_hours"])
+        if basis == "forecast":
+            scenario = xt_planning.forecast_scenario(mix_prep)
+        elif basis.isdigit():
+            scenario = db.get_scenario(int(basis))
+        if scenario is None:
+            basis = view["basis"] = "history"
+    if scenario is not None:
+        prep, memo = mix_prep, _
+    else:
+        prep, memo = _xt_prepared(sample, weeks, paths, settings["shift_hours"])
+    view["scenario"] = scenario
+    # Lines are keyed by (process, shift) tuples, which JSON cannot key by.
+    scenario_key = (repr(sorted((k, str(v)) for k, v in scenario.items() if k != "lines"))
+                    + repr(sorted((scenario.get("lines") or {}).items()))) if scenario else None
+    eval_key = (department, shift, settings["coverage_bar"], settings["band"], settings["absence_pct"], scenario_key)
     if eval_key not in memo["evaluations"]:
-        memo["evaluations"][eval_key] = xt_planning.evaluate(prep, paths, settings, department, shift)
+        memo["evaluations"][eval_key] = xt_planning.evaluate(prep, paths, settings, department, shift, scenario)
     result = memo["evaluations"][eval_key]
     view["result"] = result
     view["departments"] = sorted({d for d in prep.departments.values() if d}, key=str.lower)
@@ -5357,6 +5378,16 @@ def build_standards_view(scenario="general"):
     view["changes"] = result["changes"]
     view["processes"] = sorted({p.get("process") for p in paths if p.get("process")}, key=str.lower)
     view["day_plan"] = _xt_day_plan_from_request(prep, settings)
+    # The scenario editor: the learned forecast beside every input, from
+    # the quarter-long history, for the scenario being edited (or a new one).
+    fprep, _m = _xt_prepared(sample, XT_MIX_WEEKS, paths, settings["shift_hours"])
+    edit = request.args.get("edit")
+    editing = db.get_scenario(int(edit)) if edit and edit.isdigit() else None
+    start = date.fromisoformat(editing["start"]) if editing and editing.get("start") else date.today() + timedelta(days=1)
+    weeks_ahead = int(editing["weeks"]) if editing else 4
+    view["editing"] = editing
+    view["edit_start"], view["edit_weeks"] = start.isoformat(), weeks_ahead
+    view["forecast"] = xt_planning.forecast_table(fprep, start=start, weeks=weeks_ahead)
     return view
 
 
@@ -5450,6 +5481,10 @@ were in, plus the cross-trainees the standard would provide (limited to what the
 department could spare after its own volume), would have met plan. Coverage is the share of \
 replayed shifts that met plan; the bar is given.
 
+When "basis" is "scenario", the shifts are not past ones: they are the future days of a \
+planning scenario (planned or forecast volume), each played out against the volume swings and \
+attendance of recent same weekdays. Say so, and do not describe them as what happened.
+
 For each change, write two or three sentences a site manager can check, using the evidence \
 given: why the current standard falls short or is more than the work needs, and why the proposed \
 one is better. Do not decide anything new and do not recompute.
@@ -5477,7 +5512,12 @@ def xt_standards_explain():
         changes = view["changes"][:12]
         if not changes:
             return jsonify({"status": "nothing", "slots": {}})
-        payload = {"coverage_bar": view["settings"]["coverage_bar"], "changes": [{
+        sc = view.get("scenario")
+        payload = {"coverage_bar": view["settings"]["coverage_bar"],
+                   "basis": view["result"]["basis"],
+                   "scenario": {"name": sc["name"], "start": sc["start"], "weeks": sc["weeks"],
+                                "volume_pct": round((sc.get("multiplier") or 1) * 100)} if sc else None,
+                   "changes": [{
             "id": c["id"], "process": c["process"], "shift": c["shift"], "owner": c["owner"],
             "verdict": c["verdict"], "current_target": c["target"], "new_target": c.get("new_target"),
             "sources": c.get("sources"), "alternative": c.get("alternative"),
@@ -5495,7 +5535,8 @@ def xt_standards_explain():
         for item in (answer.get("changes") or []) if isinstance(answer, dict) else []:
             if not isinstance(item, dict) or item.get("id") not in by_id:
                 continue
-            allowed = _clm_numbers(by_id[item["id"]]) | _clm_numbers({"bar": payload["coverage_bar"]})
+            allowed = (_clm_numbers(by_id[item["id"]]) | _clm_numbers({"bar": payload["coverage_bar"]})
+                       | _clm_numbers(payload.get("scenario") or {}))
             kept, lost = _clm_vet_reasons([item.get("explanation")], allowed, 1)
             dropped += lost
             if kept:
@@ -5504,6 +5545,65 @@ def xt_standards_explain():
         application.logger.exception("Standards explanation failed")
         return jsonify({"status": "error", "note": CLM_LLM_UNAVAILABLE["error"], "slots": {}})
     return jsonify({"status": status, "slots": slots, "dropped": dropped})
+
+
+@application.route("/ld-management/cross-training/model/scenario", methods=["POST"])
+def xt_scenario_save():
+    """Save a scenario: planned units a day and planned rate per process
+    and shift for the weeks ahead. A blank line means "use the forecast";
+    the multiplier scales the whole scenario, forecast lines included."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers can save scenarios.")
+    back_args = {"tab": "model"}
+    if request.form.get("sample") == "1":
+        back_args["sample"] = "1"
+    scenario_id = request.form.get("scenario_id")
+    if request.form.get("delete") and scenario_id and scenario_id.isdigit():
+        db.delete_scenario(int(scenario_id))
+        flash("Scenario deleted.", "success")
+        return redirect(url_for("cross_training", **back_args) + "#scenarios")
+    name = (request.form.get("name") or "").strip()[:80]
+    try:
+        start = date.fromisoformat(request.form.get("start") or "")
+        weeks = int(request.form.get("weeks") or 4)
+        multiplier = float(request.form.get("multiplier") or 100) / 100.0
+    except ValueError:
+        flash("A scenario needs a start date, a number of weeks, and a volume % as numbers.", "warning")
+        return redirect(url_for("cross_training", **back_args) + "#scenarios")
+    if not name or not 1 <= weeks <= 26 or not 0.1 <= multiplier <= 5:
+        flash("Give the scenario a name, 1 to 26 weeks, and a volume between 10% and 500%.", "warning")
+        return redirect(url_for("cross_training", **back_args) + "#scenarios")
+    lines = []
+    for key, value in request.form.items():
+        if not key.startswith("units|"):
+            continue
+        _, process, shift = key.split("|", 2)
+        if shift not in db.SHIFTS:
+            continue
+
+        def number(raw):
+            raw = (raw or "").strip().replace(",", "")
+            if not raw:
+                return None
+            n = float(raw)
+            if n < 0:
+                raise ValueError(raw)
+            return n
+        try:
+            units = number(value)
+            rate = number(request.form.get(f"rate|{process}|{shift}"))
+        except ValueError:
+            flash(f"Planned units and rate for {process} ({shift}) must be numbers.", "warning")
+            return redirect(url_for("cross_training", **back_args) + "#scenarios")
+        lines.append((process, shift, units, rate or None))
+    saved = db.save_scenario(int(scenario_id) if scenario_id and scenario_id.isdigit() else None, name,
+                             start.isoformat(), weeks, multiplier, (request.form.get("notes") or "").strip()[:500],
+                             lines, login_id)
+    flash(f"Scenario “{name}” saved. The standards are now judged against it.", "success")
+    return redirect(url_for("cross_training", basis=str(saved), edit=str(saved), **back_args))
 
 
 @application.route("/ld-management/cross-training/model/config", methods=["POST"])
@@ -6683,14 +6783,22 @@ FLOOR_POST_ROLES = OPS_SELF_ROLES | OPS_MANAGER_ROLES | ADMIN_TIER_ROLES
 
 
 def _floor_match_lines():
-    """Where the floor script runs: the pages that show floor state.
+    """Where the floor script runs: every console page.
+
+    It used to run only on the pages that show floor state. Since 1.3 it
+    also does the daily FCLM sync, whose "Sync now" button is on L&D
+    Settings, and which is meant to start from wherever people are in the
+    console; matched to two page groups it never loaded beside its own
+    button, and the button reported no script however it was installed
+    (27 Nov). On a page without the floor marker it only checks, at most
+    every thirty minutes, whether the server has a day for it to read.
 
     Same two rules as the Shift Pulse provider's @match lines — no query
     string, because that is not part of a match pattern, and both
     schemes, because a load balancer that terminates TLS leaves
     request.url_root saying http while the address bar says https."""
     host = urlsplit(request.url_root).netloc
-    paths = ("/overview*", "/ld-management/cross-training*")
+    paths = ("/*",)
     return [f"// @match        {scheme}://{host}{path}"
             for path in paths for scheme in ("https", "http")]
 
@@ -7034,6 +7142,9 @@ def fclm_sync_day():
     } for i in ppr if isinstance(i, dict)]
     failed = [_floor_text(f, 60) for f in (payload.get("failed") or [])[:60]]
     result = db.record_fclm_day(day.isoformat(), clean_rows, clean_ppr, failed, taken_by=login_id)
+    # Hours on Function follows the history it is derived from; the
+    # setting and the 180-day coverage decide whether it is rebuilt yet.
+    result["hours"] = db.rebuild_hours_from_fclm(taken_by=login_id)
     _XT_PREP_CACHE.clear()
     return jsonify({"ok": True, **result})
 
@@ -7064,7 +7175,9 @@ def fclm_sync_settings_save():
         return _deny("Only admins and trainers can change the FCLM sync.")
     back = redirect(url_for("ld_settings", tab="data") + "#fclm-sync")
     values = {"enabled": request.form.get("enabled") == "1"}
-    for field, low, high in (("backfill_days", 1, 120), ("days_per_run", 1, 14)):
+    if request.form.get("hours_source") in db.FCLM_HOURS_SOURCES:
+        values["hours_source"] = request.form.get("hours_source")
+    for field, low, high in (("backfill_days", 1, 400), ("days_per_run", 1, 14)):
         raw = (request.form.get(field) or "").strip()
         if raw:
             try:
@@ -7091,6 +7204,22 @@ def fclm_sync_settings_save():
                 if item.strip() and process.strip():
                     mapping[item.strip()] = process.strip()
         db.set_app_setting("fclm_ppr_map", json.dumps(mapping), login_id)
+    if request.form.get("area_map") is not None:
+        areas = {}
+        for line in request.form.get("area_map").splitlines():
+            if "=" in line:
+                area, _, dept = line.partition("=")
+                if area.strip() and dept.strip():
+                    areas[area.strip()] = dept.strip()
+        db.set_app_setting("fclm_area_departments", json.dumps(areas), login_id)
+    if request.form.get("rebuild_hours"):
+        result = db.rebuild_hours_from_fclm(taken_by=login_id, force=True)
+        _XT_PREP_CACHE.clear()
+        flash(f"Hours on Function rebuilt from FCLM: {result.get('loaded', 0)} rows for "
+              f"{result.get('people', 0)} people, as of {result.get('asof', '?')}."
+              if result["status"] == "complete" else f"Nothing rebuilt: {result['status']}.",
+              "success" if result["status"] == "complete" else "warning")
+        return back
     if request.form.get("resync"):
         # Forget the log for the window, so every day is read again.
         conn = db.get_db()
@@ -8058,6 +8187,9 @@ def ld_settings():
         planning_status=db.planning_data_status() if tab == "data" else None,
         fclm_status=db.fclm_sync_status() if tab == "data" else None,
         fclm_ppr_map=db.get_fclm_ppr_map() if tab == "data" else {},
+        fclm_areas=db.learn_area_departments(login_id) if tab == "data" else {},
+        fclm_coverage=db.fclm_history_coverage() if tab == "data" else 0,
+        floor_reader_version=_floor_reader_version() if tab == "data" else None,
         planning_kinds=XT_PLANNING_KINDS,
         weekdays=db.WEEKDAYS,
         weekday_short=db.WEEKDAY_SHORT,

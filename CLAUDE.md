@@ -152,6 +152,17 @@ holds a Midway session.
   (`perf/fixtures/fclm_*.html`). Never commit a saved FCLM page as is.
 - The test harness lifts top-level `var` constants line by line: keep
   each on one line.
+- **The script's @match is `/*`.** It once matched only `/overview*` and
+  the cross-training pages, so it never loaded beside its own Sync now
+  button on L&D Settings. A test that injects the script by hand cannot
+  see that; `test_fclm_sync.py` checks the served @match lines against
+  the pages the sync is used from.
+- Hours on Function can be **derived from FCLM** (`db.rebuild_hours_from_fclm`):
+  the proficiency formula over 60/90/180-day hours, written in the LDMT
+  layout and loaded through `ingest_xt_hours_csv`.
+- **Scenarios** (`xt_planning.scenario_days`) are judged by the same
+  rules as the replay, on future days played against past same weekdays.
+  The forecast is a small graded model, not an LLM.
 
 ## Front end
 

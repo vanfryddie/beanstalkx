@@ -358,7 +358,7 @@ session, so it cannot read FCLM on its own.
 | Roster | FCLM **Employee Roster** | once a day |
 | Associate day | FCLM **Function Rollup**, one request per process path the floor sweep covers | each past day, once |
 | Process day | the associate day summed, with the planned rate from FCLM **Process Path Rollup** | each past day, once |
-| Hours on Function | still uploaded: trained status is not in FCLM | when it changes |
+| Hours on Function | derived from the FCLM history (below) once 180 days are stored; uploaded until then | daily |
 | Shift calendar | still uploaded: the schedule is in SSPOT, not FCLM | weekly, with future weeks |
 
 **How a day is read.** One operating day runs from the usual start of
@@ -377,8 +377,8 @@ The rate is that line's volume over its hours at plan. Overrides go in
 the sync settings, one "line item = process" per line.
 
 **What FCLM does not have:** planned *volume*. The PPR's plan is a rate.
-Coverage is then judged on actual volume (planned units where a file
-supplies them), and "met plan" on rate.
+Planned volume is entered on the Cross Learning Model tab instead, as
+scenarios (below).
 
 **When it runs.** On any console page, at most every 30 minutes: it reads
 yesterday first, then fills the history behind it, a few days per run
@@ -390,3 +390,65 @@ of the one on record is refused, not treated as most of the site leaving.
 
 **Load on FCLM:** about 30 requests per day read (one per process path
 plus one PPR) and one roster a day, three at a time.
+
+
+## Hours on Function from FCLM (27 Nov)
+
+The LDMT export's statuses are formulas over the hours a person booked on
+a function, which the sync stores day by day, so the file is now rebuilt
+from FCLM:
+
+- **Proficiency:** 20 hours or more in the last 60 days is Proficient;
+  else 20 in 90 is Practice; else 20 in 180 is Refresh; else Lapsed.
+- **Trained:** Proficient, Practice or Refresh is Trained; Lapsed is not.
+- **Home department:** the roster's Management Area ID, mapped to a
+  department. The map is learned from the last uploaded Hours on Function
+  where it can be, and is editable in the sync settings.
+- **Manager:** the roster's manager name, matched to a login on the
+  roster. An ambiguous name matches nobody.
+
+The rebuilt file goes through the upload's own importer, so exclusions,
+the Insights history and every page behave exactly as they do for an
+upload. Setting **Trained status from**: *auto* (the default) waits for
+180 days of complete history, because before then someone trained four
+months ago reads as Lapsed for want of days not yet read; *FCLM now*;
+or *the LDMT upload*. The sync's default history is therefore 180 days,
+six days per run. The first fill is about 5,000 requests to FCLM, spread
+over about thirty runs.
+
+Only the process paths the sync reads count. A function worked under a
+process path outside that list has no hours, so it derives as Lapsed.
+
+## Planned volume and scenarios (27 Nov)
+
+The **Judge against** chip at the top of the Cross Learning Model tab
+picks what the standards are judged on: the past (the replay), the
+**forecast** for the next four weeks, or a saved **scenario**.
+
+- **Forecast:** learned from this site's history, per process and shift.
+  It is the average of the last two weeks, each weekday at its usual
+  share of the week, and the trend of the last eight weeks at half
+  strength, capped at ±5% a week. Each forecast is graded by refitting
+  it as of each of the last four weeks and scoring the week after, which
+  it had not seen. The editor shows that accuracy and the usual miss
+  beside every input. It learns from planned units where the data has
+  them, else from units done. Units done reads short days as quiet ones,
+  and the page says which.
+- **Scenario:** a name, start, weeks, a volume % for the whole scenario,
+  and per process and shift the planned units a day and planned rate.
+  Blank lines use the forecast. Planned units are spread over the week by
+  the process's own weekday pattern.
+- **How a scenario is judged:** each future day is played out once for
+  each of the last eight past days on the same weekday, with that day's
+  volume swing (for this process and for every lender's own work) and
+  that day's attendance in every department. The same verdict rules
+  then apply as for the replay. A target that covers 95% of these covers
+  the bad days too.
+- **Consistency:** a forecast that says the weeks ahead look like the
+  past reaches the past's verdict on 85% or more of standards (39 of 42
+  on the sample). That is tested, so scenario differences come from the
+  volume entered, not from the model.
+
+The language model does not produce volumes. It explains the verdicts,
+told whether the shifts were past or planned, and its sentences go
+through the same number check.

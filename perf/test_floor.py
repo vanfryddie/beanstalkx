@@ -382,8 +382,14 @@ check("every @match is a valid match pattern",
 check("no @match carries a query string", not [m for m in matches if "?" in m], str(matches))
 check("both schemes are covered",
       {m.split("://")[0] for m in matches} == {"http", "https"}, str(sorted(matches)))
-check("it reaches the Staffing tab and Cross Training",
-      any("/overview" in m for m in matches) and any("cross-training" in m for m in matches),
+def _covers(path):
+    """Whether any @match covers the path, as the extension reads one."""
+    return any(re.fullmatch(re.escape(m.split("://", 1)[1].split("/", 1)[1] and "/" + m.split("://", 1)[1].split("/", 1)[1])
+                            .replace(r"\*", ".*"), path) for m in matches)
+
+
+check("it reaches the Staffing tab, Cross Training, and L&D Settings (where the FCLM sync's button is)",
+      _covers("/overview") and _covers("/ld-management/cross-training") and _covers("/ld-management/settings"),
       str(matches))
 check("FCLM is declared as a connect target", "@connect      fclm-portal.amazon.com" in meta)
 check("no placeholder survived templating",

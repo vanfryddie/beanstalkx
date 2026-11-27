@@ -1031,7 +1031,8 @@
         var to = new Date(day.window_end);
         var rows = [];
         var failed = [];
-        announce({ phase: 'fclm-day', date: day.date });
+        var done = 0;
+        announce({ phase: 'fclm-day', date: day.date, done: 0, total: plan.processes.length });
         return runPooled(plan.processes, 3, function (process) {
             return fetchText(rollupUrl(plan.warehouse_id, process.process_id, from, to))
                 .then(function (html) {
@@ -1043,7 +1044,11 @@
                         });
                     });
                 })
-                .catch(function (e) { log('fclm rollup failed', process.key, e); failed.push(process.key); });
+                .catch(function (e) { log('fclm rollup failed', process.key, e); failed.push(process.key); })
+                .then(function () {
+                    done += 1;
+                    announce({ phase: 'fclm-day', date: day.date, done: done, total: plan.processes.length });
+                });
         }).then(function () {
             return fetchText(pprDayUrl(plan.warehouse_id, day.date))
                 .then(parsePPR)
@@ -1098,7 +1103,16 @@
     }
 
     window.ldisFclmSync = fclmDailySync;
-    document.addEventListener('ldis-fclm-sync', function () { fclmDailySync(true); });
+    /* Answer at once, whatever happens next: a page asking for a sync
+       while the automatic one is already reading FCLM used to hear
+       nothing for minutes and conclude no script was installed. */
+    document.addEventListener('ldis-fclm-sync', function () {
+        announce({ phase: 'fclm-ack', running: syncState.running, version: READER_VERSION });
+        if (!syncState.running) fclmDailySync(true);
+    });
+    document.addEventListener('ldis-fclm-ping', function () {
+        announce({ phase: 'fclm-present', running: syncState.running, version: READER_VERSION });
+    });
 
     /* --------------------------------------------------------------- */
 

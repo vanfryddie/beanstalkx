@@ -158,6 +158,7 @@ if USE_POSTGRES:
 # below). A few tables use a natural-key primary key instead (login,
 # employee_login) and have no 'id' column at all.
 _TABLES_WITH_ID_PK = {
+    "xt_scenarios",
     "tracked_items", "weekly_plan", "escalations", "record_escalations",
     "trainer_metrics", "ops_structure", "uploads", "trainings",
     "training_topic_links", "xt_hours", "training_slots", "slot_attendees",
@@ -2494,6 +2495,24 @@ def init_db():
             PRIMARY KEY (work_date, shift, employee_login, process)
         );
         CREATE INDEX IF NOT EXISTS idx_associate_day_date ON associate_day(work_date);
+        CREATE TABLE IF NOT EXISTS xt_scenarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            start_date TEXT,
+            weeks INTEGER,
+            multiplier REAL,
+            notes TEXT,
+            created_by TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS xt_scenario_lines (
+            scenario_id INTEGER NOT NULL,
+            process TEXT NOT NULL,
+            shift TEXT NOT NULL,
+            planned_units REAL,
+            plan_rate REAL,
+            PRIMARY KEY (scenario_id, process, shift)
+        );
         CREATE TABLE IF NOT EXISTS fclm_sync_log (
             sync_date TEXT NOT NULL,
             kind TEXT NOT NULL,
@@ -10834,7 +10853,11 @@ def load_planning_data(since=None):
 # way the data came in.
 # ====================================================================
 
-FCLM_SYNC_DEFAULTS = {"enabled": True, "backfill_days": 28, "days_per_run": 3, "day_start": "06:00"}
+# 180 days of history, because the proficiency rule reads 180 days of
+# hours; six days a run so the first fill takes about thirty runs.
+FCLM_SYNC_DEFAULTS = {"enabled": True, "backfill_days": 180, "days_per_run": 6, "day_start": "06:00",
+                      "hours_source": "auto"}
+FCLM_HOURS_SOURCES = ("auto", "upload", "fclm")
 FCLM_ROSTER_SHRINK_LIMIT = 0.5
 
 
@@ -10845,7 +10868,9 @@ def get_fclm_sync_settings():
         settings.update({k: v for k, v in json.loads(raw or "{}").items() if k in FCLM_SYNC_DEFAULTS})
     except (ValueError, AttributeError):
         pass
-    settings["backfill_days"] = max(1, min(120, int(settings["backfill_days"] or 28)))
+    settings["backfill_days"] = max(1, min(400, int(settings["backfill_days"] or 180)))
+    if settings.get("hours_source") not in FCLM_HOURS_SOURCES:
+        settings["hours_source"] = "auto"
     settings["days_per_run"] = max(1, min(14, int(settings["days_per_run"] or 3)))
     if not re.match(r"^\d{1,2}:\d{2}$", str(settings.get("day_start") or "")):
         settings["day_start"] = FCLM_SYNC_DEFAULTS["day_start"]
@@ -11155,3 +11180,252 @@ def fclm_sync_status(today=None):
             "partial": partial, "missing": len(window) - len(complete) - len(partial),
             "newest_complete": complete[0] if complete else None, "latest": latest, "latest_detail": detail,
             "roster": roster, "roster_detail": json.loads(roster["detail"]) if roster and roster.get("detail") else {}}
+
+
+
+# ====================================================================
+# Scenarios: planned volume for the weeks ahead
+# ====================================================================
+
+def list_scenarios():
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM xt_scenarios ORDER BY updated_at DESC, id DESC").fetchall()]
+    conn.close()
+    return rows
+
+
+def get_scenario(scenario_id):
+    """A saved scenario in the shape xt_planning reads: lines keyed by
+    (process, shift), process lower-cased as the evaluation keys it."""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM xt_scenarios WHERE id = ?", (scenario_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    lines = conn.execute("SELECT * FROM xt_scenario_lines WHERE scenario_id = ?", (scenario_id,)).fetchall()
+    conn.close()
+    return {"id": row["id"], "name": row["name"], "start": row["start_date"], "weeks": row["weeks"] or 4,
+            "multiplier": row["multiplier"] or 1.0, "notes": row["notes"],
+            "lines": {(l["process"].strip().lower(), l["shift"]): {"planned_units": l["planned_units"],
+                                                                   "plan_rate": l["plan_rate"]}
+                      for l in lines}}
+
+
+def save_scenario(scenario_id, name, start_date, weeks, multiplier, notes, lines, updated_by):
+    """Create or replace a scenario. `lines` is [(process, shift,
+    planned_units or None, plan_rate or None)]; a line with neither is
+    not stored, which means "use the forecast"."""
+    conn = get_db()
+    now = _now()
+    if scenario_id:
+        conn.execute("UPDATE xt_scenarios SET name=?, start_date=?, weeks=?, multiplier=?, notes=?, created_by=?, "
+                     "updated_at=? WHERE id=?", (name, start_date, weeks, multiplier, notes, updated_by, now, scenario_id))
+    else:
+        cur = conn.execute("INSERT INTO xt_scenarios (name, start_date, weeks, multiplier, notes, created_by, updated_at) "
+                           "VALUES (?,?,?,?,?,?,?)", (name, start_date, weeks, multiplier, notes, updated_by, now))
+        scenario_id = cur.lastrowid
+    conn.execute("DELETE FROM xt_scenario_lines WHERE scenario_id = ?", (scenario_id,))
+    for process, shift, units, rate in lines:
+        if units is None and rate is None:
+            continue
+        conn.execute("INSERT INTO xt_scenario_lines (scenario_id, process, shift, planned_units, plan_rate) "
+                     "VALUES (?,?,?,?,?)", (scenario_id, process, shift, units, rate))
+    conn.commit()
+    conn.close()
+    return scenario_id
+
+
+def delete_scenario(scenario_id):
+    conn = get_db()
+    conn.execute("DELETE FROM xt_scenario_lines WHERE scenario_id = ?", (scenario_id,))
+    conn.execute("DELETE FROM xt_scenarios WHERE id = ?", (scenario_id,))
+    conn.commit()
+    conn.close()
+
+
+# ====================================================================
+# Hours on Function, derived from FCLM
+#
+# The LDMT export's two status columns are formulas over hours a person
+# booked on a function, which the FCLM sync already stores day by day:
+#
+#   Proficiency: >= 20h in 60 days Proficient; else >= 20h in 90 Practice;
+#                else >= 20h in 180 Refresh; else Lapsed.
+#   Trained:     Proficient, Practice or Refresh are Trained; Lapsed is not.
+#
+# So the file can be rebuilt here, in its own layout, and loaded through
+# ingest_xt_hours_csv — exclusions, the Insights rollup and every page
+# that reads xt_hours then behave exactly as they do for an upload.
+# ====================================================================
+
+HOURS_WINDOWS = (60, 90, 180)
+PROFICIENCY_HOURS = 20.0
+
+
+def fclm_proficiency(h60, h90, h180):
+    if (h60 or 0) >= PROFICIENCY_HOURS:
+        return "Proficient"
+    if (h90 or 0) >= PROFICIENCY_HOURS:
+        return "Practice"
+    if (h180 or 0) >= PROFICIENCY_HOURS:
+        return "Refresh"
+    return "Lapsed"
+
+
+def fclm_trained(proficiency):
+    return "Trained" if proficiency in ("Proficient", "Practice", "Refresh") else "Not Trained"
+
+
+def get_area_departments():
+    """Management Area ID -> home department. The roster carries the area
+    id; its Department ID is a cost centre spanning several departments
+    (at SCN2, 1299 covers RSP, Pack Multis, Ship Dock and Pack Singles),
+    so the area is what names a person's department."""
+    try:
+        return {str(k).strip(): str(v).strip()
+                for k, v in json.loads(get_app_setting("fclm_area_departments") or "{}").items() if v}
+    except (ValueError, AttributeError):
+        return {}
+
+
+def learn_area_departments(updated_by="system"):
+    """Fill the area map from data already here: for every area, the
+    department most of its people carry in the current Hours on Function
+    data. Entries a person set by hand are kept; only gaps are filled, so
+    once Hours on Function is itself derived from FCLM the map stays
+    what it was learned as rather than learning from its own output."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT r.management_area_id AS area, h.fclm_mapped AS dept, COUNT(DISTINCT h.employee_login) AS n "
+        "FROM employee_roster r JOIN xt_hours h ON LOWER(h.employee_login) = r.employee_login "
+        "WHERE r.management_area_id IS NOT NULL AND h.fclm_mapped IS NOT NULL "
+        "GROUP BY r.management_area_id, h.fclm_mapped").fetchall()
+    conn.close()
+    best = {}
+    for r in rows:
+        if r["area"] not in best or r["n"] > best[r["area"]][1]:
+            best[r["area"]] = (r["dept"], r["n"])
+    current = get_area_departments()
+    merged = dict({k: v for k, (v, _n) in best.items()}, **current)
+    if merged != current:
+        set_app_setting("fclm_area_departments", json.dumps(merged), updated_by)
+    return merged
+
+
+def fclm_history_coverage(days=180, today=None):
+    """Complete days stored in the last `days`, oldest included."""
+    today = today or date.today()
+    since = (today - timedelta(days=days)).isoformat()
+    conn = get_db()
+    n = conn.execute("SELECT COUNT(*) AS n FROM fclm_sync_log WHERE kind = 'day' AND status = 'complete' "
+                     "AND sync_date >= ? AND sync_date < ?", (since, today.isoformat())).fetchone()["n"]
+    conn.close()
+    return n
+
+
+def _name_key(name):
+    text = re.sub(r"\s+", " ", (name or "").strip().lower())
+    if "," in text:
+        last, _, first = text.partition(",")
+        return last.strip() + "," + (first.strip().split(" ")[0] if first.strip() else "")
+    return text
+
+
+def derive_hours_on_function(today=None):
+    """Hours on Function in the LDMT layout, from the FCLM history: one
+    row per person on the roster and function they booked hours on in the
+    last 180 days, with the 60/90/180-day totals and the two statuses.
+    Returns (csv_rows, report)."""
+    today = today or date.today()
+    asof = today - timedelta(days=1)
+    since = (asof - timedelta(days=HOURS_WINDOWS[-1] - 1)).isoformat()
+    areas = get_area_departments()
+    conn = get_db()
+    roster = {r["employee_login"]: dict(r) for r in conn.execute("SELECT * FROM employee_roster").fetchall()}
+    work = conn.execute(
+        "SELECT employee_login, process, work_date, SUM(hours) AS hours FROM associate_day "
+        "WHERE work_date >= ? AND work_date <= ? GROUP BY employee_login, process, work_date",
+        (since, asof.isoformat())).fetchall()
+    conn.close()
+    managers = {}
+    for login, r in roster.items():
+        key = _name_key(r.get("full_name"))
+        managers[key] = None if key in managers else login     # an ambiguous name maps to nobody
+    totals = defaultdict(lambda: {60: 0.0, 90: 0.0, 180: 0.0, "last": None})
+    for w in work:
+        if (w["process"] or "").strip().lower() == "indirect":
+            continue
+        age = (asof - date.fromisoformat(w["work_date"])).days
+        t = totals[(w["employee_login"], w["process"])]
+        for window in HOURS_WINDOWS:
+            if age < window:
+                t[window] += w["hours"] or 0
+        if (w["hours"] or 0) > 0 and (t["last"] is None or w["work_date"] > t["last"]):
+            t["last"] = w["work_date"]
+    rows, no_area, not_on_roster = [], set(), set()
+    for (login, process), t in sorted(totals.items()):
+        person = roster.get(login)
+        if not person:
+            not_on_roster.add(login)
+            continue
+        dept = areas.get(str(person.get("management_area_id") or "").strip())
+        if not dept:
+            no_area.add(person.get("management_area_id") or "none")
+        proficiency = fclm_proficiency(t[60], t[90], t[180])
+        rows.append({
+            "fc": get_current_site(), "fclm mapped": dept or "", "employee id": person.get("employee_id") or "",
+            "employee login": login, "user name": person.get("full_name") or "",
+            "supervisor login": managers.get(_name_key(person.get("manager_name"))) or "",
+            "Proficiency Status": proficiency, "Merged Functions": process,
+            "job title": person.get("job_title") or "", "active status": "1",
+            "Trained Status": fclm_trained(proficiency), "fclm area": person.get("management_area_id") or "",
+            "shift": person.get("shift_pattern") or "", "last date on process": t["last"] or "",
+            "Total_Hours_60": round(t[60], 2), "Total_Hours_90": round(t[90], 2), "Total_Hours_180": round(t[180], 2),
+        })
+    return rows, {"rows": len(rows), "people": len({r["employee login"] for r in rows}),
+                  "areas_without_department": sorted(no_area), "not_on_roster": len(not_on_roster),
+                  "asof": asof.isoformat()}
+
+
+def rebuild_hours_from_fclm(taken_by=None, force=False, today=None):
+    """Replace Hours on Function with the FCLM-derived version, when the
+    setting allows: always for "fclm", never for "upload", and for "auto"
+    once 180 days of complete history are stored — before that the
+    totals would be short, and someone trained four months ago would read
+    as Lapsed for want of the days not yet read. At most once a day."""
+    settings = get_fclm_sync_settings()
+    today = today or date.today()
+    source = settings["hours_source"]
+    coverage = fclm_history_coverage(HOURS_WINDOWS[-1], today)
+    if source == "upload" and not force:
+        return {"status": "skipped", "reason": "Hours on Function comes from uploads (setting)"}
+    if source == "auto" and coverage < HOURS_WINDOWS[-1] - 3 and not force:
+        return {"status": "waiting", "reason": f"{coverage} of 180 days of FCLM history stored", "coverage": coverage}
+    conn = get_db()
+    done = conn.execute("SELECT status FROM fclm_sync_log WHERE kind = 'hours' AND sync_date = ?",
+                        (today.isoformat(),)).fetchone()
+    conn.close()
+    if done and done["status"] == "complete" and not force:
+        return {"status": "done today"}
+    learn_area_departments(taken_by or "system")
+    rows, report = derive_hours_on_function(today)
+    conn = get_db()
+    if not rows:
+        _fclm_log(conn, today.isoformat(), "hours", "empty", 0, report, taken_by)
+        conn.commit()
+        conn.close()
+        return {"status": "empty", **report}
+    conn.close()
+    header = list(rows[0].keys())
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=header)
+    writer.writeheader()
+    writer.writerows(rows)
+    loaded = ingest_xt_hours_csv(out.getvalue().encode("utf-8"), "FCLM-derived Hours on Function",
+                                 uploaded_by=taken_by)
+    report.update(coverage=coverage, loaded=loaded)
+    conn = get_db()
+    _fclm_log(conn, today.isoformat(), "hours", "complete", loaded, report, taken_by)
+    conn.commit()
+    conn.close()
+    return {"status": "complete", **report}
