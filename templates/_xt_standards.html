@@ -130,6 +130,45 @@
           {% for line in c.evidence %}<p>{{ line }}</p>{% endfor %}
         </details>
         {% endif %}
+        {% for fb in c.feedback %}
+        <p class="xs-fb-past">{{ {'agree': 'Agreed', 'disagree': 'Disagreed', 'applied': 'Applied'}[fb.decision] }}
+          {{ (fb.created_at or '')[:10] }}{% if fb.created_by %} by {{ fb.created_by }}{% endif %}{% if fb.reason %}: “{{ fb.reason }}”{% endif %}</p>
+        {% endfor %}
+        {% if can_manage_xt and v.sample %}
+        <p class="xs-fb-past">Feedback is off on sample data — it would teach the real site about invented people.</p>
+        {% elif can_manage_xt %}
+        {% set predicted = c.alternative.coverage if c.verdict == 'switch' and c.alternative else c.best_coverage %}
+        <details class="xs-fb"><summary>Your call</summary>
+          <form method="POST" action="{{ url_for('xt_feedback_save') }}">
+            <input type="hidden" name="back" value="{{ request.full_path }}">
+            <input type="hidden" name="anchor" value="why-{{ c.id | replace('|', '-') | replace(' ', '_') }}">
+            <input type="hidden" name="process" value="{{ c.process }}">
+            <input type="hidden" name="shift" value="{{ c.shift }}">
+            <input type="hidden" name="basis" value="{{ v.basis }}">
+            <input type="hidden" name="verdict" value="{{ c.verdict }}">
+            <input type="hidden" name="current_target" value="{{ c.target }}">
+            <input type="hidden" name="proposed_target" value="{{ c.new_target if c.new_target is not none else '' }}">
+            <input type="hidden" name="predicted_coverage" value="{{ predicted if predicted is not none else '' }}">
+            <input type="hidden" name="sources" value="{{ ((c.alternative and c.verdict == 'switch') and [c.alternative.department] or c.sources) | join('|') }}">
+            <div class="xs-fb-choice">
+              <label><input type="radio" name="decision" value="agree" required> Agree</label>
+              <label><input type="radio" name="decision" value="disagree"> Disagree</label>
+              <label><input type="radio" name="decision" value="applied"> I've applied it</label>
+            </div>
+            <label class="xs-fb-field">Why <select name="reason_kind"><option value="">—</option>
+              {% for k, label in v.learning.reasons.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+            <div class="xs-fb-lend">
+              <label class="xs-fb-field">Department that cannot lend <select name="lend_department"><option value="">—</option>
+                {% for d in v.departments %}<option value="{{ d }}" {{ 'selected' if c.sources and c.sources[0] == d }}>{{ d }}</option>{% endfor %}</select></label>
+              <span class="xs-fb-days">{% for wd in v.learning.weekdays %}<label><input type="checkbox" name="lend_weekday" value="{{ loop.index0 }}"> {{ wd }}</label>{% endfor %}</span>
+              <label><input type="radio" name="lend_scope" value="shift" checked> this shift</label>
+              <label><input type="radio" name="lend_scope" value="all"> every shift</label>
+            </div>
+            <label class="xs-fb-field">In your words <textarea name="reason" rows="2" maxlength="1000" placeholder="e.g. RSP is short every Monday because of the inbound peak"></textarea></label>
+            <button class="btn btn-gold btn-sm" type="submit">Save</button>
+          </form>
+        </details>
+        {% endif %}
       </li>
       {% endfor %}
     </ol>
@@ -255,6 +294,8 @@
   </form>
 </details>
 {% endif %}
+
+{% include "_xt_learning.html" %}
 
 <details class="xi-more" id="xs-assumptions">
   <summary>Evidence &amp; assumptions</summary>

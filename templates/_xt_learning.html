@@ -1,0 +1,61 @@
+{#- What the evaluation has learned from feedback. Nothing here changes
+    the language model itself: the rules change the arithmetic, the scored
+    outcomes recalibrate the bar, and the notes and reasons are what the
+    model is given to reason with. Every item can be removed, so a lesson
+    that stops being true does not linger. -#}
+{% set L = v.learning %}
+{% if L %}
+<details class="xi-more" id="xs-learning" {{ 'open' if request.args.get('learning') }}>
+  <summary>What it has learned from feedback · {{ L.rules | length }} rule{{ 's' if L.rules | length != 1 }},
+    {{ L.outcomes | selectattr('achieved') | list | length }} scored outcome{{ 's' if L.outcomes | selectattr('achieved') | list | length != 1 }},
+    {{ L.feedback | length }} piece{{ 's' if L.feedback | length != 1 }} of feedback</summary>
+  <div class="xi-note">
+    <p>Give feedback under any recommendation (<em>Your call</em>). It is used three ways:
+      <strong>rules</strong> — "this department cannot lend on these days" — change the arithmetic everywhere;
+      recommendations you mark <strong>applied</strong> are scored against what happened in the {{ 14 }} days and more
+      after, and where a process keeps covering less than predicted its bar is raised by the shortfall (three outcomes
+      or more, at most 5 points); and your <strong>reasons and site notes</strong> are given to the explanation model,
+      which reasons with them. The model's figures are still checked against the computed ones.</p>
+  </div>
+
+  <h4 class="xs-learn-h">Lending rules</h4>
+  {% if L.rules %}
+  <div class="dash-table-scroll"><table class="dash-table">
+    <thead><tr><th scope="col">Department</th><th scope="col">Shift</th><th scope="col">Cannot lend on</th><th scope="col">Why</th><th scope="col"></th></tr></thead>
+    <tbody>{% for r in L.rules %}<tr><th scope="row">{{ r.department }}</th><td>{{ (r.shift or 'every shift') | capitalize }}</td>
+      <td>{% for w in r.weekdays %}{{ L.weekdays[w] }}{{ ', ' if not loop.last }}{% endfor %}</td><td class="wrap">{{ r.reason }}</td>
+      <td>{% if can_manage_xt %}<form method="POST" action="{{ url_for('xt_learning_save') }}"><button class="btn btn-ghost btn-sm" name="delete_rule" value="{{ r.id }}" type="submit">Remove</button></form>{% endif %}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="xs-sub">None yet. Disagree with a recommendation because a department cannot lend on certain days, and it becomes one.</p>{% endif %}
+
+  <h4 class="xs-learn-h">Track record of applied recommendations</h4>
+  {% if L.outcomes %}
+  <div class="dash-table-scroll"><table class="dash-table">
+    <thead><tr><th scope="col">Applied</th><th scope="col">Standard</th><th scope="col" class="num">Target</th>
+      <th scope="col" class="num">Predicted</th><th scope="col" class="num">Achieved since</th><th scope="col" class="num">Shifts</th></tr></thead>
+    <tbody>{% for o in L.outcomes %}<tr><td>{{ (o.created_at or '')[:10] }}</td><th scope="row">{{ o.process }} · {{ o.shift }}</th>
+      <td class="num">{{ o.proposed_target }}</td><td class="num">{{ (o.predicted_coverage * 100) | round | int }}%</td>
+      <td class="num">{% if o.achieved is not none %}<span class="{{ 'xm-below' if o.achieved < o.predicted_coverage }}">{{ (o.achieved * 100) | round | int }}%</span>{% else %}<span class="xm-dim">{{ o.status }}</span>{% endif %}</td>
+      <td class="num">{{ o.shifts or '—' }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% if L.calibration %}<p class="xs-sub">Bar raised for: {% for p, m in L.calibration.items() %}{{ p }} +{{ (m * 100) | round(1) }} points{{ '; ' if not loop.last }}{% endfor %}.</p>{% endif %}
+  {% else %}<p class="xs-sub">Nothing applied yet. Mark a recommendation "I've applied it" and it is scored once two weeks have passed.</p>{% endif %}
+
+  <h4 class="xs-learn-h">Site notes for the explanation model</h4>
+  <form method="POST" action="{{ url_for('xt_learning_save') }}">
+    <textarea name="notes" rows="4" maxlength="4000" class="xs-notes" placeholder="What the numbers cannot show: peak dates, a layout change, who is in training, which lends are agreed between OMs…" {{ 'disabled' if not can_manage_xt }}>{{ L.notes }}</textarea>
+    {% if can_manage_xt %}<div><button class="btn btn-gold btn-sm" type="submit">Save notes</button></div>{% endif %}
+  </form>
+
+  {% if L.feedback %}
+  <h4 class="xs-learn-h">Feedback given</h4>
+  <div class="dash-table-scroll"><table class="dash-table">
+    <thead><tr><th scope="col">When</th><th scope="col">Standard</th><th scope="col">Call</th><th scope="col">Reason</th><th scope="col"></th></tr></thead>
+    <tbody>{% for f in L.feedback[:20] %}<tr><td>{{ (f.created_at or '')[:10] }}</td><th scope="row">{{ f.process }} · {{ f.shift }}</th>
+      <td>{{ f.decision | capitalize }}{% if f.verdict %} <span class="xm-dim">({{ f.verdict }}{% if f.proposed_target is not none %} to {{ f.proposed_target }}{% endif %})</span>{% endif %}</td>
+      <td class="wrap">{{ f.reason or (L.reasons.get(f.reason_kind) if f.reason_kind else '') }}</td>
+      <td>{% if can_manage_xt %}<form method="POST" action="{{ url_for('xt_learning_save') }}"><button class="btn btn-ghost btn-sm" name="delete_feedback" value="{{ f.id }}" type="submit">Remove</button></form>{% endif %}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+</details>
+{% endif %}

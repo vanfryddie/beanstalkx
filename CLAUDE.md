@@ -164,6 +164,26 @@ holds a Midway session.
   rules as the replay, on future days played against past same weekdays.
   The forecast is a small graded model, not an LLM.
 
+## Feedback and learning
+
+Nothing trains the language model. Feedback on a recommendation ("Your
+call" in the Why panel) is used three ways, all visible and removable in
+"What it has learned":
+
+- **Lending rules** (`xt_lend_rules`): "this department cannot lend on
+  these days" caps its spare people at nothing in the replay, scenarios
+  and day plan (`Prepared.blocked`).
+- **Outcomes**: a recommendation marked applied is scored after 14 days
+  with `xt_planning.coverage_since`; three or more shortfalls against the
+  predicted coverage raise that process's bar by the mean shortfall
+  (capped at 5 points). Only shortfalls move it.
+- **Memory**: reasons, site notes, rules and the track record go to the
+  explanation model in the standards-explain payload; its sentences are
+  still vetted.
+
+Feedback is off on Sample data: it would teach the real site about
+invented people.
+
 ## Front end
 
 **No external runtime dependencies. No CDN libraries.** Charts, sparklines,

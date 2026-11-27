@@ -33,6 +33,7 @@ from collections import Counter, defaultdict
 from datetime import date, timedelta
 
 SHIFTS = ("early", "late", "night")
+WEEKDAY_NAMES = ("Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays")
 DEFAULTS = {
     "coverage_bar": 0.95,    # share of replayed shifts that must meet plan
     "band": 1,               # a target within this of the best is "keep"...
@@ -162,6 +163,13 @@ class Prepared:
         self.days = sorted({(d, s) for (d, s, _p) in self.pday
                             if self.window_start <= d < self.window_end})
         self._rates = {}
+        # Lending rules a manager has set ("RSP cannot lend on Mondays"):
+        # (department key, shift or "*", weekday). Set once, before any
+        # figure is computed; the caches below assume they do not change.
+        self.lend_blocks = set()
+        for rule in data.get("lend_rules") or []:
+            for wd in rule.get("weekdays") or range(7):
+                self.lend_blocks.add((_key(rule.get("department")), rule.get("shift") or "*", int(wd)))
 
     # -- small lookups ----------------------------------------------------
 
@@ -218,12 +226,22 @@ class Prepared:
     def demand(row):
         return (row.get("plan_units") or row.get("units") or 0.0) if row else 0.0
 
+    def blocked(self, dept, shift, day):
+        """Whether a rule says this department does not lend on this
+        shift and weekday."""
+        if not self.lend_blocks:
+            return False
+        wd = (date.fromisoformat(day) if isinstance(day, str) else day).weekday()
+        return (dept, shift, wd) in self.lend_blocks or (dept, "*", wd) in self.lend_blocks
+
     def dept_spare(self, dept, day, shift):
         """People a department had in, less the people its own processes
-        needed that day. Negative means it was short itself."""
+        needed that day. Negative means it was short itself; a rule that
+        it does not lend that day caps it at nothing to spare."""
         key = ("spare", dept, day, shift)
         if key not in self._rates:
-            self._rates[key] = self._dept_spare(dept, day, shift)
+            spare = self._dept_spare(dept, day, shift)
+            self._rates[key] = min(spare, 0.0) if self.blocked(dept, shift, day) else spare
         return self._rates[key]
 
     def _dept_spare(self, dept, day, shift):
@@ -339,7 +357,11 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
     past ones; every rule after that is the same."""
     # The tolerance grows with the target: one person either way is noise
     # on a standard of 5 and on one of 50 alike, but 10% of 50 is not.
-    bar = settings["coverage_bar"]
+    # Learned from outcomes: where recommendations for this process have
+    # covered less than the replay predicted, the bar is raised by the
+    # shortfall, so the next recommendation leaves that much more room.
+    margin = (settings.get("calibration") or {}).get(process, 0.0)
+    bar = min(0.995, settings["coverage_bar"] + margin)
     band = max(settings["band"], round(current_target * settings.get("band_pct", 10.0) / 100.0))
     owner = prep.owner.get(process)
     vet_rate = prep.rate(process, "vet")[0] or prep.rate(process, "all")[0]
@@ -363,6 +385,9 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
         "sources": [prep.departments.get(S, S) for S in source_keys],
         "days": len(days), "vet_rate": vet_rate, "xt_rate": xt_all,
         "basis": "scenario" if scenario is not None else "history",
+        "calibration": margin, "bar": bar,
+        "rules": sorted({(prep.departments.get(d, d), wd) for (d, sh, wd) in prep.lend_blocks
+                         if d in [_key(x) for x in sources] and sh in (shift, "*")}),
     }
     if not days or not vet_rate:
         cell.update(verdict="no_data", coverage=None,
@@ -477,6 +502,17 @@ def evidence(cell):
         lines.append(f"Even with all {cell['cap']} people in the source departments trained, coverage "
                      f"reaches {round((cell.get('best_coverage') or 0) * 100)}%. About "
                      f"{cell.get('hire', '?')} more veterans in {cell['owner']} would reach the bar.")
+    if cell.get("rules"):
+        days_by = defaultdict(list)
+        for dept, wd in cell["rules"]:
+            days_by[dept].append(WEEKDAY_NAMES[wd])
+        for dept, names in days_by.items():
+            lines.append(f"{dept} is set not to lend on {', '.join(names)} (a rule from feedback), "
+                         f"so it counts no spare people those days.")
+    if cell.get("calibration"):
+        lines.append(f"The bar for this process is {round(cell['bar'] * 100)}%, not "
+                     f"{round((cell['bar'] - cell['calibration']) * 100)}%: past recommendations here covered "
+                     f"less than predicted, so it asks for that much more.")
     if cell.get("assumed_rates"):
         lines.append("No history of " + ", ".join(cell["assumed_rates"]) +
                      " on this process, so their rate is taken as the cross-trainee average.")
@@ -627,7 +663,8 @@ def day_plan(prep, process, shift, day, volume, rate=None, absence_pct=None,
             "rate_assumed": dept_rate is None,
             "own_work": own, "own_need_heads": round(need_heads, 1),
             "people_available": everyone["available"], "spare": round(spare, 1),
-            "deployable": max(0, math.floor(min(hc["available"], max(0.0, spare)))),
+            "deployable": 0 if prep.blocked(dept, shift, day_s) else max(0, math.floor(min(hc["available"], max(0.0, spare)))),
+            "blocked": prep.blocked(dept, shift, day_s),
         })
 
     # The cheapest mix: veterans first (no move, no training), then the
@@ -1307,6 +1344,8 @@ def scenario_days(prep, process, shift, sources, vet_rate, xt_rates, scenario):
                     if rate:
                         need += demand_of(q) / rate
                 spare[S] = len(prep.people.get((S, shift), ())) * share(S) - need / length
+                if prep.blocked(S, shift, day):
+                    spare[S] = min(spare[S], 0.0)
             days.append({
                 "day": day.isoformat(), "as_on": past, "demand": demand_of(process), "length": length,
                 "owner_share": share(owner), "vet_output": vets * length * (vet_rate or 0.0), "vets": vets,
@@ -1322,3 +1361,22 @@ def forecast_scenario(prep, weeks=4, start=None):
     start = start or (prep.today + timedelta(days=1))
     return {"id": "forecast", "name": f"Forecast, next {weeks} weeks", "start": start.isoformat(),
             "weeks": weeks, "multiplier": 1.0, "lines": {}}
+
+
+
+# -- outcomes: did a recommendation that was applied do what it said? --------
+
+def coverage_since(prep, process, shift, sources, target, since, settings=None):
+    """The coverage a standard actually achieved on the past shifts since
+    `since`, at `target`: the replay, run only over the days after the
+    change. Returns (coverage, shifts) or (None, 0) with too few days."""
+    process = _key(process)
+    source_keys = [_key(S) for S in sources if _key(S) and _key(S) != prep.owner.get(process)]
+    vet_rate = prep.rate(process, "vet")[0] or prep.rate(process, "all")[0]
+    xt_all = prep.rate(process, "xt")[0]
+    rates = {S: prep.rate(process, S)[0] or xt_all or vet_rate for S in source_keys}
+    days = [d for d in _replay_days(prep, process, shift, source_keys, vet_rate, rates) if d["day"] >= since]
+    if len(days) < 5 or not vet_rate:
+        return None, len(days)
+    weights = {S: 1 / len(source_keys) for S in source_keys} if source_keys else {}
+    return _coverage(days, target, weights), len(days)

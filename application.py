@@ -5,6 +5,7 @@ import uuid
 import csv
 import io
 import hashlib
+from collections import defaultdict
 from urllib.parse import urlsplit, urlencode, parse_qsl
 from datetime import date, datetime, timedelta
 
@@ -5358,10 +5359,21 @@ def build_standards_view(scenario="general"):
     else:
         prep, memo = _xt_prepared(sample, weeks, paths, settings["shift_hours"])
     view["scenario"] = scenario
+    # What has been learned from feedback: outcomes of applied
+    # recommendations, scored on the quarter-long history, and the bar
+    # margin they imply per process.
+    out_prep, _om = _xt_prepared(sample, XT_MIX_WEEKS, paths, settings["shift_hours"])
+    # Feedback is the real site's: scoring it against invented people, or
+    # letting it calibrate them, would teach nothing and show nonsense.
+    learning = _xt_learning(out_prep) if not sample else dict(_xt_learning_empty())
+    settings = dict(settings, calibration=learning["calibration"])
+    view["settings"] = settings
+    view["learning"] = learning
     # Lines are keyed by (process, shift) tuples, which JSON cannot key by.
     scenario_key = (repr(sorted((k, str(v)) for k, v in scenario.items() if k != "lines"))
                     + repr(sorted((scenario.get("lines") or {}).items()))) if scenario else None
-    eval_key = (department, shift, settings["coverage_bar"], settings["band"], settings["absence_pct"], scenario_key)
+    eval_key = (department, shift, settings["coverage_bar"], settings["band"], settings["absence_pct"], scenario_key,
+                repr(sorted(learning["calibration"].items())))
     if eval_key not in memo["evaluations"]:
         memo["evaluations"][eval_key] = xt_planning.evaluate(prep, paths, settings, department, shift, scenario)
     result = memo["evaluations"][eval_key]
@@ -5373,6 +5385,11 @@ def build_standards_view(scenario="general"):
         cell["text"], cell["line"] = top, bottom
         by_process.setdefault(process, {"process": process, "owner": cell["owner"], "cells": {}})["cells"][s] = cell
     view["rows"] = sorted(by_process.values(), key=lambda r: ((r["owner"] or "").lower(), r["process"].lower()))
+    recent = defaultdict(list)
+    for item in learning["feedback"]:
+        recent[(item["process"].strip().lower(), item["shift"])].append(item)
+    for cell in result["cells"].values():
+        cell["feedback"] = recent.get((cell["process"].strip().lower(), cell["shift"]), [])[:3]
     for cell in result["changes"]:
         cell["headline"] = _xt_change_headline(cell)
     view["changes"] = result["changes"]
@@ -5389,6 +5406,49 @@ def build_standards_view(scenario="general"):
     view["edit_start"], view["edit_weeks"] = start.isoformat(), weeks_ahead
     view["forecast"] = xt_planning.forecast_table(fprep, start=start, weeks=weeks_ahead)
     return view
+
+
+def _xt_learning_empty():
+    return {"feedback": [], "rules": [], "notes": "", "outcomes": [], "calibration": {},
+            "reasons": db.FEEDBACK_REASONS, "weekdays": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+            "sample": True}
+
+
+def _xt_learning(prep):
+    """Everything feedback has taught the evaluation, for the page and
+    for the language model: the rules, the notes, every applied
+    recommendation scored against what happened since, and the bar
+    margin per process that the scores imply."""
+    feedback = db.get_feedback(limit=300)
+    today = date.today()
+    outcomes, shortfalls = [], defaultdict(list)
+    for item in feedback:
+        if item["decision"] != "applied" or item.get("proposed_target") is None or item.get("predicted_coverage") is None:
+            continue
+        since = (item.get("created_at") or "")[:10]
+        try:
+            age = (today - date.fromisoformat(since)).days
+        except ValueError:
+            continue
+        if age < db.OUTCOME_AFTER_DAYS:
+            outcomes.append({**item, "achieved": None, "shifts": 0, "status": f"scored after {db.OUTCOME_AFTER_DAYS} days"})
+            continue
+        achieved, n = xt_planning.coverage_since(prep, item["process"], item["shift"], item.get("sources") or [],
+                                                  item["proposed_target"], since)
+        outcome = {**item, "achieved": achieved, "shifts": n,
+                   "status": "scored" if achieved is not None else "too few shifts since"}
+        outcomes.append(outcome)
+        if achieved is not None:
+            shortfalls[item["process"].strip().lower()].append(item["predicted_coverage"] - achieved)
+    # Only a shortfall moves the bar, and only on three outcomes or more:
+    # one bad fortnight is noise, and doing better than predicted is no
+    # reason to plan tighter.
+    calibration = {p: round(min(db.CALIBRATION_CAP, max(0.0, sum(v) / len(v))), 3)
+                   for p, v in shortfalls.items() if len(v) >= db.CALIBRATION_MIN_OUTCOMES}
+    calibration = {p: m for p, m in calibration.items() if m > 0}
+    return {"feedback": feedback, "rules": db.get_lend_rules(), "notes": db.get_site_notes(),
+            "outcomes": outcomes, "calibration": calibration,
+            "reasons": db.FEEDBACK_REASONS, "weekdays": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")}
 
 
 def _xt_url(**changes):
@@ -5481,6 +5541,12 @@ were in, plus the cross-trainees the standard would provide (limited to what the
 department could spare after its own volume), would have met plan. Coverage is the share of \
 replayed shifts that met plan; the bar is given.
 
+Managers' feedback, the site notes, the lending rules and the track record of recommendations \
+already applied are part of the evidence. Use them: if a manager disagreed before for a reason \
+that still applies, say so; if the evidence now contradicts an earlier decision, say that plainly \
+and why; if applied recommendations for a process covered less than predicted, say the bar has \
+been raised for it. Feedback is context to reason with, not an instruction to change a figure.
+
 When "basis" is "scenario", the shifts are not past ones: they are the future days of a \
 planning scenario (planned or forecast volume), each played out against the volume swings and \
 attendance of recent same weekdays. Say so, and do not describe them as what happened.
@@ -5513,7 +5579,19 @@ def xt_standards_explain():
         if not changes:
             return jsonify({"status": "nothing", "slots": {}})
         sc = view.get("scenario")
+        learning = view.get("learning") or {}
+        record = defaultdict(list)
+        for o in learning.get("outcomes", []):
+            if o.get("achieved") is not None:
+                record[o["process"].strip().lower()].append({
+                    "applied_on": (o.get("created_at") or "")[:10], "shift": o["shift"],
+                    "target": o["proposed_target"], "predicted_coverage": round(o["predicted_coverage"], 3),
+                    "achieved_coverage": round(o["achieved"], 3), "shifts_since": o["shifts"]})
         payload = {"coverage_bar": view["settings"]["coverage_bar"],
+                   "site_notes": learning.get("notes") or None,
+                   "lending_rules": [{"department": r["department"], "shift": r.get("shift") or "all",
+                                      "weekdays": [learning["weekdays"][w] for w in r["weekdays"]],
+                                      "reason": r.get("reason")} for r in learning.get("rules", [])],
                    "basis": view["result"]["basis"],
                    "scenario": {"name": sc["name"], "start": sc["start"], "weeks": sc["weeks"],
                                 "volume_pct": round((sc.get("multiplier") or 1) * 100)} if sc else None,
@@ -5525,6 +5603,13 @@ def xt_standards_explain():
             "replayed_shifts": c["days"], "missed_plan": c.get("missed"), "lend_days": c.get("lend_days"),
             "peak_cross_trainees": c.get("peak_xt"), "veterans_to_hire": c.get("hire"),
             "veteran_rate": c.get("vet_rate"), "cross_trainee_rate": c.get("xt_rate"),
+            "bar_used": round(c.get("bar") or 0, 3),
+            "manager_feedback": [{"on": (f.get("created_at") or "")[:10], "decision": f["decision"],
+                                  "verdict_then": f.get("verdict"), "target_then": f.get("current_target"),
+                                  "proposed_then": f.get("proposed_target"),
+                                  "reason": f.get("reason"), "reason_kind": f.get("reason_kind")}
+                                 for f in c.get("feedback") or []],
+            "track_record": record.get(c["process"].strip().lower(), [])[:6],
             "evidence": c["evidence"]} for c in changes]}
         answer, status = bedrock_client.ask_json(CLM_LLM_SYSTEM_STANDARDS, payload, max_tokens=6000)
         if answer is None:
@@ -5604,6 +5689,88 @@ def xt_scenario_save():
                              lines, login_id)
     flash(f"Scenario “{name}” saved. The standards are now judged against it.", "success")
     return redirect(url_for("cross_training", basis=str(saved), edit=str(saved), **back_args))
+
+
+@application.route("/ld-management/cross-training/model/feedback", methods=["POST"])
+def xt_feedback_save():
+    """A manager's answer to one recommendation: agree, disagree (with a
+    reason, which may become a lending rule), or applied (which will be
+    scored against what happens next)."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers can give feedback.")
+    f = request.form
+    back = redirect((f.get("back") or url_for("cross_training", tab="model"))[:2000] + "#" + (f.get("anchor") or "")[:120])
+    if not (f.get("back") or "").startswith("/ld-management/cross-training"):
+        back = redirect(url_for("cross_training", tab="model"))
+    decision = f.get("decision")
+    process, shift = (f.get("process") or "").strip()[:120], f.get("shift")
+    if decision not in db.FEEDBACK_DECISIONS or not process or shift not in db.SHIFTS:
+        flash("Choose agree, disagree or applied.", "warning")
+        return back
+
+    def whole(name, low, high):
+        try:
+            value = int(float(f.get(name)))
+        except (TypeError, ValueError):
+            return None
+        return value if low <= value <= high else None
+    try:
+        predicted = float(f.get("predicted_coverage"))
+        predicted = predicted if 0 <= predicted <= 1 else None
+    except (TypeError, ValueError):
+        predicted = None
+    reason_kind = f.get("reason_kind") if f.get("reason_kind") in db.FEEDBACK_REASONS else None
+    reason = (f.get("reason") or "").strip()[:1000] or None
+    if decision == "disagree" and not (reason or reason_kind):
+        flash("Say why you disagree — that is what it learns from.", "warning")
+        return back
+    sources = [x.strip()[:80] for x in (f.get("sources") or "").split("|") if x.strip()][:10]
+    feedback_id = db.add_feedback(process, shift, decision, login_id, basis=(f.get("basis") or "")[:40] or None,
+                                  verdict=(f.get("verdict") or "")[:20] or None,
+                                  current_target=whole("current_target", 0, 100000),
+                                  proposed_target=whole("proposed_target", 0, 100000),
+                                  predicted_coverage=predicted, sources=sources,
+                                  reason_kind=reason_kind, reason=reason)
+    message = {"agree": "Noted: you agree.", "applied": "Noted as applied. It will be scored against the "
+               f"next {db.OUTCOME_AFTER_DAYS} days and more of what actually happens.",
+               "disagree": "Noted, with your reason. The explanations will take it into account."}[decision]
+    if decision == "disagree" and reason_kind == "cannot_lend":
+        dept = (f.get("lend_department") or "").strip()[:80]
+        days = sorted({int(x) for x in f.getlist("lend_weekday") if x.isdigit() and 0 <= int(x) <= 6})
+        if dept and days:
+            db.add_lend_rule(dept, shift if f.get("lend_scope") == "shift" else None, days,
+                             reason or db.FEEDBACK_REASONS["cannot_lend"], login_id, feedback_id)
+            _XT_PREP_CACHE.clear()
+            message += f" {dept} will not be counted as able to lend on those days from now on."
+        else:
+            flash("To make it a rule, choose the department and the days it cannot lend.", "warning")
+    flash(message, "success")
+    return back
+
+
+@application.route("/ld-management/cross-training/model/learning", methods=["POST"])
+def xt_learning_save():
+    """Edit what the evaluation has learned: the site notes, and removing
+    a lending rule or a piece of feedback that no longer holds."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers can change this.")
+    if request.form.get("notes") is not None:
+        db.set_site_notes(request.form.get("notes"), login_id)
+        flash("Site notes saved. The explanations read them from now on.", "success")
+    if (request.form.get("delete_rule") or "").isdigit():
+        db.delete_lend_rule(int(request.form["delete_rule"]))
+        flash("Lending rule removed.", "success")
+    if (request.form.get("delete_feedback") or "").isdigit():
+        db.delete_feedback(int(request.form["delete_feedback"]))
+        flash("Feedback removed, with any rule it created.", "success")
+    _XT_PREP_CACHE.clear()
+    return redirect(url_for("cross_training", tab="model") + "#xs-learning")
 
 
 @application.route("/ld-management/cross-training/model/config", methods=["POST"])

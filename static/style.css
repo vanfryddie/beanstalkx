@@ -5143,3 +5143,14 @@ strong.xs-increase, strong.xs-switch, strong.xs-decrease, strong.xs-hire { backg
 .fsync-script { margin: 6px 0 0; font-size: 12px; color: var(--text-lo); }
 .fsync-script.is-ok { color: var(--viz-series-1); }
 .fsync-script.is-old, .fsync-script.is-missing { color: var(--viz-series-2); }
+
+/* Feedback on recommendations, and what was learned from it. */
+.xs-fb-past { margin: 4px 0 0; font-size: 11.5px; color: var(--text-lo); }
+.xs-fb summary { font-size: 12px; color: var(--viz-series-1); cursor: pointer; margin-top: 6px; }
+.xs-fb form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; font-size: 12px; }
+.xs-fb-choice, .xs-fb-days, .xs-fb-lend { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.xs-fb-field { display: flex; flex-direction: column; gap: 3px; color: var(--text-lo); min-width: 0; }
+.xs-fb-field select, .xs-fb-field textarea { max-width: 100%; }
+.xs-learn-h { margin: 14px 0 6px; font-size: 14px; }
+.xs-notes { width: 100%; max-width: 80ch; }
+.xs-fb form > button { align-self: flex-start; }

@@ -158,7 +158,7 @@ if USE_POSTGRES:
 # below). A few tables use a natural-key primary key instead (login,
 # employee_login) and have no 'id' column at all.
 _TABLES_WITH_ID_PK = {
-    "xt_scenarios",
+    "xt_scenarios", "xt_feedback", "xt_lend_rules",
     "tracked_items", "weekly_plan", "escalations", "record_escalations",
     "trainer_metrics", "ops_structure", "uploads", "trainings",
     "training_topic_links", "xt_hours", "training_slots", "slot_attendees",
@@ -2522,6 +2522,32 @@ def init_db():
             source TEXT,
             uploaded_at TEXT,
             PRIMARY KEY (week_start, employee_login, process)
+        );
+        CREATE TABLE IF NOT EXISTS xt_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            created_by TEXT,
+            process TEXT NOT NULL,
+            shift TEXT NOT NULL,
+            basis TEXT,
+            verdict TEXT,
+            current_target INTEGER,
+            proposed_target INTEGER,
+            predicted_coverage REAL,
+            sources TEXT,
+            decision TEXT NOT NULL,
+            reason_kind TEXT,
+            reason TEXT
+        );
+        CREATE TABLE IF NOT EXISTS xt_lend_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            department TEXT NOT NULL,
+            shift TEXT,
+            weekdays TEXT,
+            reason TEXT,
+            feedback_id INTEGER,
+            created_by TEXT,
+            created_at TEXT
         );
         CREATE TABLE IF NOT EXISTS fclm_sync_log (
             sync_date TEXT NOT NULL,
@@ -10845,7 +10871,7 @@ def load_planning_data(since=None):
         "SELECT work_date, shift, employee_login, process, units, hours FROM associate_day" + where, params).fetchall()]
     conn.close()
     return {"roster": roster, "hours": hours, "calendar": calendar,
-            "process_day": process_day, "associate_day": associate_day}
+            "process_day": process_day, "associate_day": associate_day, "lend_rules": get_lend_rules()}
 
 
 
@@ -11575,3 +11601,107 @@ def record_fclm_week(requested_start, rows, spans, failed, timing=None, skipped=
     conn.commit()
     conn.close()
     return {"week_start": requested_start, "status": status, "rows": len(totals), **detail}
+
+
+
+# ====================================================================
+# Feedback: what managers said about a recommendation, and what came of it
+#
+# Three things learn from it, none of them the language model's weights:
+# lending rules change the arithmetic; applied recommendations are scored
+# against what happened and recalibrate the coverage bar; and the reasons
+# and site notes are handed to the model, which reasons with them.
+# ====================================================================
+
+FEEDBACK_DECISIONS = ("agree", "disagree", "applied")
+FEEDBACK_REASONS = {
+    "cannot_lend": "A department cannot lend on certain days",
+    "volume": "The volume will be different",
+    "rate": "The rate assumption is wrong",
+    "people": "People or skills the data does not show",
+    "other": "Something else",
+}
+CALIBRATION_MIN_OUTCOMES = 3
+CALIBRATION_CAP = 0.05
+OUTCOME_AFTER_DAYS = 14
+
+
+def add_feedback(process, shift, decision, created_by, basis=None, verdict=None, current_target=None,
+                 proposed_target=None, predicted_coverage=None, sources=None, reason_kind=None, reason=None):
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO xt_feedback (created_at, created_by, process, shift, basis, verdict, current_target, "
+        "proposed_target, predicted_coverage, sources, decision, reason_kind, reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (_now(), created_by, process, shift, basis, verdict, current_target, proposed_target, predicted_coverage,
+         json.dumps(sources or []), decision, reason_kind, reason))
+    new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def get_feedback(limit=200, process=None):
+    conn = get_db()
+    if process:
+        rows = conn.execute("SELECT * FROM xt_feedback WHERE LOWER(process) = ? ORDER BY id DESC LIMIT ?",
+                            (process.strip().lower(), limit)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM xt_feedback ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["sources"] = json.loads(item.get("sources") or "[]")
+        except ValueError:
+            item["sources"] = []
+        out.append(item)
+    return out
+
+
+def delete_feedback(feedback_id):
+    conn = get_db()
+    conn.execute("DELETE FROM xt_lend_rules WHERE feedback_id = ?", (feedback_id,))
+    conn.execute("DELETE FROM xt_feedback WHERE id = ?", (feedback_id,))
+    conn.commit()
+    conn.close()
+
+
+def add_lend_rule(department, shift, weekdays, reason, created_by, feedback_id=None):
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO xt_lend_rules (department, shift, weekdays, reason, feedback_id, created_by, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (department, shift or None, ",".join(str(int(w)) for w in sorted(set(weekdays))), reason, feedback_id,
+         created_by, _now()))
+    new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def get_lend_rules():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM xt_lend_rules ORDER BY id").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        item = dict(r)
+        item["weekdays"] = [int(x) for x in (item.get("weekdays") or "").split(",") if x.strip().isdigit()]
+        out.append(item)
+    return out
+
+
+def delete_lend_rule(rule_id):
+    conn = get_db()
+    conn.execute("DELETE FROM xt_lend_rules WHERE id = ?", (rule_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_site_notes():
+    return get_app_setting("xt_site_notes") or ""
+
+
+def set_site_notes(text, updated_by):
+    set_app_setting("xt_site_notes", (text or "").strip()[:4000], updated_by)

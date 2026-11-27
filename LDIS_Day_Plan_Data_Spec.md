@@ -473,3 +473,30 @@ time is FCLM's, not the browser's. Three things keep it down:
 
 The Data Upload card shows each read's cost: reports, seconds, megabytes,
 and paths skipped.
+
+
+## Feedback: how the recommendations learn (27 Nov)
+
+The model on Bedrock is not retrained by use; every call starts fresh.
+What improves is what it, and the arithmetic, are given. Under each
+recommendation, **Your call** records agree, disagree (with a reason) or
+"I've applied it":
+
+1. **Rules.** Disagreeing because a department cannot lend on certain
+   days creates a lending rule. From then on, the replay, the scenarios
+   and the day plan count no spare people for it on those days, and the
+   evidence says so.
+2. **Outcomes.** An applied recommendation is scored once 14 days have
+   passed: the coverage the new target actually achieved on the shifts
+   since, against the coverage predicted when it was made. Where a
+   process's recommendations fall short three times or more, its bar is
+   raised by the average shortfall (at most 5 points). The next
+   recommendation there leaves that much more room, and says why.
+3. **Memory.** Reasons, site notes ("peak starts 1 Dec", "RSP layout
+   change in week 49"), the rules and the track record are given to the
+   explanation model with every change. It is told to say when an earlier
+   disagreement still applies, and when the evidence now contradicts
+   one. Its figures are still checked.
+
+Everything learned is listed under "What it has learned from feedback",
+and each item can be removed.

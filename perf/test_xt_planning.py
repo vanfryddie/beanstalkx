@@ -278,6 +278,45 @@ check("every scenario day is played out once per past same weekday (two Fridays 
 check("and the evidence says these are scenario shifts, not history",
       any("scenario shifts" in line for line in judged(1, plan(6000))["evidence"]))
 
+print("\n2e. Learning from feedback")
+
+
+def with_rules(rules, **kw):
+    w = world(**kw)
+    for rule in rules:
+        for wd in rule["weekdays"]:
+            w.lend_blocks.add((rule["department"].lower(), rule.get("shift") or "*", wd))
+    return w
+
+
+all_days = list(range(7))
+c = cell(with_rules([{"department": "Pick", "weekdays": all_days}]), 2)
+check("a rule that Pick never lends turns 'keep' into 'hire'", c["verdict"] == "hire", c["verdict"])
+check("and the evidence names the rule", any("set not to lend" in line for line in c["evidence"]), c["evidence"])
+c = cell(with_rules([{"department": "Pick", "weekdays": all_days}], ship_n=10, ship_need=5), 2)
+check("with another department able to lend, the same rule makes it a switch", c["verdict"] == "switch"
+      and c["alternative"]["department"] == "Ship", (c["verdict"], c.get("alternative")))
+fri = _d.fromisoformat(HISTORY[0]).weekday()
+c = cell(with_rules([{"department": "Pick", "weekdays": [fri]}]), 2)
+check("a rule for one weekday costs exactly that weekday's shifts", c["coverage"] == 0.8, c["coverage"])
+c = cell(with_rules([{"department": "Pick", "shift": "late", "weekdays": all_days}]), 2)
+check("a rule for another shift changes nothing here", c["verdict"] == "keep" and c["coverage"] == 1.0)
+dp = X.day_plan(with_rules([{"department": "Pick", "weekdays": all_days}]), "Pack", "early", FUTURE, 6000, absence_pct=0)
+pick = next(l for l in dp["lenders"] if l["department"] == "Pick")
+check("the day plan moves nobody from a department that cannot lend", pick["deployable"] == 0 and pick["blocked"]
+      and dp["xt_heads"] == 0 and dp["shortfall_units"] == 1000)
+paths1 = [{"process": "Pack", "shift": "early", "target": 2, "source_departments": ["Pick"]}]
+c = X.evaluate(prep, paths1, {"calibration": {"pack": 0.03}})["cells"][("Pack", "early")]
+check("a calibration margin raises this process's bar", abs(c["bar"] - 0.98) < 1e-9 and c["calibration"] == 0.03)
+check("and says so", any("The bar for this process is 98%" in line for line in c["evidence"]), c["evidence"])
+c = X.evaluate(prep, paths1, {"calibration": {"other": 0.03}})["cells"][("Pack", "early")]
+check("another process's margin leaves this one alone", c["bar"] == 0.95)
+cov, n = X.coverage_since(prep, "Pack", "early", ["Pick"], 2, HISTORY[4])
+check("an applied target is scored on the shifts since it was applied: 2 covers all 6", cov == 1.0 and n == 6, (cov, n))
+cov, n = X.coverage_since(prep, "Pack", "early", ["Pick"], 1, HISTORY[4])
+check("and 1 covers none of them", cov == 0.0)
+check("too few shifts since is no score, not a guess", X.coverage_since(prep, "Pack", "early", ["Pick"], 2, HISTORY[-2])[0] is None)
+
 print("\n3. The uploads, through a scratch site")
 SITE = "ZQ88"
 db.init_global_db()
@@ -518,6 +557,113 @@ up = X.evaluate(sprep, paths, {}, scenario=dict(X.forecast_scenario(sprep), mult
 check("and more volume moves verdicts towards more people, never fewer",
       sum(1 for x in up["cells"].values() if x["verdict"] in ("increase", "hire", "switch")) >
       sum(1 for x in ahead["cells"].values() if x["verdict"] in ("increase", "hire", "switch")))
+
+print("\n4b. Feedback, through a scratch site")
+SITE2 = "ZQ91"
+if not db.get_site(SITE2):
+    db.create_site(SITE2, "Feedback scratch", "EU", "test")
+db.set_current_site(SITE2)
+db.init_db()
+conn = db.get_db()
+for table in ("xt_feedback", "xt_lend_rules"):
+    conn.execute(f"DELETE FROM {table}")
+conn.execute("DELETE FROM app_settings WHERE key = ?", ("xt_site_notes",))
+conn.commit()
+conn.close()
+db.set_current_site("SCN2")
+fc = client(SITE2)
+anchor = {"back": "/ld-management/cross-training?tab=model", "anchor": "why-pack-early"}
+r = fc.post("/ld-management/cross-training/model/feedback",
+            data=dict(anchor, decision="disagree", process="Pack", shift="early", reason="", reason_kind=""),
+            follow_redirects=True)
+check("a disagreement without a reason is refused — the reason is what it learns from",
+      "Say why you disagree" in r.get_data(as_text=True))
+r = fc.post("/ld-management/cross-training/model/feedback",
+            data=dict(anchor, decision="disagree", process="Pack", shift="early", reason_kind="cannot_lend",
+                      reason="Pick is short every Friday", lend_department="Pick", lend_weekday=["4"], lend_scope="all",
+                      verdict="keep", current_target="2", proposed_target="", predicted_coverage="1.0", sources="Pick"),
+            follow_redirects=True)
+db.set_current_site(SITE2)
+rules = db.get_lend_rules()
+fb = db.get_feedback()
+check("a 'cannot lend' disagreement becomes a lending rule", len(rules) == 1 and rules[0]["department"] == "Pick"
+      and rules[0]["weekdays"] == [4] and rules[0]["shift"] is None, rules)
+check("and is kept as feedback with its reason", fb and fb[0]["reason"] == "Pick is short every Friday"
+      and fb[0]["decision"] == "disagree")
+check("the loader hands the rules to the evaluation", db.load_planning_data()["lend_rules"][0]["weekdays"] == [4])
+db.set_current_site("SCN2")
+fc.post("/ld-management/cross-training/model/feedback",
+        data=dict(anchor, decision="applied", process="Pack", shift="early", verdict="increase", current_target="1",
+                  proposed_target="2", predicted_coverage="1.7", sources="Pick"))
+db.set_current_site(SITE2)
+check("a predicted coverage outside 0-100% is not stored as one", db.get_feedback()[0]["predicted_coverage"] is None)
+conn = db.get_db()
+for i in range(3):
+    conn.execute("INSERT INTO xt_feedback (created_at, created_by, process, shift, verdict, current_target, proposed_target, "
+                 "predicted_coverage, sources, decision) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                 ("2026-11-01T09:00:00", "test", "Pack", "early", "decrease", 2, 1, 0.97, json.dumps(["Pick"]), "applied"))
+conn.commit()
+conn.close()
+ctx = application.application.test_request_context(); ctx.push()
+learning = application._xt_learning(prep)
+ctx.pop()
+scored = [o for o in learning["outcomes"] if o.get("achieved") is not None]
+check("applied recommendations old enough are scored against the history since", len(scored) == 3
+      and all(o["achieved"] == 0.0 for o in scored), [(o.get("achieved"), o.get("status")) for o in learning["outcomes"]])
+check("three that covered less than predicted raise the bar, by at most 5 points",
+      learning["calibration"] == {"pack": 0.05}, learning["calibration"])
+fc.post("/ld-management/cross-training/model/learning", data={"notes": "Peak starts 1 Dec; RSP layout change in week 49"})
+db.set_current_site(SITE2)
+check("site notes are saved", db.get_site_notes().startswith("Peak starts 1 Dec"))
+fc.post("/ld-management/cross-training/model/learning", data={"delete_feedback": str(fb[0]["id"])})
+db.set_current_site(SITE2)
+check("removing a piece of feedback removes the rule it created", not db.get_lend_rules())
+am = client(SITE2)
+with am.session_transaction() as sess:
+    sess["login"], sess["role"] = "am_x", "area_manager"
+r = am.post("/ld-management/cross-training/model/feedback", data=dict(anchor, decision="agree", process="Pack", shift="early"))
+check("an area manager cannot give feedback", r.status_code in (302, 403))
+db.set_current_site("SCN2")
+html = c.get("/ld-management/cross-training?tab=model&sample=1", follow_redirects=True).get_data(as_text=True)
+check("on sample data, feedback is off and says why", "Feedback is off on sample data" in html and 'name="decision"' not in html)
+
+# What the explanation model is given: on a real-site view, the feedback,
+# notes, rules and track record all travel with the changes.
+seen = []
+real_view = application.build_standards_view
+
+
+def view_with_learning(scenario="general"):
+    v = real_view(scenario)
+    v["learning"] = {"notes": "Peak starts 1 Dec", "rules": [{"department": "Pick", "shift": None, "weekdays": [4],
+                                                              "reason": "short on Fridays"}],
+                     "weekdays": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+                     "outcomes": [{"process": v["changes"][0]["process"], "shift": "early", "created_at": "2026-11-01",
+                                   "proposed_target": 3, "predicted_coverage": 0.96, "achieved": 0.9, "shifts": 20}]}
+    v["changes"][0]["feedback"] = [{"created_at": "2026-11-20", "decision": "disagree", "verdict": "decrease",
+                                    "current_target": 5, "proposed_target": 2, "reason": "Peak is coming", "reason_kind": "volume"}]
+    return v
+
+
+def capture(body):
+    seen.append(json.loads(body["messages"][0]["content"]))
+    return {"content": [{"type": "text", "text": json.dumps({"changes": []})}], "stop_reason": "end_turn"}
+
+
+application.build_standards_view = view_with_learning
+bedrock_client.set_transport(capture)
+try:
+    c.get("/ld-management/cross-training/model/standards-explain?sample=1")
+finally:
+    application.build_standards_view = real_view
+    bedrock_client.set_transport(None)
+sent = seen[0] if seen else {}
+first = (sent.get("changes") or [{}])[0]
+check("the model is given the site notes and the lending rules", sent.get("site_notes") == "Peak starts 1 Dec"
+      and sent.get("lending_rules") == [{"department": "Pick", "shift": "all", "weekdays": ["Fri"], "reason": "short on Fridays"}])
+check("and, per change, the managers' feedback and the track record",
+      first.get("manager_feedback") and first["manager_feedback"][0]["reason"] == "Peak is coming"
+      and first.get("track_record") and first["track_record"][0]["achieved_coverage"] == 0.9, first.keys())
 
 print("\n5. The generated reasons")
 view_changes = []
