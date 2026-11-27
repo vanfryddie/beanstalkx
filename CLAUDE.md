@@ -135,6 +135,24 @@ feeds it an invented site for the **Sample data** toggle.
 - The data contract for sites is `LDIS_Day_Plan_Data_Spec.md`; templates
   are in `data_templates/` and downloadable from the Data Upload tab.
 
+## FCLM daily sync
+
+`static/floor_provider.user.js` (the LDIS Floor Sync userscript) also
+reads yesterday's Function Rollup, Process Path Rollup and Employee
+Roster in a manager's browser and posts them to `/fclm/sync/*`; the
+server (`db.record_fclm_day`, `db.record_fclm_roster`) attributes and
+stores them as associate day, process day and roster. The server never
+holds a Midway session.
+
+- **The live Function Rollup has a three-row header.** `gridIndex()`
+  places every header cell honouring rowspan and colspan; the older
+  two-row `headerIndex()` found no paid hours at all on the real report.
+  Function names are in each table's `<caption>`.
+- **Fixtures are cut from real reports with invented people**
+  (`perf/fixtures/fclm_*.html`). Never commit a saved FCLM page as is.
+- The test harness lifts top-level `var` constants line by line: keep
+  each on one line.
+
 ## Front end
 
 **No external runtime dependencies. No CDN libraries.** Charts, sparklines,

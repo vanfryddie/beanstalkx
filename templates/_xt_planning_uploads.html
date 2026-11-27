@@ -10,12 +10,14 @@
     Column names are read case-insensitively, and the exports can be uploaded as they come.
     The full description is in <code>LDIS_Day_Plan_Data_Spec.md</code>.
   </p>
+  {% include "_fclm_sync_card.html" %}
   <div class="xp-list">
     {% for k in planning_kinds %}
     {% set st = planning_status[k.status] %}
     <div class="xp-row">
       <div class="xp-what">
         <strong>{{ loop.index }}. {{ k.label }}</strong> <span class="xi-dim">{{ k.export }}</span>
+        <span class="xp-source {{ 'is-fclm' if 'FCLM' in k.source and 'not' not in k.source }}">{{ k.source }}</span>
         <span>{{ k.detail }} <em>{{ k.grain | capitalize }}.</em></span>
         <span class="xp-state {{ 'is-loaded' if st.n else 'is-missing' }}">
           {% if st.n %}{{ '{:,}'.format(st.n) }} {{ 'people' if k.key in ('roster', 'hours') else 'rows' }}{% if st.first_day %}, {{ st.first_day }} to {{ st.last_day }}{% endif %}{% if k.key == 'process_day' and st.n %} · {{ st.with_plan or 0 }} with planned units{% endif %}

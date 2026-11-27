@@ -22,8 +22,8 @@
 // ==UserScript==
 // @name         LDIS Floor Sync
 // @namespace    ldis
-// @version      1.2.0-__LDIS_BUILD__
-// @description  Sweeps FCLM Function Rollup for who is on the floor and posts it to the L&D Operations Console.
+// @version      1.3.0-__LDIS_BUILD__
+// @description  Sweeps FCLM for who is on the floor, and once a day reads yesterday's Function Rollup, Process Path Rollup and Employee Roster, and posts them to the L&D Operations Console.
 // @match        __LDIS_MATCH__
 // @grant        GM_xmlhttpRequest
 // @connect      fclm-portal.amazon.com
@@ -41,7 +41,10 @@
 
     var CONFIG_URL = '__LDIS_CONFIG__';
     var POST_URL = '__LDIS_POST__';
-    var READER_VERSION = '1.2.0-__LDIS_BUILD__';
+    var READER_VERSION = '1.3.0-__LDIS_BUILD__';
+    var FCLM_PLAN_URL = '__LDIS_FCLM_PLAN__';
+    var FCLM_DAY_URL = '__LDIS_FCLM_DAY__';
+    var FCLM_ROSTER_URL = '__LDIS_FCLM_ROSTER__';
     var state = { running: false, lastRun: 0 };
 
     function log() {
@@ -136,6 +139,62 @@
         return map;
     }
 
+    /* The header laid out as FCLM draws it: every cell placed on a grid,
+       honouring both rowspan and colspan, and each column named by the
+       labels stacked above it — "paid hours total", "nikestow each-total
+       unit". headerIndex above reads two rows; the live Function Rollup
+       has three (Paid Hours spans two rows over Small..Total; the units
+       group spans one over EACH-Small.., which spans one over UNIT/UPH),
+       and against the real report it named no column "paid hours total",
+       so every person came back with no hours (found 27 Nov, against a
+       saved SCN2 report; the old fixture had a two-row header). */
+    function gridIndex(table) {
+        var rows = table.querySelectorAll('thead tr');
+        if (!rows.length) return null;
+        var grid = [];
+        for (var r = 0; r < rows.length; r++) {
+            grid[r] = grid[r] || [];
+            var col = 0;
+            var cells = rows[r].children;
+            for (var i = 0; i < cells.length; i++) {
+                while (grid[r][col] !== undefined) col += 1;
+                var rs = parseInt(cells[i].getAttribute('rowspan') || '1', 10) || 1;
+                var cs = parseInt(cells[i].getAttribute('colspan') || '1', 10) || 1;
+                /* Only the cell's own text: the caption-like filter
+                   buttons FCLM nests in some headers are not labels. */
+                var label = (cells[i].textContent || '').trim().replace(/\s+/g, ' ');
+                for (var dr = 0; dr < rs; dr++) {
+                    grid[r + dr] = grid[r + dr] || [];
+                    for (var dc = 0; dc < cs; dc++) grid[r + dr][col + dc] = label;
+                }
+                col += cs;
+            }
+        }
+        var width = 0;
+        grid.forEach(function (row) { width = Math.max(width, row.length); });
+        var map = {};
+        for (var c = 0; c < width; c++) {
+            var parts = [];
+            for (var g = 0; g < grid.length; g++) {
+                var lab = grid[g][c];
+                if (lab && parts[parts.length - 1] !== lab) parts.push(lab);
+            }
+            var key = parts.join(' ').toLowerCase();
+            if (key && !(key in map)) map[key] = c;
+        }
+        return map;
+    }
+
+    /* Units a person processed: the units column under the report's
+       Total size band ("…each-total unit"), else any "total unit", else
+       the jobs count — a process measured in jobs rather than units
+       still says how much was done. */
+    function unitsKey(map) {
+        var keys = Object.keys(map);
+        var pick = function (re) { for (var i = 0; i < keys.length; i++) if (re.test(keys[i])) return keys[i]; return null; };
+        return pick(/-total unit$/) || pick(/total unit$/) || pick(/(^| )jobs$/);
+    }
+
     /* The function a table reports on is in the heading above it, and
        the heading always carries FCLM's own id for it in brackets:
        "RF Pick [4300000184]". Anchoring on that rather than on "the
@@ -147,6 +206,18 @@
     var FUNCTION_HEADING = /^\s*(.{2,80}?)\s*\[\s*\d{4,}\s*\]\s*$/;
 
     function functionNameFor(table) {
+        /* The live report names each function in the table's own
+           caption — "Stow Each Nike [4300034958]" — with filter buttons
+           nested after it; the text before them is the name. */
+        var caption = table.querySelector('caption');
+        if (caption) {
+            var own = '';
+            for (var k = 0; k < caption.childNodes.length; k++) {
+                if (caption.childNodes[k].nodeType === 3) own += caption.childNodes[k].nodeValue;
+            }
+            var hit = FUNCTION_HEADING.exec(own.trim().replace(/\s+/g, ' '));
+            if (hit) return hit[1].trim();
+        }
         var node = table;
         var hops = 0;
         while (node && hops < 40) {
@@ -172,9 +243,10 @@
         var out = [];
         for (var t = 0; t < tables.length; t++) {
             var table = tables[t];
-            var map = headerIndex(table);
+            var map = gridIndex(table);
             if (!map || !('id' in map) || !('name' in map)) continue;
             var fn = functionNameFor(table);
+            var unitsAt = unitsKey(map);
             var rows = table.querySelectorAll('tbody tr');
             for (var r = 0; r < rows.length; r++) {
                 var cells = rows[r].children;
@@ -201,7 +273,9 @@
                     process_key: process.key,
                     process_name: process.label,
                     function_name: fn,
-                    paid_hours: numberAt(cells, map['paid hours total'])
+                    paid_hours: numberAt(cells, map['paid hours total']),
+                    units: unitsAt ? numberAt(cells, map[unitsAt]) : null,
+                    unit_type: unitsAt ? unitsAt.replace(/ unit$/, '').split(' ').pop().replace(/-total$/, '').toUpperCase() : null
                 });
             }
         }
@@ -807,6 +881,225 @@
             });
     }
 
+    /* ---------------------------------------------------------------
+       The daily sync: yesterday's work, read from FCLM as you, posted to
+       the console. Three reports, all already open to anyone who can see
+       the site in FCLM:
+
+         Function Rollup     units and paid hours per person, per
+                             function, per process path — the associate
+                             day, and summed, the process day.
+         Process Path Rollup the planned rate for every line item, and
+                             which process paths feed it.
+         Employee Roster     who is employed, on which shift pattern.
+
+       The console decides which days are due and the window each day
+       covers (one operating day, from the early shift's usual start to
+       the same time next morning, so a night belongs to the day it
+       began); this script only reads and posts. It runs at most every
+       thirty minutes from any console page, and a day is posted whole or
+       not at all, so closing the tab half-way loses nothing but time.
+       --------------------------------------------------------------- */
+
+    function ownText(node) {
+        var text = '';
+        for (var i = 0; node && i < node.childNodes.length; i++) {
+            if (node.childNodes[i].nodeType === 3) text += node.childNodes[i].nodeValue;
+        }
+        return text.trim().replace(/\s+/g, ' ');
+    }
+
+    function pprNumber(row, cls) {
+        var cell = row.querySelector('td.' + cls);
+        if (!cell) return null;
+        var shown = cell.querySelector('.original') || cell;
+        var raw = (shown.textContent || '').trim().replace(/,/g, '').replace(/%$/, '');
+        var n = parseFloat(raw);
+        return isNaN(n) ? null : n;
+    }
+
+    /* The PPR's "Hrs" columns carry class names ending in Seconds but
+       show hours: 1,396 units in 7 hours is the 199.33 the report prints
+       as the rate. Each line item names the process paths behind it in
+       its popup — firePopup('Each-Receive#Receive Dock#…', '1003027#1003010#…')
+       — which is what lets the console match a planned rate to the
+       processes it holds without anyone typing a mapping. */
+    function parsePPR(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var out = [];
+        var tables = doc.querySelectorAll('table.ppr');
+        for (var t = 0; t < tables.length; t++) {
+            var main = null, core = null;
+            var rows = tables[t].querySelectorAll('tr.lineItem');
+            for (var r = 0; r < rows.length; r++) {
+                var row = rows[r];
+                var m = row.querySelector('td.mainProcess');
+                if (m) main = ownText(m);
+                var c = row.querySelector('td.coreProcess');
+                if (c) core = ownText(c);
+                var nameCell = row.querySelector('td.lineItemName');
+                if (!nameCell) continue;
+                var anchor = nameCell.querySelector('a');
+                var name = ((anchor || nameCell).textContent || '').trim().replace(/\s+/g, ' ');
+                var ids = [];
+                var popup = anchor && /firePopup\('([^']*)','([^']*)'/.exec(anchor.getAttribute('onmouseover') || '');
+                if (popup) ids = popup[2].split('#').map(function (x) { return x.trim(); }).filter(function (x) { return /^\d+$/.test(x); });
+                var unit = row.querySelector('td.unitType');
+                out.push({
+                    id: row.id || null, name: name, main_process: main, core_process: core,
+                    unit: unit ? (unit.textContent || '').trim() : null,
+                    volume: pprNumber(row, 'actualVolume'),
+                    hours: pprNumber(row, 'actualTimeSeconds'),
+                    rate: pprNumber(row, 'actualProductivity'),
+                    plan_rate: pprNumber(row, 'planProductivity'),
+                    plan_hours: pprNumber(row, 'timeAtPlanRateSeconds'),
+                    process_ids: ids
+                });
+            }
+        }
+        return out;
+    }
+
+    /* The roster's columns are read by their header text. Its classes
+       are not to be trusted: the real report marks the Exempt column
+       "shiftPattern" too, so reading by class would put Y/N where the
+       shift pattern belongs for half the site. */
+    function parseRosterPage(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var table = null;
+        var tables = doc.querySelectorAll('table');
+        for (var t = 0; t < tables.length && !table; t++) {
+            var map = gridIndex(tables[t]);
+            if (map && 'user id' in map && 'employee id' in map) table = { el: tables[t], map: map };
+        }
+        if (!table) return [];
+        var fields = {
+            employee_id: 'employee id', user_id: 'user id', name: 'employee name',
+            department_id: 'department id', start_date: 'employment start date',
+            employment_type: 'employment type', status: 'employee status', manager: 'manager name',
+            job_title: 'job title', management_area_id: 'management area id', shift_pattern: 'shift pattern'
+        };
+        var out = [];
+        var rows = table.el.querySelectorAll('tbody tr');
+        for (var r = 0; r < rows.length; r++) {
+            var cells = rows[r].children;
+            var row = {};
+            Object.keys(fields).forEach(function (k) {
+                var i = table.map[fields[k]];
+                row[k] = i !== undefined && cells[i] ? (cells[i].textContent || '').trim().replace(/\s+/g, ' ') : null;
+            });
+            if (row.user_id) out.push(row);
+        }
+        return out;
+    }
+
+    function pprDayUrl(warehouseId, day) {
+        return 'https://fclm-portal.amazon.com/reports/processPathRollup?reportFormat=HTML'
+            + '&warehouseId=' + encodeURIComponent(warehouseId)
+            + '&spanType=Day&startDateDay=' + encodeURIComponent(day.replace(/-/g, '/'))
+            + '&employmentType=AllEmployees';
+    }
+
+    /* One line: the test harness lifts top-level constants line by line. */
+    var ROSTER_COLUMNS = ['Employee ID', 'User ID', 'Employee Name', 'Department ID', 'Employment Start Date', 'Employment Type', 'Employee Status', 'Manager Name', 'Job Title', 'Management Area ID', 'Shift Pattern'];
+
+    function rosterPageUrl(warehouseId) {
+        var url = 'https://fclm-portal.amazon.com/employee/employeeRoster?reportFormat=HTML'
+            + '&warehouseId=' + encodeURIComponent(warehouseId)
+            + '&employeeStatusActive=true&_employeeStatusActive=on&_employeeStatusLeaveOfAbsence=on'
+            + '&employeeStatusExempt=true&_employeeStatusExempt=on'
+            + '&employeeTypeAmzn=true&_employeeTypeAmzn=on&employeeTypeTemp=true&_employeeTypeTemp=on&_employeeType3Pty=on';
+        ROSTER_COLUMNS.forEach(function (c) {
+            url += '&' + encodeURIComponent(c).replace(/%20/g, '+') + '=' + encodeURIComponent(c).replace(/%20/g, '+');
+        });
+        return url + '&hideColumns=Photo&submit=true';
+    }
+
+    function postJson(url, body) {
+        return fetch(url, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }).then(function (r) { return r.json(); });
+    }
+
+    var syncState = { running: false };
+    var SYNC_EVERY_MS = 30 * 60 * 1000;
+
+    function syncDay(plan, day) {
+        var from = new Date(day.window_start);
+        var to = new Date(day.window_end);
+        var rows = [];
+        var failed = [];
+        announce({ phase: 'fclm-day', date: day.date });
+        return runPooled(plan.processes, 3, function (process) {
+            return fetchText(rollupUrl(plan.warehouse_id, process.process_id, from, to))
+                .then(function (html) {
+                    parseRollup(html, process).forEach(function (r) {
+                        rows.push({
+                            employee_id: r.employee_id, process_key: process.key,
+                            process_id: process.process_id, function_name: r.function_name,
+                            paid_hours: r.paid_hours, units: r.units, unit_type: r.unit_type
+                        });
+                    });
+                })
+                .catch(function (e) { log('fclm rollup failed', process.key, e); failed.push(process.key); });
+        }).then(function () {
+            return fetchText(pprDayUrl(plan.warehouse_id, day.date))
+                .then(parsePPR)
+                .catch(function (e) { log('fclm ppr failed', e); failed.push('ppr'); return []; });
+        }).then(function (ppr) {
+            return postJson(FCLM_DAY_URL, {
+                date: day.date, window_start: day.window_start, window_end: day.window_end,
+                rows: rows, ppr: ppr, failed: failed, reader_version: READER_VERSION
+            });
+        });
+    }
+
+    function fclmDailySync(force) {
+        if (syncState.running) return Promise.resolve(null);
+        var key = 'ldisFclmSyncCheckedAt';
+        try {
+            if (!force && Date.now() - Number(localStorage.getItem(key) || 0) < SYNC_EVERY_MS) return Promise.resolve(null);
+            localStorage.setItem(key, String(Date.now()));
+        } catch (e) { /* storage blocked: check every page, which is still bounded by the server's plan */ }
+        syncState.running = true;
+        var summary = { days: [], roster: null };
+        return fetch(FCLM_PLAN_URL, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (plan) {
+                if (!plan || !plan.allowed) return summary;
+                var chain = Promise.resolve();
+                if (plan.roster_due) {
+                    chain = chain.then(function () {
+                        announce({ phase: 'fclm-roster' });
+                        return fetchText(rosterPageUrl(plan.warehouse_id))
+                            .then(function (html) { return postJson(FCLM_ROSTER_URL, { rows: parseRosterPage(html) }); })
+                            .then(function (result) { summary.roster = result; })
+                            .catch(function (e) { log('fclm roster failed', e); });
+                    });
+                }
+                (plan.days || []).forEach(function (day) {
+                    chain = chain.then(function () {
+                        return syncDay(plan, day)
+                            .then(function (result) { summary.days.push(result); })
+                            .catch(function (e) { log('fclm day failed', day.date, e); });
+                    });
+                });
+                return chain.then(function () { return summary; });
+            })
+            .catch(function (e) { log('fclm sync failed', e); return summary; })
+            .then(function (result) {
+                syncState.running = false;
+                announce({ phase: 'fclm-done', result: result });
+                document.dispatchEvent(new CustomEvent('ldis-fclm-synced', { detail: result }));
+                return result;
+            });
+    }
+
+    window.ldisFclmSync = fclmDailySync;
+    document.addEventListener('ldis-fclm-sync', function () { fclmDailySync(true); });
+
     /* --------------------------------------------------------------- */
 
     function sweep(force) {
@@ -917,6 +1210,9 @@
            touching FCLM's reports at all. */
         watchPhotos();
         repairPhotos(document).catch(function () {});
+        /* The daily FCLM sync, from any console page: the server says
+           whether anything is due and whether this person may post it. */
+        fclmDailySync(false);
         if (!document.getElementById('ldisFloorMarker')) return;
         announce({ phase: 'present' });
         var stamp = Number(document.getElementById('ldisFloorMarker').dataset.ageSeconds || '99999');

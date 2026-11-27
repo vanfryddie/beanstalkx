@@ -5194,19 +5194,19 @@ def xt_model_forecast_explain():
 # exports a site already has; the shift calendar arrived on 27 Nov; the
 # last two are new and have downloadable templates.
 XT_PLANNING_KINDS = [
-    {"key": "roster", "label": "Employee roster", "export": "employeeList",
+    {"key": "roster", "source": "FCLM Employee Roster — synced daily", "label": "Employee roster", "export": "or upload the employeeList CSV",
      "grain": "one row per associate", "status": "roster",
      "detail": "Who is employed today, and on which shift pattern. Replaces the previous roster."},
-    {"key": "hours", "label": "Hours on Function", "export": "LDMT Hours on Function",
+    {"key": "hours", "source": "Upload — trained status is not in FCLM", "label": "Hours on Function", "export": "LDMT Hours on Function CSV",
      "grain": "one row per associate and function", "status": "hours",
      "detail": "Home department, and who is trained on what. Replaces the previous file."},
-    {"key": "calendar", "label": "Shift calendar", "export": "SSPOT Information",
+    {"key": "calendar", "source": "Upload — the schedule is in SSPOT, not FCLM", "label": "Shift calendar", "export": "SSPOT Information CSV",
      "grain": "one row per shift cohort per working day", "status": "calendar",
      "detail": "Who is scheduled on which day, and for how long. Days are added or replaced; history is kept."},
-    {"key": "process_day", "label": "Process day", "export": "built from FCLM / the plan",
+    {"key": "process_day", "source": "FCLM Function Rollup + Process Path Rollup — synced daily", "label": "Process day", "export": "or upload a CSV from the template",
      "grain": "one row per date, shift and process", "status": "process_day", "template": True,
      "detail": "Volume, hours and plan for every process. Days are added or replaced."},
-    {"key": "associate_day", "label": "Associate day", "export": "built from FCLM",
+    {"key": "associate_day", "source": "FCLM Function Rollup — synced daily", "label": "Associate day", "export": "or upload a CSV from the template",
      "grain": "one row per date, shift, associate and process", "status": "associate_day", "template": True,
      "detail": "Units and hours each person booked on each process, indirect included. "
                "The days in a file replace those days."},
@@ -6695,7 +6695,7 @@ def _floor_match_lines():
             for path in paths for scheme in ("https", "http")]
 
 
-FLOOR_READER_RELEASE = "1.2.0"
+FLOOR_READER_RELEASE = "1.3.0"
 
 
 def _floor_reader_version():
@@ -6730,6 +6730,9 @@ def _floor_reader_source():
     script = script.replace("__LDIS_UPDATE__", base + url_for("floor_userscript"))
     script = script.replace("__LDIS_CONFIG__", base + url_for("floor_config"))
     script = script.replace("__LDIS_POST__", base + url_for("floor_snapshot"))
+    script = script.replace("__LDIS_FCLM_PLAN__", base + url_for("fclm_sync_plan"))
+    script = script.replace("__LDIS_FCLM_DAY__", base + url_for("fclm_sync_day"))
+    script = script.replace("__LDIS_FCLM_ROSTER__", base + url_for("fclm_sync_roster"))
     return script.replace("__LDIS_BUILD__", version.split("-", 1)[1]), version
 
 
@@ -6952,6 +6955,152 @@ def floor_snapshot():
         reader_version=_floor_text(payload.get("reader_version"), 40),
     )
     return jsonify({"ok": True, **result})
+
+
+# ====================================================================
+# FCLM daily sync — the server half. The reader half is in
+# static/floor_provider.user.js; db.py holds the attribution rules.
+# ====================================================================
+
+def _fclm_may_post(login_id):
+    return _effective_role() in FLOOR_POST_ROLES or login_id in BOOTSTRAP_ADMIN_LOGINS
+
+
+@application.route("/fclm/sync/plan")
+def fclm_sync_plan():
+    """What a browser should read from FCLM now: the days still missing,
+    each with the window it covers, and whether today's roster is in.
+    Anyone signed in may ask; only someone who may post floor data is
+    told there is anything to do, so the reader stays quiet for everyone
+    else without needing to know roles itself."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"allowed": False}), 401
+    settings = db.get_fclm_sync_settings()
+    if not settings["enabled"] or not _fclm_may_post(login_id):
+        return jsonify({"allowed": False})
+    return jsonify({
+        "allowed": True,
+        "warehouse_id": db.get_current_site(),
+        "processes": db.get_floor_processes(),
+        "days": db.fclm_due_days(),
+        "roster_due": db.fclm_roster_due(),
+    })
+
+
+FCLM_MAX_ROWS = 60000
+FCLM_MAX_PPR = 2000
+
+
+@application.route("/fclm/sync/day", methods=["POST"])
+def fclm_sync_day():
+    """One operating day, read from FCLM by a manager's browser. Treated
+    as data from outside: every field read by name and bounded, and a
+    date that is not a past day inside the backfill window is refused, so
+    a stray post cannot overwrite a week nobody asked for."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    if not _fclm_may_post(login_id):
+        return jsonify({"error": "not allowed to post FCLM data"}), 403
+    payload = request.get_json(silent=True) or {}
+    try:
+        day = date.fromisoformat(str(payload.get("date") or ""))
+    except ValueError:
+        return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+    window = db.get_fclm_sync_settings()["backfill_days"]
+    if not (date.today() - timedelta(days=window) <= day < date.today()):
+        return jsonify({"error": "date is outside the sync window"}), 400
+    rows, ppr = payload.get("rows"), payload.get("ppr") or []
+    if not isinstance(rows, list) or not isinstance(ppr, list):
+        return jsonify({"error": "rows and ppr must be lists"}), 400
+    if len(rows) > FCLM_MAX_ROWS or len(ppr) > FCLM_MAX_PPR:
+        return jsonify({"error": "too many rows"}), 413
+    clean_rows = [{
+        "employee_id": _floor_text(r.get("employee_id"), 20),
+        "process_key": _floor_text(r.get("process_key"), 60),
+        "process_id": _floor_text(r.get("process_id"), 20),
+        "function_name": _floor_text(r.get("function_name"), 120),
+        "paid_hours": r.get("paid_hours") if isinstance(r.get("paid_hours"), (int, float)) else None,
+        "units": r.get("units") if isinstance(r.get("units"), (int, float)) else None,
+    } for r in rows if isinstance(r, dict)]
+    clean_ppr = [{
+        "id": _floor_text(i.get("id"), 160), "name": _floor_text(i.get("name"), 160),
+        "core_process": _floor_text(i.get("core_process"), 120),
+        "volume": i.get("volume") if isinstance(i.get("volume"), (int, float)) else None,
+        "plan_rate": i.get("plan_rate") if isinstance(i.get("plan_rate"), (int, float)) else None,
+        "plan_hours": i.get("plan_hours") if isinstance(i.get("plan_hours"), (int, float)) else None,
+        "process_ids": [str(x)[:20] for x in (i.get("process_ids") or [])[:60] if str(x).isdigit()],
+    } for i in ppr if isinstance(i, dict)]
+    failed = [_floor_text(f, 60) for f in (payload.get("failed") or [])[:60]]
+    result = db.record_fclm_day(day.isoformat(), clean_rows, clean_ppr, failed, taken_by=login_id)
+    _XT_PREP_CACHE.clear()
+    return jsonify({"ok": True, **result})
+
+
+@application.route("/fclm/sync/roster", methods=["POST"])
+def fclm_sync_roster():
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"error": "not signed in"}), 401
+    if not _fclm_may_post(login_id):
+        return jsonify({"error": "not allowed to post FCLM data"}), 403
+    rows = (request.get_json(silent=True) or {}).get("rows")
+    if not isinstance(rows, list):
+        return jsonify({"error": "rows must be a list"}), 400
+    if len(rows) > 20000:
+        return jsonify({"error": "too many rows"}), 413
+    result = db.record_fclm_roster(rows, taken_by=login_id)
+    _XT_PREP_CACHE.clear()
+    return jsonify({"ok": result["status"] == "complete", **result})
+
+
+@application.route("/fclm/sync/settings", methods=["POST"])
+def fclm_sync_settings_save():
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if _effective_role() not in ADMIN_TIER_ROLES:
+        return _deny("Only admins and trainers can change the FCLM sync.")
+    back = redirect(url_for("ld_settings", tab="data") + "#fclm-sync")
+    values = {"enabled": request.form.get("enabled") == "1"}
+    for field, low, high in (("backfill_days", 1, 120), ("days_per_run", 1, 14)):
+        raw = (request.form.get(field) or "").strip()
+        if raw:
+            try:
+                number = int(raw)
+            except ValueError:
+                flash(f"{field.replace('_', ' ').capitalize()} must be a whole number.", "warning")
+                return back
+            if not low <= number <= high:
+                flash(f"{field.replace('_', ' ').capitalize()} must be between {low} and {high}.", "warning")
+                return back
+            values[field] = number
+    start = (request.form.get("day_start") or "").strip()
+    if start:
+        if not re.match(r"^\d{1,2}:\d{2}$", start):
+            flash("Day start must look like 06:00.", "warning")
+            return back
+        values["day_start"] = start
+    db.set_fclm_sync_settings(values, updated_by=login_id)
+    if request.form.get("ppr_map") is not None:
+        mapping = {}
+        for line in request.form.get("ppr_map").splitlines():
+            if "=" in line:
+                item, _, process = line.partition("=")
+                if item.strip() and process.strip():
+                    mapping[item.strip()] = process.strip()
+        db.set_app_setting("fclm_ppr_map", json.dumps(mapping), login_id)
+    if request.form.get("resync"):
+        # Forget the log for the window, so every day is read again.
+        conn = db.get_db()
+        conn.execute("DELETE FROM fclm_sync_log WHERE kind = ?", ("day",))
+        conn.commit()
+        conn.close()
+        flash("Every day in the window will be read from FCLM again.", "success")
+    else:
+        flash("FCLM sync settings saved.", "success")
+    return back
 
 
 def _floor_text(value, limit):
@@ -7907,6 +8056,8 @@ def ld_settings():
         freshness=db.data_freshness(),
         xt_freshness=db.xt_hours_freshness(),
         planning_status=db.planning_data_status() if tab == "data" else None,
+        fclm_status=db.fclm_sync_status() if tab == "data" else None,
+        fclm_ppr_map=db.get_fclm_ppr_map() if tab == "data" else {},
         planning_kinds=XT_PLANNING_KINDS,
         weekdays=db.WEEKDAYS,
         weekday_short=db.WEEKDAY_SHORT,

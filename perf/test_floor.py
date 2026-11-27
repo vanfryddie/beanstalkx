@@ -73,7 +73,7 @@ def harness(*names):
     return "\n".join(out)
 
 
-parts = [harness("headerIndex", "functionNameFor", "parseRollup", "cleanStation", "numberAt")]
+parts = [harness("headerIndex", "gridIndex", "unitsKey", "functionNameFor", "parseRollup", "cleanStation", "numberAt")]
 
 rows = []
 with sync_playwright() as p:

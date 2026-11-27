@@ -343,3 +343,50 @@ How the figures are made, from file 4 with file 3's plan:
   Central that day is reported under Central, whatever shift the volume
   file filed the work under.
 - Indirect time, and processes with no owning department, are left out.
+
+
+## Read daily from FCLM instead of uploaded (27 Nov)
+
+Three of the five inputs now come from FCLM by themselves. A manager's
+browser reads them with the **LDIS Floor Sync** userscript (version 1.3
+or later), the same one the Floor/Staffing page already uses, and posts
+them to the console. The console's server never holds an FCLM (Midway)
+session, so it cannot read FCLM on its own.
+
+| Input | From | How often |
+|---|---|---|
+| Roster | FCLM **Employee Roster** | once a day |
+| Associate day | FCLM **Function Rollup**, one request per process path the floor sweep covers | each past day, once |
+| Process day | the associate day summed, with the planned rate from FCLM **Process Path Rollup** | each past day, once |
+| Hours on Function | still uploaded: trained status is not in FCLM | when it changes |
+| Shift calendar | still uploaded: the schedule is in SSPOT, not FCLM | weekly, with future weeks |
+
+**How a day is read.** One operating day runs from the usual start of
+the early shift (from the shift calendar, 06:00 by default) to the same
+time next morning, so a night shift falls wholly inside the day it
+began. Each person's hours go to their own shift, taken from their
+roster shift pattern. FCLM function names are the Hours on Function
+process names. A function with no match is kept under its own name and
+listed on the Data Upload tab. Employee ids are resolved to logins
+through the roster; an id nobody can name is counted and left out.
+
+**Planned rate.** For each process, the Process Path Rollup line item
+that most specifically covers the process paths it was worked under: a
+"- Total" row where there is one, and the one naming the fewest paths.
+The rate is that line's volume over its hours at plan. Overrides go in
+the sync settings, one "line item = process" per line.
+
+**What FCLM does not have:** planned *volume*. The PPR's plan is a rate.
+Coverage is then judged on actual volume (planned units where a file
+supplies them), and "met plan" on rate.
+
+**When it runs.** On any console page, at most every 30 minutes: it reads
+yesterday first, then fills the history behind it, a few days per run
+(28 days of history and 3 per run by default; both settings). A day is
+stored whole; one with a process that failed to load is marked
+incomplete and read again on the next run. A roster under half the size
+of the one on record is refused, not treated as most of the site leaving.
+**Sync now** on the Data Upload tab runs it at once.
+
+**Load on FCLM:** about 30 requests per day read (one per process path
+plus one PPR) and one roster a day, three at a time.

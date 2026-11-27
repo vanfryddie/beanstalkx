@@ -23,6 +23,7 @@ import csv
 import io
 import uuid
 import re
+from collections import defaultdict
 import threading
 import functools
 from datetime import datetime, date, timedelta
@@ -2493,6 +2494,16 @@ def init_db():
             PRIMARY KEY (work_date, shift, employee_login, process)
         );
         CREATE INDEX IF NOT EXISTS idx_associate_day_date ON associate_day(work_date);
+        CREATE TABLE IF NOT EXISTS fclm_sync_log (
+            sync_date TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT,
+            row_count INTEGER,
+            detail TEXT,
+            taken_by TEXT,
+            taken_at TEXT,
+            PRIMARY KEY (sync_date, kind)
+        );
         """
     )
         # Safe migrations for columns added after the tables above first
@@ -10806,3 +10817,341 @@ def load_planning_data(since=None):
     conn.close()
     return {"roster": roster, "hours": hours, "calendar": calendar,
             "process_day": process_day, "associate_day": associate_day}
+
+
+
+# ====================================================================
+# FCLM daily sync
+#
+# The console's server has no Midway session and must never hold one, so
+# it cannot read FCLM itself. A manager's browser does, through the LDIS
+# Floor Sync userscript (static/floor_provider.user.js), and posts what it
+# read here. The server's part is to say which days are due, to attribute
+# what arrives — employee id to login through the roster, person to shift
+# through their shift pattern, FCLM function to the process vocabulary the
+# Hours on Function file uses — and to store it in the same tables the
+# CSV uploads fill, so everything downstream reads one shape whichever
+# way the data came in.
+# ====================================================================
+
+FCLM_SYNC_DEFAULTS = {"enabled": True, "backfill_days": 28, "days_per_run": 3, "day_start": "06:00"}
+FCLM_ROSTER_SHRINK_LIMIT = 0.5
+
+
+def get_fclm_sync_settings():
+    raw = get_app_setting("fclm_sync_settings")
+    settings = dict(FCLM_SYNC_DEFAULTS)
+    try:
+        settings.update({k: v for k, v in json.loads(raw or "{}").items() if k in FCLM_SYNC_DEFAULTS})
+    except (ValueError, AttributeError):
+        pass
+    settings["backfill_days"] = max(1, min(120, int(settings["backfill_days"] or 28)))
+    settings["days_per_run"] = max(1, min(14, int(settings["days_per_run"] or 3)))
+    if not re.match(r"^\d{1,2}:\d{2}$", str(settings.get("day_start") or "")):
+        settings["day_start"] = FCLM_SYNC_DEFAULTS["day_start"]
+    return settings
+
+
+def set_fclm_sync_settings(values, updated_by):
+    current = get_fclm_sync_settings()
+    current.update({k: v for k, v in values.items() if k in FCLM_SYNC_DEFAULTS})
+    set_app_setting("fclm_sync_settings", json.dumps(current), updated_by)
+
+
+def get_fclm_ppr_map():
+    """Manual PPR line item -> process overrides, keyed by the line
+    item's id or its name, lower-cased. Only needed where the automatic
+    match (by the process paths a line item names) is ambiguous."""
+    try:
+        return {str(k).strip().lower(): str(v).strip()
+                for k, v in json.loads(get_app_setting("fclm_ppr_map") or "{}").items() if v}
+    except (ValueError, AttributeError):
+        return {}
+
+
+def fclm_day_start(day):
+    """When an operating day begins: the usual start of the early shift
+    on that date in the SSPOT calendar (the most common start among its
+    early codes, Central excluded), else on any date, else the setting.
+    Reading from there to the same time next morning puts a night shift
+    wholly inside the day it began."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT start_at FROM shift_calendar WHERE shift = 'early' AND work_date = ? "
+        "AND (pattern IS NULL OR LOWER(pattern) <> 'central') AND start_at IS NOT NULL", (day,)).fetchall()
+    if not rows:
+        rows = conn.execute(
+            "SELECT start_at FROM shift_calendar WHERE shift = 'early' "
+            "AND (pattern IS NULL OR LOWER(pattern) <> 'central') AND start_at IS NOT NULL "
+            "ORDER BY work_date DESC LIMIT 400").fetchall()
+    conn.close()
+    starts = [str(r["start_at"])[11:16] for r in rows if r["start_at"] and len(str(r["start_at"])) >= 16]
+    if starts:
+        return max(set(starts), key=starts.count)
+    return get_fclm_sync_settings()["day_start"]
+
+
+def fclm_due_days(today=None):
+    """The days a browser should read next: every day in the backfill
+    window, newest first, that has not been stored complete — so
+    yesterday arrives on the first run and the history fills in behind
+    it, a few days per run."""
+    settings = get_fclm_sync_settings()
+    today = today or date.today()
+    conn = get_db()
+    done = {r["sync_date"] for r in conn.execute(
+        "SELECT sync_date FROM fclm_sync_log WHERE kind = 'day' AND status = 'complete'").fetchall()}
+    conn.close()
+    due = []
+    for back in range(1, settings["backfill_days"] + 1):
+        day = (today - timedelta(days=back)).isoformat()
+        if day in done:
+            continue
+        start = fclm_day_start(day)
+        begin = datetime.fromisoformat(f"{day}T{start}")
+        due.append({"date": day, "window_start": begin.strftime("%Y-%m-%dT%H:%M"),
+                    "window_end": (begin + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M")})
+        if len(due) >= settings["days_per_run"]:
+            break
+    return due
+
+
+def fclm_roster_due(today=None):
+    today = (today or date.today()).isoformat()
+    conn = get_db()
+    row = conn.execute("SELECT status FROM fclm_sync_log WHERE kind = 'roster' AND sync_date = ?",
+                       (today,)).fetchone()
+    conn.close()
+    return not row or row["status"] != "complete"
+
+
+def _fclm_log(conn, day, kind, status, count, detail, taken_by):
+    conn.execute(
+        "INSERT INTO fclm_sync_log (sync_date, kind, status, row_count, detail, taken_by, taken_at) "
+        "VALUES (?,?,?,?,?,?,?) ON CONFLICT (sync_date, kind) DO UPDATE SET status=excluded.status, "
+        "row_count=excluded.row_count, detail=excluded.detail, taken_by=excluded.taken_by, "
+        "taken_at=excluded.taken_at",
+        (day, kind, status, count, json.dumps(detail), taken_by, _now()))
+
+
+def fclm_people():
+    """employee id -> (login, shift) for everyone this site can name.
+    The roster first (it is the current truth), then logins the floor
+    sweep has learned, then the Hours on Function file."""
+    conn = get_db()
+    people = {}
+    for r in conn.execute("SELECT employee_id, employee_login, shift FROM employee_roster "
+                          "WHERE employee_id IS NOT NULL").fetchall():
+        people[str(r["employee_id"]).lstrip("0")] = (r["employee_login"].lower(), r["shift"])
+    hours_shift = {}
+    for r in conn.execute("SELECT employee_id, employee_login, shift FROM xt_hours "
+                          "WHERE employee_id IS NOT NULL AND employee_login IS NOT NULL").fetchall():
+        key = str(r["employee_id"]).lstrip("0")
+        hours_shift[r["employee_login"].lower()] = r["shift"]
+        people.setdefault(key, (r["employee_login"].lower(), r["shift"]))
+    for r in conn.execute("SELECT employee_id, employee_login FROM floor_identity "
+                          "WHERE employee_id IS NOT NULL AND employee_login IS NOT NULL").fetchall():
+        key = str(r["employee_id"]).lstrip("0")
+        if key not in people:
+            login = r["employee_login"].lower()
+            people[key] = (login, hours_shift.get(login))
+    conn.close()
+    return people
+
+
+def _fclm_process_names():
+    """Merged Functions as Hours on Function spells them, keyed lower-
+    case: FCLM's function names and LDIS's processes are the same words
+    ("Stow Each Nike", "Pack Singles"), so this is the default mapping."""
+    conn = get_db()
+    names = {r["merged_function"].strip().lower(): r["merged_function"].strip()
+             for r in conn.execute("SELECT DISTINCT merged_function FROM xt_hours "
+                                   "WHERE merged_function IS NOT NULL").fetchall()}
+    conn.close()
+    return names
+
+
+def fclm_plan_rate(process_ids, ppr, manual_items=None):
+    """The planned rate for a process, from the PPR line item that most
+    specifically covers the process paths it was worked under: of the
+    line items naming any of those paths, prefer a "- Total" row, then the
+    one naming the fewest paths (Each Receive - Total over Receive -
+    Total, which also carries support). Returns (rate, line item name)."""
+    items = manual_items or [i for i in ppr if set(i.get("process_ids") or []) & set(process_ids)
+                             and i.get("plan_rate")]
+    if not items:
+        return None, None
+    totals = [i for i in items if (i.get("name") or "").strip().lower().endswith("total")]
+    pool = totals or items
+    best = min(pool, key=lambda i: (len(i.get("process_ids") or []) or 999, -(i.get("volume") or 0)))
+    if best.get("plan_hours") and best.get("volume"):
+        rate = best["volume"] / best["plan_hours"]
+    else:
+        rate = best.get("plan_rate")
+    return (round(rate, 2) if rate else None), best.get("name")
+
+
+def record_fclm_day(day, rows, ppr, failed, taken_by=None):
+    """Store one operating day read from FCLM as associate day and
+    process day, replacing whatever an earlier read of that day stored.
+
+    A row whose employee id nobody can name, or whose person has no
+    shift on record, is counted and left out — never filed under a guess,
+    since the replay would then count a stranger as present on a shift."""
+    people = fclm_people()
+    canonical = _fclm_process_names()
+    mapping = get_function_process_map()
+    homes = {k.lower(): v for k, v in xt_process_home_departments().items() if k}
+    work, unresolved, no_shift, unmapped = {}, set(), set(), {}
+    process_ids = defaultdict(set)
+    for row in rows:
+        emp = str(row.get("employee_id") or "").strip().lstrip("0")
+        hours = _as_number(row.get("paid_hours")) or 0.0
+        if not emp or hours <= 0:
+            continue
+        person = people.get(emp)
+        if not person:
+            unresolved.add(emp)
+            continue
+        login, shift = person
+        if shift not in SHIFTS:
+            no_shift.add(login)
+            continue
+        function = (row.get("function_name") or "").strip()
+        process = canonical.get(function.lower()) or mapping.get(function.lower())
+        if not process:
+            process = function or (row.get("process_key") or "unknown")
+            unmapped[process] = unmapped.get(process, 0) + 1
+        if row.get("process_id"):
+            process_ids[process].add(str(row["process_id"]).lstrip("0"))
+        key = (shift, login, process)
+        units = _as_number(row.get("units")) or 0.0
+        prev = work.get(key, (None, 0.0, 0.0))
+        work[key] = (function or prev[0], prev[1] + units, prev[2] + hours)
+
+    ppr = [i for i in (ppr or []) if isinstance(i, dict)]
+    for item in ppr:
+        item["process_ids"] = [str(x).lstrip("0") for x in item.get("process_ids") or []]
+    manual = get_fclm_ppr_map()
+    manual_items = defaultdict(list)
+    for item in ppr:
+        target = manual.get((item.get("id") or "").lower()) or manual.get((item.get("name") or "").lower())
+        if target:
+            manual_items[target.lower()].append(item)
+
+    by_process = defaultdict(lambda: [0.0, 0.0])
+    for (shift, _login, process), (_f, units, hours) in work.items():
+        by_process[(shift, process)][0] += units
+        by_process[(shift, process)][1] += hours
+    plans, no_plan = {}, []
+    for process in {p for (_s, p) in by_process}:
+        rate, line = fclm_plan_rate(process_ids.get(process, ()), ppr, manual_items.get(process.lower()))
+        plans[process] = rate
+        if rate is None:
+            no_plan.append(process)
+
+    conn = get_db()
+    now = _now()
+    conn.execute("DELETE FROM associate_day WHERE work_date = ?", (day,))
+    for (shift, login, process), (function, units, hours) in work.items():
+        conn.execute(
+            "INSERT INTO associate_day (work_date, shift, employee_login, process, fclm_function, units, hours, "
+            "source, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (day, shift, login, process, function, round(units, 2), round(hours, 2), "fclm", now))
+    site = get_current_site()
+    conn.execute("DELETE FROM process_volume WHERE work_date = ? AND source = ?", (day, "fclm"))
+    for (shift, process), (units, hours) in by_process.items():
+        rate = plans.get(process)
+        conn.execute(
+            """INSERT INTO process_volume (fc, work_date, shift, process, units, hours, plan_rate, plan_hours,
+                                           plan_units, department, source, uploaded_by, uploaded_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT (fc, work_date, shift, process) DO UPDATE SET
+                 units=excluded.units, hours=excluded.hours, plan_rate=excluded.plan_rate,
+                 plan_hours=excluded.plan_hours, department=excluded.department, source=excluded.source,
+                 uploaded_by=excluded.uploaded_by, uploaded_at=excluded.uploaded_at""",
+            (site, day, shift, process, round(units), round(hours, 2), rate,
+             round(units / rate, 2) if rate and units else None, None,
+             homes.get(process.lower()), "fclm", taken_by, now))
+    failed = [str(f)[:60] for f in (failed or [])][:50]
+    detail = {"failed": failed, "unresolved_ids": len(unresolved), "no_shift": len(no_shift),
+              "unmapped_functions": sorted(unmapped)[:30], "no_plan_rate": sorted(no_plan)[:30],
+              "people": len({k[1] for k in work}), "processes": len({k[1] for k in by_process})}
+    status = "complete" if not failed and rows else ("partial" if rows else "empty")
+    _fclm_log(conn, day, "day", status, len(work), detail, taken_by)
+    conn.commit()
+    conn.close()
+    return {"date": day, "status": status, "rows": len(work), **detail}
+
+
+def record_fclm_roster(rows, taken_by=None):
+    """Replace the roster with what FCLM's Employee Roster says today.
+
+    Refused when the new list is less than half the current one: a page
+    that came back filtered, half-loaded or for the wrong building looks
+    exactly like most of the site having left, and replacing on it would
+    mark them all unavailable. The refusal is logged and said."""
+    cleaned = []
+    seen = set()
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        login = (str(r.get("user_id") or "").strip().lower())[:60]
+        if not login or login in seen:
+            continue
+        seen.add(login)
+        pattern = (str(r.get("shift_pattern") or "").strip())[:20] or None
+        cleaned.append((login, (str(r.get("employee_id") or "").strip())[:20] or None,
+                        (str(r.get("name") or "").strip())[:160] or None,
+                        (str(r.get("department_id") or "").strip())[:20] or None,
+                        (str(r.get("management_area_id") or "").strip())[:20] or None,
+                        pattern, _derive_shift(pattern),
+                        (str(r.get("employment_type") or "").strip())[:20] or None,
+                        (str(r.get("job_title") or "").strip())[:80] or None,
+                        _roster_date(str(r.get("start_date") or "")),
+                        (str(r.get("status") or "").strip())[:20] or "Active",
+                        (str(r.get("manager") or "").strip())[:160] or None))
+    conn = get_db()
+    current = conn.execute("SELECT COUNT(*) AS n FROM employee_roster").fetchone()["n"]
+    today = date.today().isoformat()
+    if not cleaned or (current >= 50 and len(cleaned) < current * FCLM_ROSTER_SHRINK_LIMIT):
+        _fclm_log(conn, today, "roster", "refused", len(cleaned),
+                  {"current": current, "received": len(cleaned)}, taken_by)
+        conn.commit()
+        conn.close()
+        return {"status": "refused", "received": len(cleaned), "current": current}
+    conn.execute("DELETE FROM employee_roster")
+    now = _now()
+    for row in cleaned:
+        conn.execute(
+            "INSERT INTO employee_roster (employee_login, employee_id, full_name, department_id, "
+            "management_area_id, shift_pattern, shift, employment_type, job_title, start_date, "
+            "status, manager_name, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row + (now,))
+    _fclm_log(conn, today, "roster", "complete", len(cleaned), {"previous": current}, taken_by)
+    conn.execute("INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
+                 ("FCLM Employee Roster", "employee_roster", now, len(cleaned)))
+    conn.commit()
+    conn.close()
+    return {"status": "complete", "loaded": len(cleaned), "previous": current}
+
+
+def fclm_sync_status(today=None):
+    """What the sync has stored, for the Data Upload tab."""
+    settings = get_fclm_sync_settings()
+    today = today or date.today()
+    window = [(today - timedelta(days=b)).isoformat() for b in range(1, settings["backfill_days"] + 1)]
+    conn = get_db()
+    logs = {(r["sync_date"], r["kind"]): dict(r) for r in conn.execute(
+        "SELECT * FROM fclm_sync_log WHERE sync_date >= ?", (window[-1],)).fetchall()}
+    conn.close()
+    days = [logs.get((d, "day")) for d in window]
+    complete = [d for d in window if (logs.get((d, "day")) or {}).get("status") == "complete"]
+    partial = [d for d in window if (logs.get((d, "day")) or {}).get("status") in ("partial", "empty")]
+    latest = next((logs[(d, "day")] for d in window if (d, "day") in logs), None)
+    detail = json.loads(latest["detail"]) if latest and latest.get("detail") else {}
+    roster = logs.get((today.isoformat(), "roster")) or next(
+        (v for (d, k), v in sorted(logs.items(), reverse=True) if k == "roster"), None)
+    return {"settings": settings, "window_days": len(window), "complete": len(complete),
+            "partial": partial, "missing": len(window) - len(complete) - len(partial),
+            "newest_complete": complete[0] if complete else None, "latest": latest, "latest_detail": detail,
+            "roster": roster, "roster_detail": json.loads(roster["detail"]) if roster and roster.get("detail") else {}}

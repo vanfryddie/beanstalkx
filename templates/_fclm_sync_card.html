@@ -1,0 +1,83 @@
+{#- The FCLM daily sync: what it has stored, and the controls for it.
+    The reading is done by the LDIS Floor Sync userscript in a manager's
+    browser — the server never holds an FCLM session — so "Sync now" asks
+    that script to run, and the line under it reports what the script
+    says, or that no script answered. -#}
+{% set f = fclm_status %}
+<div class="fsync" id="fclm-sync">
+  <div class="fsync-head">
+    <div>
+      <strong>Daily from FCLM</strong>
+      <span class="xi-dim">Function Rollup, Process Path Rollup and Employee Roster, read in your browser and stored here.</span>
+    </div>
+    <button type="button" class="btn btn-gold btn-sm" id="fclmSyncNow">Sync now</button>
+  </div>
+  <div class="fsync-stats">
+    <span><strong>{{ f.complete }}</strong> of {{ f.window_days }} days stored{% if f.newest_complete %} · newest {{ f.newest_complete }}{% endif %}</span>
+    {% if f.partial %}<span class="fsync-warn">{{ f.partial | length }} incomplete ({{ f.partial[:3] | join(', ') }}{{ '…' if f.partial | length > 3 }}) — read again on the next run</span>{% endif %}
+    {% if f.missing %}<span>{{ f.missing }} still to read, {{ f.settings.days_per_run }} per run</span>{% endif %}
+    <span>Roster: {% if f.roster %}{{ f.roster.status }} {{ f.roster.sync_date }}{% if f.roster.status == 'complete' %} · {{ '{:,}'.format(f.roster.row_count or 0) }} people{% elif f.roster.status == 'refused' %} — the page returned {{ f.roster_detail.received }} people against {{ f.roster_detail.current }} on record, so the roster was kept{% endif %}{% else %}not read yet{% endif %}</span>
+  </div>
+  {% if f.latest %}
+  {% set d = f.latest_detail %}
+  <p class="fsync-detail">Last day read, {{ f.latest.sync_date }}: {{ d.people or 0 }} people on {{ d.processes or 0 }} processes.
+    {% if d.unresolved_ids %}{{ d.unresolved_ids }} FCLM employee id(s) not on the roster were left out.{% endif %}
+    {% if d.no_shift %}{{ d.no_shift }} person(s) with no shift pattern were left out.{% endif %}
+    {% if d.failed %}Not read: {{ d.failed | join(', ') }}.{% endif %}
+    {% if d.no_plan_rate %}No planned rate found for: {{ d.no_plan_rate | join(', ') }} — map them below.{% endif %}
+    {% if d.unmapped_functions %}FCLM functions stored under their own name (not a Hours on Function process): {{ d.unmapped_functions | join(', ') }}.{% endif %}</p>
+  {% endif %}
+  <p class="fsync-status" id="fclmSyncStatus" aria-live="polite"></p>
+  <details class="fsync-settings">
+    <summary>Sync settings</summary>
+    <form method="POST" action="{{ url_for('fclm_sync_settings_save') }}" class="xs-config">
+      <label class="fsync-check"><input type="checkbox" name="enabled" value="1" {{ 'checked' if f.settings.enabled }}> Sync daily</label>
+      <label>Days of history to keep filled <input type="number" name="backfill_days" min="1" max="120" value="{{ f.settings.backfill_days }}"></label>
+      <label>Days read per run <input type="number" name="days_per_run" min="1" max="14" value="{{ f.settings.days_per_run }}"></label>
+      <label>Day starts at (when the calendar cannot say) <input type="text" name="day_start" value="{{ f.settings.day_start }}" pattern="\d{1,2}:\d{2}"></label>
+      <label class="xs-wide">Planned rate overrides — PPR line item = process, one per line (only where the automatic match is wrong or missing)
+        <textarea name="ppr_map" rows="3" placeholder="Pack Singles - Total = Pack Singles">{% for k, p in fclm_ppr_map.items() %}{{ k }} = {{ p }}
+{% endfor %}</textarea></label>
+      <label class="fsync-check"><input type="checkbox" name="resync" value="1"> Read every day in the window again</label>
+      <div><button class="btn btn-gold btn-sm" type="submit">Save</button></div>
+    </form>
+    <p class="xi-note">Needs the <a href="{{ url_for('floor_userscript') }}">LDIS Floor Sync</a> userscript (version 1.3 or later)
+      in the browser of someone who can open FCLM. It runs by itself at most every 30 minutes on any console page,
+      reading the days still missing — yesterday first, then the history behind it.</p>
+  </details>
+</div>
+<script>
+(function () {
+  var button = document.getElementById('fclmSyncNow');
+  var status = document.getElementById('fclmSyncStatus');
+  var heard = false;
+  document.addEventListener('ldis-floor-status', function (e) {
+    var d = e.detail || {};
+    if (!/^fclm/.test(d.phase || '')) return;
+    heard = true;
+    if (d.phase === 'fclm-roster') status.textContent = 'Reading the Employee Roster…';
+    else if (d.phase === 'fclm-day') status.textContent = 'Reading ' + d.date + ' from FCLM…';
+    else if (d.phase === 'fclm-done') {
+      var r = d.result || {}, days = (r.days || []).filter(Boolean);
+      status.textContent = days.length || r.roster
+        ? 'Done: ' + days.map(function (x) { return x.date + ' (' + x.status + ')'; }).join(', ')
+          + (r.roster ? (days.length ? '; ' : '') + 'roster ' + r.roster.status : '') + '. Reload to see the totals.'
+        : 'Nothing was due.';
+      button.disabled = false;
+    }
+  });
+  button.addEventListener('click', function () {
+    heard = false;
+    button.disabled = true;
+    status.textContent = 'Asking the Floor Sync script to read FCLM…';
+    document.dispatchEvent(new CustomEvent('ldis-fclm-sync'));
+    setTimeout(function () {
+      if (!heard) {
+        status.innerHTML = 'No answer from the LDIS Floor Sync script. Install or update it from '
+          + '<a href="{{ url_for('floor_userscript') }}">this link</a> (version 1.3 or later), then reload.';
+        button.disabled = false;
+      }
+    }, 6000);
+  });
+})();
+</script>
