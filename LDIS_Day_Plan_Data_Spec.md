@@ -319,3 +319,27 @@ process. RSP covers Pick, Stow and Rebin, among others. The grid will
 show department names (e.g. **RSP → Pack Singles**) unless a process
 name is preferred, in which case each department needs one process to
 represent it.
+
+## The second view: Labour mix & rate performance
+
+Below the standards grid (mockup of 27 Nov). For one day, week, month or
+quarter, filterable by department and shift:
+
+- **Shift overview:** veteran and cross-trainee hours and share, and
+  each group's rate against plan, per shift, Central included.
+- **Department & process detail:** the same for every process and shift,
+  with the hours-weighted planned rate. Each row opens to show its
+  cross-trainees by home department (people, hours, rate, % of plan).
+
+How the figures are made, from file 4 with file 3's plan:
+
+- A **veteran** is someone whose home department (Hours on Function)
+  owns the process; anyone else with a known home department is a
+  **cross-trainee**. Hours from people with no home department are
+  counted aside and the page says how many.
+- **% of plan** = units ÷ (hours × that day's planned rate for the
+  process). A shift total therefore weighs every process by its own plan.
+- **Central** is a re-cut of people: someone on a code that SSPOT marks
+  Central that day is reported under Central, whatever shift the volume
+  file filed the work under.
+- Indirect time, and processes with no owning department, are left out.

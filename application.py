@@ -3426,6 +3426,7 @@ def cross_training():
         model = build_cross_learning_model(request.args.get("period") or "month",
                                            scenario=scenario)
         standards_view = build_standards_view(scenario)
+        standards_view["mix"] = build_labour_mix_view(scenario)
         # The forecast is pure arithmetic and is answered with the page;
         # only its explanation is fetched afterwards.
         key, volume, rate = _clm_forecast_args()
@@ -5218,6 +5219,9 @@ _XT_PLANNING_INGEST = {
     "associate_day": db.ingest_associate_day_csv,
 }
 XT_EVAL_WINDOWS = (4, 8, 13, 26)
+# How far back the labour mix reads: a quarter, so Quarter has a whole
+# one to show.
+XT_MIX_WEEKS = 14
 
 
 def _xt_eval_settings():
@@ -5254,10 +5258,19 @@ def _xt_prepared(sample, weeks, paths, shift_hours):
         if len(_XT_PREP_CACHE) > 6:
             _XT_PREP_CACHE.clear()
         if sample:
-            homes = db.xt_process_home_departments()
-            data = xt_planning.sample_data(
-                paths, owners={p["process"]: homes.get(p["process"]) for p in paths if p.get("process")},
-                weeks=max(weeks, 8) + 4)
+            # One invented site per day and set of standards, shared by
+            # every window: the standards replay and the labour mix must
+            # describe the same made-up people, and generating it twice a
+            # page would double the wait for nothing. Eighteen weeks: a
+            # whole quarter for the mix, and the 26-week window simply shows
+            # what there is (the grid prints the dates it covers).
+            sample_key = ("sample",) + key[:1] + key[4:6]
+            if sample_key not in _XT_PREP_CACHE:
+                homes = db.xt_process_home_departments()
+                _XT_PREP_CACHE[sample_key] = xt_planning.sample_data(
+                    paths, owners={p["process"]: homes.get(p["process"]) for p in paths if p.get("process")},
+                    weeks=XT_MIX_WEEKS + 4)
+            data = _XT_PREP_CACHE[sample_key]
         else:
             since = (date.today() - timedelta(weeks=weeks + 1)).isoformat()
             data = db.load_planning_data(since=since)
@@ -5345,6 +5358,58 @@ def build_standards_view(scenario="general"):
     view["processes"] = sorted({p.get("process") for p in paths if p.get("process")}, key=str.lower)
     view["day_plan"] = _xt_day_plan_from_request(prep, settings)
     return view
+
+
+def _xt_url(**changes):
+    """This page's URL with some arguments changed (None removes one), so
+    a control in one section keeps every other section's state."""
+    args = request.args.to_dict()
+    for key, value in changes.items():
+        if value is None or value == "":
+            args.pop(key, None)
+        else:
+            args[key] = value
+    args.pop("_fields", None)
+    args["tab"] = "model"
+    return url_for("cross_training", **args)
+
+
+def build_labour_mix_view(scenario="general"):
+    """The labour mix: veteran and cross-trainee hours, and each group's
+    rate against plan, for one period, by shift and by process."""
+    sample = request.args.get("sample") == "1"
+    status = db.planning_data_status()
+    if not (sample or status["associate_day"]["n"]):
+        return {"ready": False, "sample": sample}
+    settings = _xt_eval_settings()
+    paths = _xt_paths_with_sources(scenario)
+    prep, _memo = _xt_prepared(sample, XT_MIX_WEEKS, paths, settings["shift_hours"])
+    kind = request.args.get("lm_kind") if request.args.get("lm_kind") in xt_planning.PERIOD_KINDS else "week"
+    keys, default = xt_planning.available_periods(prep, kind)
+    key = request.args.get("lm_key") if request.args.get("lm_key") in keys else default
+    if not key:
+        return {"ready": False, "sample": sample}
+    department = (request.args.get("lm_dept") or "").strip() or None
+    shift = request.args.get("lm_shift") if request.args.get("lm_shift") in xt_planning.SHIFT_GROUPS else None
+    start, end = xt_planning.period_bounds(key, kind)
+    mix = xt_planning.labour_mix(prep, start, end, department, shift)
+    show_all = request.args.get("lm_all") == "1"
+    return {
+        "ready": True, "sample": sample, "kind": key and kind, "key": key,
+        "label": xt_planning.period_label(key, kind),
+        "periods": [(k, xt_planning.period_label(k, kind)) for k in keys],
+        "kinds": xt_planning.PERIOD_KINDS, "department": department, "shift": shift,
+        "departments": sorted({d for d in prep.departments.values() if d}, key=str.lower),
+        "shifts": [g for g in xt_planning.SHIFT_GROUPS if g != "central" or prep.central],
+        "overview": mix["overview"], "unknown_hours": mix["unknown_hours"],
+        "detail": mix["detail"] if show_all else mix["detail"][:XT_MIX_ROWS],
+        "detail_total": len(mix["detail"]), "show_all": show_all,
+        "kind_urls": {k: _xt_url(lm_kind=k, lm_key=None) for k in xt_planning.PERIOD_KINDS},
+        "all_url": _xt_url(lm_all=None if show_all else "1") + "#labour-mix",
+    }
+
+
+XT_MIX_ROWS = 12
 
 
 def _xt_day_plan_from_request(prep, settings):

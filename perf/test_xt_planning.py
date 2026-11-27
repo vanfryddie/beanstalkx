@@ -29,7 +29,7 @@ HISTORY = [(date(2026, 11, 20) + timedelta(days=i)).isoformat() for i in range(1
 FUTURE = "2026-12-02"
 
 
-def world(pick_n=10, pick_need=5, ship_n=0, ship_need=0, xt_on_pack=2, vets=5):
+def world(pick_n=10, pick_need=5, ship_n=0, ship_need=0, xt_on_pack=2, vets=5, central_days=(), stranger=False):
     """The paper site. `pick_need` is how many of Pick's people its own
     work needs, so Pick can spare pick_n - pick_need."""
     hours, roster, cal, pday, aday = [], [], [], [], []
@@ -46,7 +46,8 @@ def world(pick_n=10, pick_need=5, ship_n=0, ship_need=0, xt_on_pack=2, vets=5):
     for i in range(ship_n):
         person(f"ship{i}", "Ship", ["ShipWork"])
     for d in HISTORY + [FUTURE]:
-        cal.append({"shift_code": "DTEST", "side": "OB", "shift": "early", "work_date": d, "hours": 10.0})
+        cal.append({"shift_code": "DTEST", "side": "OB", "shift": "early", "work_date": d, "hours": 10.0,
+                    "pattern": "Central" if d in central_days else "Day"})
     for d in HISTORY:
         for i in range(vets):
             aday.append({"work_date": d, "shift": "early", "employee_login": f"vet{i}", "process": "Pack",
@@ -59,6 +60,10 @@ def world(pick_n=10, pick_need=5, ship_n=0, ship_need=0, xt_on_pack=2, vets=5):
         for i in range(ship_n):
             aday.append({"work_date": d, "shift": "early", "employee_login": f"ship{i}", "process": "ShipWork",
                          "units": 1000, "hours": 10})
+        if stranger:
+            # Someone with no Hours on Function row: no home department.
+            aday.append({"work_date": d, "shift": "early", "employee_login": "nobody", "process": "Pack",
+                         "units": 900, "hours": 10})
         units = vets * 1000 + xt_on_pack * 800
         # Planned at 90 an hour: the mix of 100s and 80s runs at about
         # 94, so a shift that makes its units also makes its rate.
@@ -155,6 +160,42 @@ check("history: 10 past shifts at this volume, all met plan, with 5 veterans and
       (len(dp["history"]), dp["history_met"], dp["typical"]))
 check("absence is measured where it can be: everyone came in, so 0%",
       X.measured_absence(prep, "packdept", "early")[0] in (None, 0.0))
+
+print("\n2b. The labour mix, on paper")
+mix = X.labour_mix(prep, HISTORY[0], HISTORY[-1])
+pack = next(r for r in mix["detail"] if r["process"] == "Pack")
+check("veterans: 500 hours, 71% of Pack's", pack["vet"]["hours"] == 500 and pack["vet_share"] == 0.714,
+      (pack["vet"]["hours"], pack["vet_share"]))
+check("cross-trainees: 200 hours, 29%", pack["xt"]["hours"] == 200 and pack["xt_share"] == 0.286)
+check("veterans at 100 an hour are 111% of a 90 plan", pack["vet"]["rate"] == 100 and pack["vet"]["pct"] == 111.1,
+      pack["vet"])
+check("cross-trainees at 80 are 89%", pack["xt"]["rate"] == 80 and pack["xt"]["pct"] == 88.9, pack["xt"])
+check("and they came from Pick: 2 people, 200 hours",
+      pack["by_dept"] == [{"department": "Pick", "hours": 200.0, "people": 2, "rate": 80.0, "pct": 88.9}], pack["by_dept"])
+early = mix["overview"][0]
+pickwork = next(r for r in mix["detail"] if r["process"] == "PickWork")
+check("the shift total weighs each process by its own plan",
+      early["shift"] == "early" and early["vet"]["pct"] == round(100 * (5000 * 10 + 8000 * 10) /
+                                                                 (500 * 90 + 800 * 100), 1), early["vet"])
+check("indirect time and unplanned work are left out", "Indirect" not in {r["process"] for r in mix["detail"]})
+check("a department filter keeps only the processes it owns",
+      {r["process"] for r in X.labour_mix(prep, HISTORY[0], HISTORY[-1], department="PackDept")["detail"]} == {"Pack"})
+check("a shift with no work is empty, not an error", X.labour_mix(prep, HISTORY[0], HISTORY[-1], shift="late")["detail"] == [])
+check("a period outside the data is empty", X.labour_mix(prep, "2025-01-01", "2025-01-07")["overview"] == [])
+mix = X.labour_mix(world(central_days=HISTORY[:4]), HISTORY[0], HISTORY[-1])
+shifts = {o["shift"]: o for o in mix["overview"]}
+check("days on a Central code are reported as Central", set(shifts) == {"early", "central"}
+      and shifts["central"]["vet"]["hours"] == 5 * 10 * 4 + 8 * 10 * 4, {k: v["vet"]["hours"] for k, v in shifts.items()})
+mix = X.labour_mix(world(stranger=True), HISTORY[0], HISTORY[-1])
+check("hours from someone with no home department are counted aside, not guessed",
+      mix["unknown_hours"] == 100.0 and next(r for r in mix["detail"] if r["process"] == "Pack")["vet"]["hours"] == 500)
+check("week label", X.period_label("2026-11-16", "week") == "16–22 Nov 2026")
+check("a week across months", X.period_label("2026-10-26", "week") == "26 Oct–1 Nov 2026")
+check("February in a leap year ends on the 29th", X.period_bounds("2028-02", "month") == ("2028-02-01", "2028-02-29"))
+check("Q4 ends on 31 December", X.period_bounds("2026-Q4", "quarter") == ("2026-10-01", "2026-12-31"))
+keys, default = X.available_periods(prep, "week")
+check("the default period is the newest that has finished", default == "2026-11-23" and keys[0] == "2026-11-23",
+      (keys, default))
 
 print("\n3. The uploads, through a scratch site")
 SITE = "ZQ88"
@@ -332,6 +373,24 @@ check("the day plan answers", "Veterans available" in html and "Cross-trainees f
 r = c.get("/ld-management/cross-training?tab=model&sample=1&dp_process=Pack+Singles&dp_date=nonsense&dp_volume=1",
           follow_redirects=True)
 check("a bad date is answered, not raised", r.status_code == 200 and "Give a date" in r.get_data(as_text=True))
+
+html = c.get("/ld-management/cross-training?tab=model&sample=1&_fields=lm_kind,lm_key,lm_dept,lm_shift,lm_all",
+             follow_redirects=True).get_data(as_text=True)
+check("the labour mix is the second section", html.find("Standards by shift") < html.find("Labour mix &amp; rate performance")
+      < html.find("Plan one day"))
+check("with the shift overview and the process detail", "Shift overview" in html and "Department &amp; process detail" in html)
+check("defaulting to a whole week", 'class="active">Week' in html)
+check("and Central, as the calendar marks it", ">Central</th>" in html)
+check("cross-trainee rows open to their home departments", "by home department" in html and 'class="xm-toggle"' in html)
+rows = html.count('<tr class="xm-sub-row"') + html.count("xm-chev")
+all_html = c.get("/ld-management/cross-training?tab=model&sample=1&lm_all=1", follow_redirects=True).get_data(as_text=True)
+check("View all processes shows more rows than the default", all_html.count("xm-chev") > html.count("xm-chev"),
+      (html.count("xm-chev"), all_html.count("xm-chev")))
+month = c.get("/ld-management/cross-training?tab=model&sample=1&lm_kind=month&lm_all=",
+              follow_redirects=True).get_data(as_text=True)
+check("Month switches the period", 'class="active">Month' in month and "Shift overview" in month)
+bad = c.get("/ld-management/cross-training?tab=model&sample=1&lm_kind=week&lm_key=1999-01-04", follow_redirects=True)
+check("a period not in the data falls back to the default", bad.status_code == 200 and "Shift overview" in bad.get_data(as_text=True))
 
 print("\n5. The generated reasons")
 view_changes = []

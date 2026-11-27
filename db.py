@@ -10797,7 +10797,7 @@ def load_planning_data(since=None):
     params = (since,) if since else ()
     where = " WHERE work_date >= ?" if since else ""
     calendar = [dict(r) for r in conn.execute(
-        "SELECT shift_code, side, shift, work_date, hours FROM shift_calendar" + where, params).fetchall()]
+        "SELECT shift_code, side, shift, pattern, work_date, hours FROM shift_calendar" + where, params).fetchall()]
     process_day = [dict(r) for r in conn.execute(
         "SELECT work_date, shift, process, department, units, hours, plan_units, plan_rate "
         "FROM process_volume" + where, params).fetchall()]

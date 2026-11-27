@@ -1,0 +1,155 @@
+{#- Labour mix & rate performance: the second part of the Cross Learning
+    Model tab (mockup of 27 Nov). For one period: how many hours each
+    process and shift got from its own department (veterans) and from
+    people cross-trained in, and how fast each group worked against the
+    process's own planned rate. All figures from xt_planning.labour_mix.
+
+    A rate below plan takes categorical slot 2, not a status colour: it
+    is a measurement on one side of a line, and the page has no basis
+    for calling 97% of plan a problem. -#}
+{% set x = sv.mix %}
+{% macro pct(v) -%}
+  {%- if v is none %}—{% else %}<span class="{{ 'xm-below' if (v | round | int) < 100 }}">{{ v | round | int }}%</span>{% endif -%}
+{%- endmacro %}
+{% macro hours_share(h, share) -%}
+  {{ '{:,.0f}'.format(h) }} h{% if share is not none %} <span class="xm-dim">· {{ (share * 100) | round | int }}%</span>{% endif %}
+{%- endmacro %}
+
+<section class="xm" id="labour-mix">
+  <p class="xm-crumb">Cross-learning model / Historical performance</p>
+  <div class="xm-titlerow">
+    <h2 class="xs-title">Labour mix &amp; rate performance</h2>
+    {% if x.sample %}<span class="xm-badge">Sample data</span>{% endif %}
+  </div>
+  <p class="xm-sub">Compare hours worked and performance against plan by shift and process.</p>
+
+  {% if not x.ready %}
+  <div class="xs-empty"><strong>No associate-day data yet.</strong>
+    <p>This section needs units and hours per person per process. Load the associate-day file on
+      <a href="{{ url_for('ld_settings', tab='data') }}#planning-data">Settings → Data Upload</a>, or switch on
+      Sample data at the top of the page.</p></div>
+  {% else %}
+  <form class="xm-controls" method="GET" action="{{ url_for('cross_training') }}#labour-mix">
+    {% for k, v in request.args.items() if not k.startswith('lm_') and k != '_fields' %}
+    <input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+    <input type="hidden" name="tab" value="model">
+    <input type="hidden" name="lm_kind" value="{{ x.kind }}">
+    <input type="hidden" name="_fields" value="lm_kind,lm_key,lm_dept,lm_shift,lm_all">
+    <nav class="xm-seg" aria-label="Period length">
+      {% for k in x.kinds %}<a href="{{ x.kind_urls[k] }}#labour-mix" class="{{ 'active' if x.kind == k }}">{{ k | capitalize }}</a>{% endfor %}
+    </nav>
+    <label class="xs-chip"><span class="sr-only">Period</span>
+      <select name="lm_key" onchange="this.form.submit()">
+        {% for k, label in x.periods %}<option value="{{ k }}" {{ 'selected' if k == x.key }}>{{ label }}</option>{% endfor %}
+      </select></label>
+    <label class="xs-chip"><span class="sr-only">Department</span>
+      <select name="lm_dept" onchange="this.form.submit()">
+        <option value="">All departments</option>
+        {% for d in x.departments %}<option value="{{ d }}" {{ 'selected' if x.department and x.department|lower == d|lower }}>{{ d }}</option>{% endfor %}
+      </select></label>
+    <label class="xs-chip"><span class="sr-only">Shift</span>
+      <select name="lm_shift" onchange="this.form.submit()">
+        <option value="">All shifts</option>
+        {% for s in x.shifts %}<option value="{{ s }}" {{ 'selected' if x.shift == s }}>{{ s | capitalize }}</option>{% endfor %}
+      </select></label>
+    <noscript><button class="btn btn-ghost btn-sm" type="submit">Show</button></noscript>
+  </form>
+
+  <div class="xs-card xm-card">
+    <h3>Shift overview</h3>
+    {% if x.overview %}
+    <div class="dash-table-scroll">
+      <table class="xm-table">
+        <thead><tr><th scope="col">Shift</th><th scope="col">Veteran hours · share</th>
+          <th scope="col">Cross-trainee hours · share</th><th scope="col">Veteran rate vs plan</th>
+          <th scope="col">Cross-trainee rate vs plan</th></tr></thead>
+        <tbody>
+          {% for o in x.overview %}
+          <tr>
+            <th scope="row">{{ o.shift | capitalize }}</th>
+            <td>{{ hours_share(o.vet.hours, o.vet_share) }}</td>
+            <td>{{ hours_share(o.xt.hours, o.xt_share) }}</td>
+            <td class="xm-pct">{{ pct(o.vet.pct) }}</td>
+            <td class="xm-pct">{{ pct(o.xt.pct) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="xs-foot">Shift totals use each process's own planned rate. {{ x.label }}.
+      {% if x.unknown_hours %}{{ '{:,.0f}'.format(x.unknown_hours) }} h from people with no home department on record are left out.{% endif %}</p>
+    {% else %}
+    <p class="xs-sub">No direct hours on a planned process in {{ x.label }} for this selection.</p>
+    {% endif %}
+  </div>
+
+  <div class="xs-card xm-card">
+    <div class="xm-cardhead">
+      <h3>Department &amp; process detail</h3>
+      {% if x.detail_total > x.detail | length or x.show_all %}
+      <a href="{{ x.all_url }}">{{ 'Show fewer' if x.show_all else 'View all processes' }}</a>
+      {% endif %}
+    </div>
+    {% if x.detail %}
+    <div class="dash-table-scroll">
+      <table class="xm-table xm-detail">
+        <thead><tr><th scope="col">Process</th><th scope="col">Shift</th><th scope="col">Veteran hours · share</th>
+          <th scope="col">Cross-trainee hours · share</th><th scope="col" class="num">Plan (units/hr)</th>
+          <th scope="col">Veteran rate · % of plan</th><th scope="col">Cross-trainee rate · % of plan</th>
+          <th scope="col"><span class="sr-only">Detail</span></th></tr></thead>
+        <tbody>
+          {% for r in x.detail %}
+          <tr>
+            <th scope="row">{{ r.process }}{% if r.department|lower != r.process|lower %}<span class="xs-owner">{{ r.department }}</span>{% endif %}</th>
+            <td>{{ r.shift | capitalize }}</td>
+            <td>{{ hours_share(r.vet.hours, r.vet_share) }}</td>
+            <td>{{ hours_share(r.xt.hours, r.xt_share) }}</td>
+            <td class="num">{{ r.plan if r.plan is not none else '—' }}</td>
+            <td>{% if r.vet.rate is not none %}{{ r.vet.rate }} · {{ pct(r.vet.pct) }}{% else %}—{% endif %}</td>
+            <td>{% if r.xt.rate is not none %}{{ r.xt.rate }} · {{ pct(r.xt.pct) }}{% else %}—{% endif %}</td>
+            <td class="xm-chev">{% if r.by_dept %}<button type="button" class="xm-toggle" aria-expanded="false"
+                aria-controls="xm-row-{{ loop.index }}" title="Cross-trainees by home department">›</button>{% endif %}</td>
+          </tr>
+          {% if r.by_dept %}
+          <tr class="xm-sub-row" id="xm-row-{{ loop.index }}" hidden>
+            <td colspan="8">
+              <div class="xm-breakdown">
+                <strong>Cross-trainees on {{ r.process }}, {{ r.shift }}, by home department</strong>
+                <table>
+                  <thead><tr><th scope="col">From</th><th scope="col" class="num">People</th><th scope="col" class="num">Hours</th>
+                    <th scope="col" class="num">Rate</th><th scope="col" class="num">% of plan</th></tr></thead>
+                  <tbody>
+                    {% for b in r.by_dept %}
+                    <tr><th scope="row">{{ b.department }}</th><td class="num">{{ b.people }}</td>
+                      <td class="num">{{ '{:,.0f}'.format(b.hours) }}</td><td class="num">{{ b.rate if b.rate is not none else '—' }}</td>
+                      <td class="num">{{ pct(b.pct) }}</td></tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+                <span class="xm-dim">Veterans: {{ r.vet.people }} people.</span>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="xs-foot">Veterans are the process's home team. Cross-trainees come from other teams.
+      {% if not x.show_all and x.detail_total > x.detail | length %}Showing {{ x.detail | length }} of {{ x.detail_total }}.{% endif %}</p>
+    {% else %}
+    <p class="xs-sub">Nothing to show for this selection.</p>
+    {% endif %}
+  </div>
+  <script>
+  document.querySelectorAll('#labour-mix .xm-toggle').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var row = document.getElementById(button.getAttribute('aria-controls'));
+      var open = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', open ? 'false' : 'true');
+      if (row) { row.hidden = open; }
+    });
+  });
+  </script>
+  {% endif %}
+</section>

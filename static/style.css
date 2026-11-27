@@ -5074,3 +5074,43 @@ strong.xs-increase, strong.xs-switch, strong.xs-decrease, strong.xs-hire { backg
   .xs-actions { margin-left: 0; }
   .xs-title { font-size: 22px; }
 }
+
+/* Labour mix & rate performance — the second part of the Cross Learning
+   Model tab. Below-plan percentages take categorical slot 2: a
+   measurement on one side of a line, not a status. */
+.xm { margin: 30px 0 26px; }
+.xm-crumb { margin: 0 0 4px; font-size: 12px; color: var(--text-lo); }
+.xm-titlerow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.xm-badge { padding: 2px 9px; border-radius: 7px; font-size: 11.5px; background: rgba(127,138,153,.16); color: var(--text-lo); }
+.xm-sub { margin: 4px 0 14px; font-size: 13px; color: var(--text-lo); }
+.xm-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+.xm-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.xm-seg a { padding: 7px 16px; font-size: 13px; color: inherit; text-decoration: none; border-right: 1px solid var(--line); }
+.xm-seg a:last-child { border-right: 0; }
+.xm-seg a.active { background: rgba(42,120,214,.15); color: var(--viz-series-1); font-weight: 600; }
+.xm-card { margin-bottom: 14px; }
+.xm-cardhead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; }
+.xm-cardhead a { font-size: 13px; }
+.xm-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+.xm-table th, .xm-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
+.xm-table thead th { font-size: 12px; font-weight: 500; color: var(--text-lo); text-transform: none; letter-spacing: normal; }
+.xm-table tbody th { font-weight: 600; text-transform: none; letter-spacing: normal; }
+.xm-table .num { text-align: right; }
+.xm-dim { color: var(--text-lo); }
+.xm-below { color: var(--viz-series-2); font-weight: 700; }
+.xm-chev { width: 28px; text-align: center; }
+.xm-toggle { border: 0; background: none; color: var(--text-lo); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 6px; transition: transform .15s; }
+.xm-toggle[aria-expanded="true"] { transform: rotate(90deg); }
+.xm-sub-row td { background: rgba(127,138,153,.06); white-space: normal; }
+.xm-breakdown { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.xm-breakdown table { border-collapse: collapse; max-width: 520px; }
+.xm-breakdown th, .xm-breakdown td { padding: 3px 10px 3px 0; text-align: left; font-weight: 400; }
+.xm-breakdown thead th { color: var(--text-lo); font-size: 11.5px; }
+.xm-breakdown .num { text-align: right; }
+/* The chevron column's header carries a screen-reader-only label, which
+   is absolutely positioned; without a positioned ancestor inside the
+   scroll box it is placed against the page instead and widens the whole
+   section on a phone (sweep finding, 27 Nov). */
+.xm .dash-table-scroll { position: relative; }
+.xm-table tbody th { font-size: 14px; color: var(--ink); }
+.xm-breakdown tbody th { font-size: 12.5px; color: var(--ink); }

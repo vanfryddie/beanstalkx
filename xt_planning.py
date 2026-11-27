@@ -108,10 +108,17 @@ class Prepared:
         # a person is on their code whichever side the row is filed under.
         self.scheduled = set()
         self.calendar_codes = set()
+        # SSPOT marks some day codes "Central" (a 10:45 start at SCN2).
+        # The volume files only know early/late/night, so Central is a
+        # re-cut of people, not of processes: a person on a Central code
+        # that day is reported under Central in the labour mix.
+        self.central = set()
         lengths = defaultdict(list)
         for row in data.get("calendar") or []:
             self.scheduled.add((row["shift_code"], row["work_date"]))
             self.calendar_codes.add(row["shift_code"])
+            if (row.get("pattern") or "").strip().lower() == "central":
+                self.central.add((row["shift_code"], row["work_date"]))
             if row.get("hours") and row.get("shift"):
                 lengths[(row["work_date"], row["shift"])].append(row["hours"])
         self.length_by_day = {k: _median(v) for k, v in lengths.items()}
@@ -699,6 +706,8 @@ def sample_data(standards, owners=None, today=None, weeks=12, seed=7):
     # Codes: three per shift, each working five days and resting on two
     # consecutive ones, staggered so the site runs seven days.
     codes = {s: [f"{s[0].upper()}SMP{k}" for k in range(3)] for s in SHIFTS}
+    codes["early"].append("DSMPC")            # a Central code, as SSPOT has
+    pattern = {"early": "Day", "late": "Mid", "night": "Night"}
     rest = {code: {(k * 2 + i) % 7 for i in range(2)} for s in SHIFTS for k, code in enumerate(codes[s])}
 
     # People: every department staffs each process it owns on every shift,
@@ -779,6 +788,7 @@ def sample_data(standards, owners=None, today=None, weeks=12, seed=7):
             for code in codes[s]:
                 if d.weekday() not in rest[code]:
                     calendar.append({"shift_code": code, "side": "OB", "shift": s, "work_date": ds,
+                                     "pattern": "Central" if code == "DSMPC" else pattern[s],
                                      "hours": hours_per_shift[s]})
         if d >= today:
             continue                          # the calendar runs ahead; history does not
@@ -828,3 +838,159 @@ def sample_data(standards, owners=None, today=None, weeks=12, seed=7):
                                       "process": "Indirect", "units": 0, "hours": length})
     return {"roster": roster, "hours": hours_rows, "calendar": calendar,
             "process_day": process_day, "associate_day": associate_day}
+
+
+# -- labour mix: who worked each process, and how fast, against plan ---------
+
+PERIOD_KINDS = ("day", "week", "month", "quarter")
+SHIFT_GROUPS = ("early", "late", "night", "central")
+
+
+def period_key(day, kind):
+    d = date.fromisoformat(day) if isinstance(day, str) else day
+    if kind == "day":
+        return d.isoformat()
+    if kind == "week":
+        return (d - timedelta(days=d.weekday())).isoformat()
+    if kind == "month":
+        return f"{d.year}-{d.month:02d}"
+    return f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+
+
+def period_bounds(key, kind):
+    """First and last day of a period, inclusive, as ISO dates."""
+    if kind == "day":
+        return key, key
+    if kind == "week":
+        start = date.fromisoformat(key)
+        return start.isoformat(), (start + timedelta(days=6)).isoformat()
+    if kind == "month":
+        year, month = int(key[:4]), int(key[5:7])
+        nxt = date(year + (month == 12), month % 12 + 1, 1)
+        return date(year, month, 1).isoformat(), (nxt - timedelta(days=1)).isoformat()
+    year, quarter = int(key[:4]), int(key[-1])
+    first = date(year, 3 * quarter - 2, 1)
+    nxt = date(year + (quarter == 4), (3 * quarter) % 12 + 1, 1)
+    return first.isoformat(), (nxt - timedelta(days=1)).isoformat()
+
+
+def period_label(key, kind):
+    start, end = (date.fromisoformat(x) for x in period_bounds(key, kind))
+    if kind == "day":
+        return start.strftime("%a %-d %b %Y")
+    if kind == "week":
+        if start.month == end.month:
+            return f"{start.day}–{end.day} {end.strftime('%b %Y')}"
+        return f"{start.strftime('%-d %b')}–{end.strftime('%-d %b %Y')}"
+    if kind == "month":
+        return start.strftime("%B %Y")
+    return f"Q{key[-1]} {key[:4]}"
+
+
+def available_periods(prep, kind, limit=12):
+    """The periods the associate-day data covers, newest first, and the
+    one to show by default: the newest that has finished, so a week read
+    on its Tuesday does not compare two days against a whole plan."""
+    days = sorted({d for (d, _s, _p) in prep.work})
+    keys = sorted({period_key(d, kind) for d in days}, reverse=True)[:limit]
+    today = prep.today.isoformat()
+    finished = [k for k in keys if period_bounds(k, kind)[1] < today]
+    return keys, (finished[0] if finished else (keys[0] if keys else None))
+
+
+def labour_mix(prep, start, end, department=None, shift=None):
+    """Hours and rate against plan, veterans against cross-trainees, per
+    process and shift, and summed per shift.
+
+    Veterans are the process's home department; cross-trainees are
+    everyone else with a known home department. Rate against plan is
+    units over (hours times each process's own planned rate), so a shift
+    total weighs every process by its own plan rather than averaging
+    rates that mean different things. Indirect time and processes with no
+    owner are left out; hours from people with no home department are
+    counted and reported, not guessed into either group."""
+    plan_any = defaultdict(list)
+    for (_d, _s, p), row in prep.pday.items():
+        if row.get("plan_rate"):
+            plan_any[p].append(row["plan_rate"])
+    plan_any = {p: _median(v) for p, v in plan_any.items()}
+    dept_key = _key(department) if department else None
+
+    cells = {}
+    unknown_hours = 0.0
+    for (d, s, p), rows in prep.work.items():
+        if not (start <= d <= end):
+            continue
+        owner = prep.owner.get(p)
+        if not owner or p not in plan_any and not prep.pday.get((d, s, p)):
+            continue
+        if dept_key and owner != dept_key:
+            continue
+        day_row = prep.pday.get((d, s, p))
+        plan = (day_row or {}).get("plan_rate") or plan_any.get(p)
+        for login, units, hours in rows:
+            if not hours:
+                continue
+            group = "central" if (prep.code.get(login), d) in prep.central else s
+            if shift and group != shift:
+                continue
+            home = _key(prep.home.get(login))
+            if not home:
+                unknown_hours += hours
+                continue
+            side = "vet" if home == owner else "xt"
+            c = cells.setdefault((p, group), {
+                "vet": [0.0, 0.0, 0.0, set()], "xt": [0.0, 0.0, 0.0, set()],
+                "plan_hours": 0.0, "plan_weighted": 0.0, "by_dept": defaultdict(lambda: [0.0, 0.0, 0.0, set()])})
+            for bucket in (c[side],) + ((c["by_dept"][home],) if side == "xt" else ()):
+                bucket[0] += hours
+                bucket[1] += units
+                bucket[2] += hours * plan if plan else 0.0
+                bucket[3].add(login)
+            if plan:
+                c["plan_hours"] += hours
+                c["plan_weighted"] += hours * plan
+
+    def figures(bucket):
+        hours, units, planned, people = bucket
+        return {"hours": round(hours, 1), "people": len(people),
+                "rate": round(units / hours, 1) if hours else None,
+                "pct": round(100 * units / planned, 1) if planned else None}
+
+    detail = []
+    totals = {}
+    for (p, group), c in cells.items():
+        vet, xt = figures(c["vet"]), figures(c["xt"])
+        total = vet["hours"] + xt["hours"]
+        detail.append({
+            "process": prep.process_names.get(p, p), "department": prep.departments.get(prep.owner[p], prep.owner[p]),
+            "shift": group, "vet": vet, "xt": xt,
+            "vet_share": round(vet["hours"] / total, 3) if total else None,
+            "xt_share": round(xt["hours"] / total, 3) if total else None,
+            "plan": round(c["plan_weighted"] / c["plan_hours"], 1) if c["plan_hours"] else None,
+            "by_dept": sorted(({"department": prep.departments.get(k, k), **figures(v)}
+                               for k, v in c["by_dept"].items()), key=lambda x: -x["hours"]),
+        })
+        t = totals.setdefault(group, {"vet": [0.0, 0.0, 0.0, set()], "xt": [0.0, 0.0, 0.0, set()]})
+        for side in ("vet", "xt"):
+            for i in range(3):
+                t[side][i] += c[side][i]
+            t[side][3] |= c[side][3]
+    overview = []
+    for group in SHIFT_GROUPS:
+        if group not in totals:
+            continue
+        vet, xt = figures(totals[group]["vet"]), figures(totals[group]["xt"])
+        total = vet["hours"] + xt["hours"]
+        overview.append({"shift": group, "vet": vet, "xt": xt,
+                         "vet_share": round(vet["hours"] / total, 3) if total else None,
+                         "xt_share": round(xt["hours"] / total, 3) if total else None})
+    # Processes that lean on cross-trainees first, most cross-trained
+    # hours at the top, so the rows shown before "View all" are the ones
+    # this page is about; a process's shifts stay together.
+    xt_by_process = defaultdict(float)
+    for r in detail:
+        xt_by_process[r["process"]] += r["xt"]["hours"]
+    detail.sort(key=lambda r: (-xt_by_process[r["process"]], r["process"].lower(), SHIFT_GROUPS.index(r["shift"])))
+    return {"overview": overview, "detail": detail, "unknown_hours": round(unknown_hours, 1),
+            "start": start, "end": end}
