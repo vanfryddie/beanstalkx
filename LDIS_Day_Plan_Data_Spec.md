@@ -7,23 +7,25 @@ mix like that met plan before? So what should the cross-training target
 be, trained from which departments, or should Pack Singles hire veterans
 instead?*
 
-Four inputs in total. **Two you already have, two are new.** The two new
+Five inputs in total. **Three you already have, two are new.** The two new
 files are about one grain each: what each **process** did on a day, and
 what each **associate** did on a day.
 
 | # | File | Grain (one row per…) | Status | What it answers |
 |---|---|---|---|---|
-| 1 | Employee roster (`employeeList`) | associate | ✅ have | who is employed today, and on which shift pattern → who is scheduled on a date (with the rotations set in Settings → Shifts) |
+| 1 | Employee roster (`employeeList`) | associate | ✅ have | who is employed today, and on which shift pattern |
+| 1b | Shift calendar (`SSPOT_Information`) | shift pattern cohort × working day | ✅ have | who is scheduled on a date, and how long their shift is that day; a day off is a day with no row |
 | 2 | Hours on Function (`LDMT_Hours_on_Function`) | associate × function | ✅ have | home department, trained or not on each function, proficiency → who counts as a veteran or a cross-trainee for a process |
 | 3 | **Process day** | date × shift × process | ➕ new (extends today's volume upload) | volume, hours and plan for every process — the target process *and* every department that might lend people |
 | 4 | **Associate day** | date × shift × associate × process | ➕ new | who actually worked where and how fast → veteran vs cross-trainee rates, labour moves, and the mix on every past day |
 
-Targets are already configured in the tool, and absence is a percentage
-you set (it can later be measured from files 1 + 4, see the end).
+Targets are already configured in the tool. Unplanned absence starts as
+a percentage you set. Once file 4 exists it can be measured instead:
+someone scheduled in the shift calendar who booked no hours was absent.
 
 ---
 
-## What the two files you have already give
+## What the files you have already give
 
 Profiled from the SCN2 exports you shared (counts only, nothing personal
 copied anywhere):
@@ -40,10 +42,35 @@ copied anywhere):
   Receive (22), OBPS (15), Chutings (4), Ship Dock (3), Facilities (2),
   Pack Multis (1) and TOM (1). That is the "Y veterans, Z cross-trainees"
   of the question.
-- **Schedules work from the shift pattern** (`L58F8R80`, `D58F83YA`, …),
-  as long as each code is configured in Settings → Shifts with its days
-  on and off.
-- **What these two files cannot give:** anything per day. Hours on
+- **The schedule comes from the SSPOT shift calendar** (shared 27 Nov):
+  one row per cohort per working day, with start and end times, from
+  2026-09-01 to 2026-11-28. A day off is simply a day with no row.
+  This replaces hand-configured rotations: it is the real dated calendar,
+  including changes and odd weeks, and gives each day's actual shift
+  length (8.75h for most, 6.5h, 7h, 10.5h and others). That length is
+  what turns hours into heads.
+  - **How a person finds their row.** A cohort is the roster's
+    `Shift Pattern` plus a side: `L58F12XE-OB`, `L58F12XE-IB`, and also
+    `-IC` (ICQA), `-SP` (Support) and `-TR` (Transport). On 98% of
+    code-days every side has the same times, so the side rarely matters.
+    For the other 2%, the tool maps each home department to its side
+    once (Pack Singles → OB, Receive → IB, IC/QA/CS → IC, …). RSP works
+    both sides and needs choosing.
+  - **Mapping to the tool's shifts:** `D…` codes are early (06:00, 05:00,
+    plus a 10:45 "Central"), `L…` are late (14:45), `N…` are night (23:30,
+    23:15, and an 18:30 long night). A night belongs to the date it
+    starts, as in the calendar itself.
+  - **Coverage:** the calendar has 54 of the roster's 83 codes, which
+    covers **2,503 of 2,637 people (95%)**. The other 134 are on 29 codes
+    it does not contain. The biggest are `D06A5CJG` (27 people),
+    `N58F12L0` (14) and `N58FC29V` (11), plus a cluster of `N58FC…`
+    codes of 3–7 people each, which looks like a newer night pattern.
+    Include those codes in the next export. Until then, those people are
+    shown as "schedule unknown", not counted as present or absent.
+  - **For planning ahead,** the export needs future dates. This one ends
+    tomorrow (28 Nov). Exporting 4–6 weeks forward lets you plan a
+    Monday three weeks out.
+- **What these files cannot give:** anything per day. Hours on
   Function only has 60/90/180-day totals, and neither file has units. So
   no rates, and no record of who worked which process on which day.
   Files 3 and 4 fill exactly that gap.
@@ -141,13 +168,10 @@ row only creates copies that drift out of date. The login is enough.
 
 ### Why not three
 
-A daily attendance file (who was scheduled, who came in, who was off
-sick) would let the tool *measure* unplanned absence instead of you
-typing a percentage. It can mostly be derived instead: the roster plus
-the rotation says who was scheduled, and file 4 says who booked any
-hours. Scheduled with no hours means absent. Only send an attendance
-export if you have one cheaply, with `date`, `employee_login`,
-`scheduled` (Y/N) and `status` (worked / planned off / unplanned absent).
+No attendance file is needed. The shift calendar says who was scheduled,
+and file 4 says who booked any hours. Scheduled with no hours means
+absent, which measures unplanned absence per department, shift and
+weekday instead of relying on a typed-in percentage.
 
 ---
 
@@ -160,6 +184,9 @@ export if you have one cheaply, with `date`, `employee_login`,
   the last one. Re-sending a day replaces that day, so overlaps are safe.
 - **Files 1 and 2 go up as today:** a fresh copy whenever they change.
   Each upload is treated as the current state.
+- **The shift calendar (1b)** should cover the same history as files 3
+  and 4 (to replay past shifts) plus 4–6 weeks ahead (to plan). Re-sent
+  days replace earlier ones.
 
 ## Checks the tool will run on upload
 
@@ -169,18 +196,20 @@ export if you have one cheaply, with `date`, `employee_login`,
   counted and shown.
 - File 4's hours, summed per process per day, are compared with file 3's.
   A day where they differ by more than 10% is flagged.
-- Shift patterns on the roster with no configured rotation are listed:
-  those people's availability on a date is unknown, and is shown as
-  unknown rather than assumed.
+- Shift patterns on the roster that the shift calendar does not contain
+  are listed (today: 29 codes, 134 people). Those people's availability
+  on a date is shown as unknown, not assumed.
 
-## How the four combine for one day (Pack Singles, Monday, X units)
+## How they combine for one day (Pack Singles, Monday, X units)
 
 1. **Trained.** From file 2: veterans (home department Pack Singles,
    trained) and cross-trainees (any other home department, trained),
    kept to people still on the roster (file 1).
-2. **Scheduled.** From file 1's shift pattern and the rotation: who is
-   working that Monday on that shift. Then minus B% unplanned absence,
-   giving available veterans and available cross-trainees by department.
+2. **Scheduled.** From file 1's shift pattern and the shift calendar
+   (1b): who has a row on that Monday, on that shift, and for how long.
+   Then minus unplanned absence (typed in, or measured from files 1b + 4
+   for that department and weekday). This gives available veterans and
+   available cross-trainees by department, in heads and in hours.
 3. **Rates.** From file 4 history: the veteran rate and the cross-trainee
    rate on Pack Singles, overall and per lending department, with how
    many days each rests on.
@@ -193,7 +222,7 @@ export if you have one cheaply, with `date`, `employee_login`,
    cross-trainees from each department that worked them.
 6. **Recommendation, computed.** The mix that covers X at the expected
    rates, the cross-trainee target that keeps enough available after
-   rotations and absence, which departments to train from (spare capacity
+   days off and absence, which departments to train from (spare capacity
    first, then their people's Pack Singles rate), or, where no department
    can spare enough, how many veterans Pack Singles should hire instead.
    The language model explains this result. It does not produce it.
@@ -230,7 +259,7 @@ plan have been met?* For process P on one past shift:
    demand ÷ plan_rate.
 2. **Veterans.** P's veterans who were in that day (file 4: booked any
    hours), times the veteran rate on P (file 4, trailing history), times
-   the shift length.
+   that day's shift length (shift calendar).
 3. **The gap** is what the veterans cannot cover.
 4. **Cross-trainees present.** The standard's target T, times the share
    of the source department's trained people who were in that day.
@@ -265,7 +294,8 @@ target, gives coverage as a function of the target.
 | "A target of 18 covers 97% of replayed shifts" | The coverage curve at that target. |
 | "After covering home demand, Receive could lend on 2 of 8 shifts" | Step 5 for the current source, compared with the alternative's. |
 
-So the "Why" panel needs no more data than the grid does: files 1–4.
+So the "Why" panel needs no more data than the grid does: files 1–4 and
+the shift calendar.
 
 ### One difference from the mockup to settle
 
