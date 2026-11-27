@@ -333,6 +333,12 @@ python3 perf/bedrock_probe.py PASTE_ANOTHER_PROFILE_ID
 3. Within a minute, entries in **Why change these standards?** change
    from the computed evidence to short written explanations, each marked
    **Generated**, and the footer reads **Amazon Bedrock explanations**.
+4. Under every standard in the grid an **AI:** line appears. It is the
+   model's own prediction, with the coverage LDIS recomputed for it. The
+   **Why change these standards?** panel opens with a summary: how many
+   predictions agree with the replay, how many differ, and how many were
+   refused for breaking a staffing policy. Each change also shows the AI
+   prediction in full, with its confidence and the checks.
 
 If something goes wrong later, the page keeps the computed evidence and
 carries on. To see why:
@@ -360,7 +366,16 @@ carries on. To see why:
   lend, rates, and department and process names. **No associate names or
   logins.** A test fails if one is ever added.
 - **Checked:** any sentence from the model that quotes a number the page
-  did not compute is thrown away before display. The model words the
-  explanation; it never decides a target.
+  did not compute is thrown away before display.
+- **Predictions:** the model proposes its own target per standard,
+  weighing the season ahead, the 40 training hours a head and your
+  feedback. LDIS checks every proposal on the same replay before showing
+  it:
+  - a pick that breaks a staffing policy is refused;
+  - the coverage and training hours shown are LDIS's own, not the
+    model's;
+  - a pick below the bar is labelled so.
+
+  The computed verdict stays in the grid beside it.
 - **When it fails:** missing access, timeouts and odd answers all leave
   the page showing the computed evidence. The tab never waits on the model.

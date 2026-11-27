@@ -96,6 +96,7 @@
                  title="{{ c.days }} shifts replayed{% if c.coverage is not none %}; {{ (c.coverage * 100) | round | int }}% met plan at the current target{% endif %}">
                 <span class="xs-cell-top">{{ c.text }}</span>
                 <span class="xs-cell-line">{{ c.line }}</span>
+                {% if v.llm_enabled and c.verdict != 'no_data' %}<span class="xs-cell-ai" data-llm-slot="ai:{{ c.id }}"></span>{% endif %}
               </a>
               {% else %}<span class="xs-none">—</span>{% endif %}
             </td>
@@ -116,6 +117,7 @@
 
   <aside class="xs-card xs-why">
     <h3>Why change these standards?</h3>
+    {% if v.llm_enabled %}<div data-llm-slot="ai-summary"></div>{% endif %}
     {% if r.changes %}
     <ol class="xs-changes">
       {% for c in r.changes %}
@@ -125,6 +127,7 @@
         <div class="xs-why-text" data-llm-slot="why:{{ c.id }}">
           {% for line in c.evidence[:2] %}<p>{{ line }}</p>{% endfor %}
         </div>
+        {% if v.llm_enabled %}<div data-llm-slot="aiwhy:{{ c.id }}"></div>{% endif %}
         {% if c.evidence | length > 2 %}
         <details class="xs-more"><summary>All the evidence</summary>
           {% for line in c.evidence %}<p>{{ line }}</p>{% endfor %}
@@ -287,6 +290,14 @@
     <label>Coverage bar (%) <input type="number" name="coverage_bar" min="50" max="100" step="1" value="{{ bar_pct }}"></label>
     <label>Absence where it cannot be measured (%) <input type="number" name="absence_pct" min="0" max="60" step="0.5" value="{{ v.settings.absence_pct }}"></label>
     <label>Default window (weeks) <input type="number" name="window_weeks" min="2" max="52" step="1" value="{{ v.settings.window_weeks }}"></label>
+    <label>Training hours a person <input type="number" name="default_train_hours" min="1" max="400" step="1" value="{{ v.settings.default_train_hours | round | int }}"></label>
+    <label>Protect pools this many weeks before a season <input type="number" name="protect_weeks" min="0" max="26" step="1" value="{{ v.settings.protect_weeks }}"></label>
+    <label class="xs-wide">Staffing policies, one per line: who may staff a process. "home" means its own department only;
+      "dept:" applies to every process a department owns.
+      <textarea name="policies" rows="5" placeholder="SPP = Pack Singles&#10;Rebin = home&#10;dept:Ship Dock = home">{{ v.settings.policy_text }}</textarea>
+      {% if v.unmatched_policies %}<span class="xm-below">Not in the data, so doing nothing: {{ v.unmatched_policies | join(', ') }}</span>{% endif %}</label>
+    <label class="xs-wide">Seasons, one per line, month-day to month-day. "protect" holds every cross-training pool on and before it.
+      <textarea name="seasons" rows="2" placeholder="Peak = 11-20 to 01-03 protect">{{ v.settings.season_text }}</textarea></label>
     <label class="xs-wide">FCLM function → process, one per line (for associate-day files that only carry FCLM names)
       <textarea name="function_map" rows="4" placeholder="RF Pick = Pick&#10;MultiLowDensityPick = Pick">{% for k, p in function_map.items() %}{{ k }} = {{ p }}
 {% endfor %}</textarea></label>
@@ -308,6 +319,12 @@
       reaches {{ bar_pct }}%, and a decrease never goes below the most cross-trainees actually used on one shift.</p>
     <p><strong>Switch</strong> is proposed when another department reaches the bar with fewer people trained.
       <strong>Hire</strong> when no target does, because the sources cannot spare enough people on enough shifts.</p>
+    <p><strong>Staffing policies</strong> decide who may staff a process at all: a forbidden source counts for nobody,
+      and a home-team-only process gets <strong>Home team only</strong> — remove the cross-training standard, and hire if
+      the home team is short. <strong>Seasons</strong>: judged during one, only its days are replayed; outside, its days
+      are left out. During a protected season, or in the {{ v.settings.protect_weeks }} weeks before it, a cut becomes
+      <strong>Hold</strong>. <strong>Training</strong> costs {{ v.settings.default_train_hours | round | int }} hours a
+      person unless a process has its own figure; a switch must train fewer people.</p>
     <p><strong>Rates</strong> are each group's units over hours on the process across the window. A department with
       no history on a process takes the cross-trainee average, and the evidence says so.
       <strong>Absence</strong> is measured as scheduled (shift calendar) with no hours booked, where there are at
@@ -318,20 +335,29 @@
 </details>
 {% endif %}
 
-{% if v.llm_enabled and v.ready and v.result and v.result.changes %}
+{% if v.llm_enabled and v.ready and v.result %}
 <script>
 (function () {
-  var url = {{ url_for('xt_standards_explain', scenario=scenario, dept=v.department or '', eval_shift=v.shift or '',
-                       weeks=v.weeks, basis=v.basis, sample='1' if v.sample else '') | tojson }};
-  fetch(url, {credentials: 'same-origin'})
-    .then(function (r) { return r.ok ? r.json() : {slots: {}}; })
-    .catch(function () { return {slots: {}}; })
-    .then(function (data) {
-      Object.keys(data.slots || {}).forEach(function (key) {
-        var slot = document.querySelector('[data-llm-slot="' + key.replace(/"/g, '') + '"]');
-        if (slot) { slot.innerHTML = data.slots[key]; }
+  // Two calls, independent: the explanations of the computed changes,
+  // and the model's own predictions for every standard. Either failing
+  // leaves the computed page as it is.
+  var urls = [
+    {% if v.result.changes %}{{ url_for('xt_standards_explain', scenario=scenario, dept=v.department or '', eval_shift=v.shift or '',
+                       weeks=v.weeks, basis=v.basis, sample='1' if v.sample else '') | tojson }},{% endif %}
+    {{ url_for('xt_standards_predict', scenario=scenario, dept=v.department or '', eval_shift=v.shift or '',
+               weeks=v.weeks, basis=v.basis, sample='1' if v.sample else '') | tojson }}
+  ];
+  urls.forEach(function (url) {
+    fetch(url, {credentials: 'same-origin'})
+      .then(function (r) { return r.ok ? r.json() : {slots: {}}; })
+      .catch(function () { return {slots: {}}; })
+      .then(function (data) {
+        Object.keys(data.slots || {}).forEach(function (key) {
+          var slot = document.querySelector('[data-llm-slot="' + key.replace(/"/g, '') + '"]');
+          if (slot) { slot.innerHTML = data.slots[key]; }
+        });
       });
-    });
+  });
 })();
 </script>
 {% endif %}

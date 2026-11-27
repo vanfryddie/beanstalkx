@@ -37,6 +37,35 @@
 </div>
 {% elif part == "why" %}
 <p><span class="clm-llm-tag">Generated</span> {{ text }}</p>
+{% elif part == "ai_cell" %}
+<span class="xs-ai {{ 'is-refused' if item.refused else 'is-agree' if item.agrees else 'is-differ' }}">AI: {{ item.label }}{% if not item.refused and item.coverage is not none %} · {{ (item.coverage * 100) | round | int }}%{% endif %}</span>
+{% elif part == "ai_why" %}
+<div class="xs-ai-why">
+  <p class="xs-ai-head"><span class="clm-llm-tag">AI prediction</span> <strong>{{ item.label }}</strong>
+    {% if item.confidence is not none %}<span class="xm-dim">· {{ (item.confidence * 100) | round | int }}% confident</span>{% endif %}
+    {% if item.agrees %}<span class="xm-dim">· agrees with the replay</span>{% endif %}</p>
+  {% if item.refused %}
+  <p class="clm-llm-flag">Refused: {{ item.refused }}. The computed recommendation stands.</p>
+  {% else %}
+  <p class="xs-ai-check">Checked on the replay: {% if item.coverage is not none %}{{ (item.coverage * 100) | round | int }}% coverage{% else %}no coverage to compute{% endif %}{% if item.new_trainees %}, {{ item.new_trainees }} to train ({{ '%g' % item.training_hours }} h){% else %}, nobody new to train{% endif %}.</p>
+  {% for flag in item.flags %}<p class="clm-llm-flag">{{ flag | capitalize }}.</p>{% endfor %}
+  {% endif %}
+  {% if item.reasoning %}<p>{{ item.reasoning }}</p>{% endif %}
+</div>
+{% elif part == "ai_summary" %}
+<div class="clm-llm xs-ai-summary">
+  <div class="clm-llm-head"><span class="clm-llm-tag">AI predictions</span>
+    {% if model_id %}<span class="clm-llm-model mono">{{ model_id }}</span>{% endif %}</div>
+  <p>The model agrees with the replay on {{ counted.agree }}, predicts differently on {{ counted.differ }}{% if counted.refused %}, and
+    {{ counted.refused }} of its picks were refused for breaking a staffing policy or naming a department that cannot lend{% endif %}.</p>
+  {% if extra %}
+  <p>Where the replay says keep and the model does not:</p>
+  <ul>{% for cell, p in extra %}<li><strong>{{ cell.process }} · {{ cell.shift | capitalize }}</strong>: {{ p.label }}{% if not p.refused and p.coverage is not none %} ({{ (p.coverage * 100) | round | int }}% on the replay{% if p.training_hours %}, {{ '%g' % p.training_hours }} h training{% endif %}){% endif %}{% if p.reasoning %} — {{ p.reasoning }}{% endif %}</li>{% endfor %}</ul>
+  {% endif %}
+  <p class="clm-llm-note">Predicted by a language model from the replay, the seasons, the training cost, the staffing policies
+    and your feedback. Every pick's coverage and training hours were recomputed by the app; sentences quoting a number the
+    data does not hold were removed{% if dropped %} ({{ dropped }} this time){% endif %}. Grid verdicts are still the computed ones.</p>
+</div>
 {% elif part == "forecast" %}
 <div class="clm-llm">
   <div class="clm-llm-head"><span class="clm-llm-tag">Generated explanation</span>

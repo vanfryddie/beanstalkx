@@ -5038,6 +5038,22 @@ html[data-theme="dark"], :root:not([data-theme="light"]) {
 .xs-hire { box-shadow: inset 0 0 0 1.5px var(--viz-series-2); }
 .xs-hire .xs-cell-line, strong.xs-hire { color: var(--viz-series-2); font-weight: 600; }
 .xs-no_data .xs-cell-line { font-style: italic; }
+/* Held for a season and home-team-only are judgements about context, not
+   about coverage, so neither borrows a status colour. */
+.xs-hold { box-shadow: inset 0 0 0 1px var(--text-lo); }
+.xs-hold .xs-cell-line, strong.xs-hold { color: inherit; font-weight: 600; }
+.xs-home_only { box-shadow: inset 0 0 0 1.5px var(--viz-series-1); }
+.xs-home_only .xs-cell-line, strong.xs-home_only { color: var(--viz-series-1); font-weight: 600; }
+strong.xs-hold, strong.xs-home_only { box-shadow: none; }
+.xs-cell-ai:empty { display: none; }
+.xs-ai { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-lo); }
+.xs-ai.is-differ { color: var(--viz-series-1); font-weight: 600; }
+.xs-ai.is-refused { text-decoration: line-through; }
+.xs-ai-why { margin: 6px 0 4px; padding: 8px 10px; border-radius: 8px; background: rgba(127,138,153,.08); }
+.xs-ai-why p { margin: 3px 0; font-size: 12.5px; }
+.xs-ai-check { color: var(--text-lo); }
+.xs-ai-summary { margin: 6px 0 10px; }
+.xs-ai-summary ul { margin: 4px 0; padding-left: 18px; font-size: 12.5px; }
 strong.xs-increase, strong.xs-switch, strong.xs-decrease, strong.xs-hire { background: none; box-shadow: none; }
 .xs-none { color: var(--text-lo); }
 .xs-foot { margin: 10px 0 0; font-size: 11.5px; color: var(--text-lo); }

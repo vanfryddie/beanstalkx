@@ -130,8 +130,19 @@ feeds it an invented site for the **Sample data** toggle.
   never be attached to a real login, even as a demonstration.
 - **Home department comes from Hours on Function**, not the roster: the
   roster's Department ID is a cost centre spanning several departments.
-- **The language model only words the "Why" panel.** Every verdict and
-  number is computed; generated sentences go through `_clm_vet_reasons()`.
+- **The grid's verdicts are computed; the model predicts beside them.**
+  `/model/standards-predict` asks the language model for its own action,
+  target and source per standard. It gets the coverage curves, every
+  allowed alternative with its trained-now count, the seasons, training
+  hours, forecast and feedback. `xt_planning.check_prediction()` then:
+  - refuses picks that break a staffing policy or name a department that
+    cannot lend;
+  - re-runs the replay on what is left (`evaluate_cell(..., explore=False)`)
+    and shows that coverage and those training hours, never the model's;
+  - flags picks below the bar.
+
+  Reasoning goes through `_clm_vet_reasons()` like every generated
+  sentence.
 - The data contract for sites is `LDIS_Day_Plan_Data_Spec.md`; templates
   are in `data_templates/` and downloadable from the Data Upload tab.
 
@@ -163,6 +174,33 @@ holds a Midway session.
 - **Scenarios** (`xt_planning.scenario_days`) are judged by the same
   rules as the replay, on future days played against past same weekdays.
   The forecast is a small graded model, not an LLM.
+
+## Context the replay respects
+
+Configured on the model tab (Evaluation settings), parsed by
+`xt_planning.parse_policies` / `parse_seasons`. A setting never saved
+uses `DEFAULT_POLICIES` / `DEFAULT_SEASONS`; an empty saved value means
+cleared and must stay cleared.
+
+- **Staffing policies**: `SPP = Pack Singles`, `Rebin = home`,
+  `dept:Ship Dock = home`. A forbidden source contributes nobody, the
+  alternatives and the day plan's lenders are limited to allowed
+  departments, and a home-only process gets `home_only`. That verdict
+  means remove the standard; when the home team is short it also gives a
+  hire figure, never a training target. Policy names that match nothing
+  in the data are listed under the form.
+- **Seasons**: Peak `11-20 to 01-03 protect`. Judged inside a season,
+  the replay uses only that season's days; outside, it leaves season days
+  out. With under a week of such dates it mixes and says so. While a
+  protected season is on, or within `protect_weeks` (8) of starting, a
+  `decrease` becomes `hold`: a pool cut before peak costs every head its
+  training to rebuild.
+- **Training cost**: 40 h a person by default (`XT_DEFAULT_TRAIN_HOURS`;
+  per-process hours override it). Each verdict carries `new_trainees`,
+  counted per source on its share of the target against the people
+  trained now. It also carries `training_hours`. A switch is proposed
+  only when it trains fewer people, or as many for a clearly smaller
+  target.
 
 ## Feedback and learning
 

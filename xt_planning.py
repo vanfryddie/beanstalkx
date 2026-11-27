@@ -270,13 +270,13 @@ class Prepared:
 
 # -- the replay -------------------------------------------------------------
 
-def _replay_days(prep, process, shift, sources, vet_rate, xt_rates):
+def _replay_days(prep, process, shift, sources, vet_rate, xt_rates, keep_day=None):
     """Everything about each past shift that does not depend on the
     target, computed once so the coverage curve is cheap."""
     owner = prep.owner.get(process)
     days = []
     for d, s in prep.days:
-        if s != shift:
+        if s != shift or (keep_day and not keep_day(d)):
             continue
         row = prep.pday.get((d, s, process))
         demand = prep.demand(row)
@@ -345,13 +345,146 @@ def _min_target(days, weights, cap, bar):
     return low, _coverage(days, low, weights)
 
 
-def _days(prep, process, shift, sources, vet_rate, rates, scenario):
+def _days(prep, process, shift, sources, vet_rate, rates, scenario, keep_day=None):
     if scenario is None:
-        return _replay_days(prep, process, shift, sources, vet_rate, rates)
+        return _replay_days(prep, process, shift, sources, vet_rate, rates, keep_day)
     return scenario_days(prep, process, shift, sources, vet_rate, rates, scenario)
 
 
-def evaluate_cell(prep, process, shift, current_target, sources, settings, scenario=None):
+# -- context the arithmetic must respect: seasons and staffing policies --------
+
+# SCN2's own rules, as a manager wrote them: Smart Paper is staffed from
+# Pack Singles alone, Rebin and Induct by their home team only, and Ship
+# Dock takes no cross-trainees. Defaults a site edits, not facts.
+DEFAULT_POLICIES = "SPP = Pack Singles\nSmart Paper = Pack Singles\nRebin = home\nInduct = home\ndept:Ship Dock = home"
+# Peak runs from 20 November into the new year. "protect" means no
+# cross-training pool is cut while it is on or in the weeks before it.
+DEFAULT_SEASONS = "Peak = 11-20 to 01-03 protect"
+
+
+def parse_policies(text):
+    """'SPP = Pack Singles' / 'Rebin = home' / 'dept:Ship Dock = home'
+    into {'process:spp': ['pack singles'], ...}. 'home' (or nothing
+    after the =) leaves an empty list, which means the home department
+    only. Returns the policies and the lines that could not be read."""
+    policies, bad = {}, []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, rest = line.partition("=")
+        name = name.strip()
+        if not sep or not name:
+            bad.append(line)
+            continue
+        kind = "dept" if name.lower().startswith("dept:") else "process"
+        name = name.split(":", 1)[1].strip() if kind == "dept" else name
+        allowed = [_key(x) for x in rest.split(",") if _key(x) and _key(x) != "home"]
+        policies[f"{kind}:{_key(name)}"] = allowed
+    return policies, bad
+
+
+def parse_seasons(text):
+    """'Peak = 11-20 to 01-03 protect' into [{'name', 'start', 'end',
+    'protect'}]. Returns the seasons and the lines that could not be read."""
+    seasons, bad = [], []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, _, rest = line.partition("=")
+        words = rest.replace(" to ", " ").split()
+        try:
+            start, end = words[0], words[1]
+            for md in (start, end):
+                date(2000, int(md[:2]), int(md[3:5]))      # 2000 is a leap year: 02-29 is allowed
+            if len(start) != 5 or len(end) != 5:
+                raise ValueError
+        except (IndexError, ValueError):
+            bad.append(line)
+            continue
+        seasons.append({"name": name.strip() or "Season", "start": start, "end": end,
+                        "protect": "protect" in [w.lower() for w in words[2:]]})
+    return seasons, bad
+
+
+def unmatched_policies(prep, policies):
+    """Policy names that match no process or department in the data, so
+    the page can say a rule is doing nothing rather than let it pass."""
+    out = []
+    for key, allowed in (policies or {}).items():
+        kind, name = key.split(":", 1)
+        known = prep.owner if kind == "process" else prep.departments
+        if name not in known:
+            out.append(key)
+        out += [f"dept:{d}" for d in allowed if d not in prep.departments]
+    return sorted(set(out))
+
+
+def season_on(day, seasons):
+    """The season a date falls in, if any. Seasons are month-day ranges
+    that may cross the new year (Peak: 11-20 to 01-03)."""
+    d = date.fromisoformat(day) if isinstance(day, str) else day
+    md = d.strftime("%m-%d")
+    for season in seasons or []:
+        start, end = season.get("start"), season.get("end")
+        if not start or not end:
+            continue
+        inside = start <= md <= end if start <= end else (md >= start or md <= end)
+        if inside:
+            return season
+    return None
+
+
+def protected_season_near(day, seasons, weeks):
+    """A protected season that is on at `day` or starts within `weeks`.
+    Cutting a cross-training pool then is cutting it just before it is
+    needed most, and rebuilding it costs every head its training hours."""
+    d = date.fromisoformat(day) if isinstance(day, str) else day
+    for offset in range(0, 7 * weeks + 1, 1):
+        season = season_on(d + timedelta(days=offset), seasons)
+        if season and season.get("protect"):
+            return season
+    return None
+
+
+def day_filter(prep, settings, scenario):
+    """Which past days a judgement may draw on. Judged during a season,
+    only that season's days (a peak week is not a normal week); judged
+    outside one, no season's days. With too few such days in the window
+    the filter is dropped, and the evidence says the judgement mixes."""
+    seasons = settings.get("seasons") or []
+    if scenario is not None or not seasons:
+        return None, None
+    current = season_on(prep.today, seasons)
+    if current:
+        keep = lambda d: season_on(d, seasons) is current
+        label = f"judged on {current['name']} days only"
+    else:
+        keep = lambda d: season_on(d, seasons) is None
+        label = "season days left out"
+    # A week of distinct dates at least: every weekday once.
+    if len({d for d, _s in prep.days if keep(d)}) < 7:
+        return None, "too few days to separate the season, so it mixes"
+    return keep, label
+
+
+def policy_for(prep, process, settings):
+    """The departments allowed to staff a process, if a policy says so:
+    by process name, else by its owning department. An empty list means
+    its home department only. None means no policy."""
+    policies = settings.get("policies") or {}
+    owner = prep.owner.get(process)
+    process = _key(process)
+    allowed = policies.get("process:" + process)
+    if allowed is None and owner:
+        allowed = policies.get("dept:" + owner)
+    if allowed is None:
+        return None
+    return set(allowed) or ({owner} if owner else set())
+
+
+def evaluate_cell(prep, process, shift, current_target, sources, settings, scenario=None, explore=True):
     """One process on one shift: the verdict and the evidence for it.
     With a scenario, the days judged are its future days rather than the
     past ones; every rule after that is the same."""
@@ -374,11 +507,29 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
             assumed.append(prep.departments.get(S, S))
         return r or xt_all or vet_rate
 
-    source_keys = [_key(S) for S in sources if _key(S) and _key(S) != owner] or []
+    allowed = policy_for(prep, process, settings)
+    named = [_key(S) for S in sources if _key(S) and _key(S) != owner]
+    # A source the policy does not allow contributes nobody: the standard
+    # can say what it likes, the floor will not staff it that way.
+    source_keys = [S for S in named if allowed is None or S in allowed]
+    disallowed = [S for S in named if S not in source_keys]
     raw = {S: w for S, w in _weights(sources).items() if S in source_keys}
     weights = {S: w / sum(raw.values()) for S, w in raw.items()} if raw and sum(raw.values()) else raw
     rates = {S: xt_rate(S) for S in source_keys}
-    days = _days(prep, process, shift, source_keys, vet_rate, rates, scenario)
+    keep_day, season_note = day_filter(prep, settings, scenario)
+    days = _days(prep, process, shift, source_keys, vet_rate, rates, scenario, keep_day)
+    train_hours = (settings.get("train_hours") or {}).get(process) or settings.get("default_train_hours") or 40.0
+    hourly = settings.get("hourly_cost") or 0.0
+    trained_pool = prep.trained.get(process, set())
+
+    def trained_now(depts):
+        return sum(len(trained_pool & prep.people.get((S, shift), set())) for S in depts)
+
+    def new_trainees(target, depts, split=None):
+        # Per source, on its share of the target: people trained in a
+        # department that gets none of the target train nobody else.
+        split = split or {S: 1 / len(depts) for S in depts}
+        return sum(max(0, math.ceil(target * split.get(S, 0) - 1e-9) - trained_now([S])) for S in depts)
     cell = {
         "process": prep.process_names.get(process, process), "shift": shift,
         "owner": prep.departments.get(owner, owner), "target": current_target,
@@ -386,6 +537,13 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
         "days": len(days), "vet_rate": vet_rate, "xt_rate": xt_all,
         "basis": "scenario" if scenario is not None else "history",
         "calibration": margin, "bar": bar,
+        "policy": sorted(prep.departments.get(d, d) for d in allowed) if allowed is not None else None,
+        "home_only": allowed is not None and not (allowed - {owner}),
+        "disallowed": [prep.departments.get(S, S) for S in disallowed],
+        "season_note": season_note, "train_hours": train_hours, "hourly_cost": hourly,
+        "trained_now": trained_now(source_keys),
+        "trained_by_source": {prep.departments.get(S, S): trained_now([S]) for S in source_keys},
+        "weights": dict(weights),
         "rules": sorted({(prep.departments.get(d, d), wd) for (d, sh, wd) in prep.lend_blocks
                          if d in [_key(x) for x in sources] and sh in (shift, "*")}),
     }
@@ -410,13 +568,18 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
         peak_xt=max(d["xt_working"] for d in days) if scenario is None else _historical_peak(prep, process, shift),
         lend_days=lend_days, assumed_rates=sorted(set(assumed)),
         curve=[(t, round(_coverage(days, t, weights) or 0, 3))
-               for t in range(0, min(cap, max(current_target, best or 0) + 6) + 1)] if source_keys else [],
+               for t in range(0, min(cap, max(current_target, best or 0) + 12) + 1)] if source_keys else [],
     )
 
     # Could another department do it with fewer people trained? Only a
     # department with people on this shift, that is not the owner and
     # not already a source.
-    alternative = None
+    cell["new_at_target"] = new_trainees(current_target, source_keys, weights)
+    if not explore:
+        # A re-check of one proposed target and source: coverage and
+        # training are all it needs, not the search for alternatives.
+        return cell
+    alternative, options = None, []
     for S, population in prep.people.items():
         dept, s = S
         # A current source alone is an alternative too when there are
@@ -424,16 +587,43 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
         # when RSP, the other source, can never spare anyone.
         if s != shift or dept == owner or not population or (dept in source_keys and len(source_keys) == 1):
             continue
+        if allowed is not None and dept not in allowed:
+            continue
         alt_rates = {dept: xt_rate(dept)}
-        alt_days = _days(prep, process, shift, [dept], vet_rate, alt_rates, scenario)
+        alt_days = _days(prep, process, shift, [dept], vet_rate, alt_rates, scenario, keep_day)
         t, cov = _min_target(alt_days, {dept: 1.0}, len(population), bar)
+        lends = sum(1 for d in alt_days if d["spare"][dept] >= 1)
+        option = {"department": prep.departments.get(dept, dept), "target": t, "coverage": cov,
+                  "lend_days": lends, "trained_now": trained_now([dept]), "people": len(population),
+                  "new_trainees": new_trainees(t, [dept]) if t is not None else None,
+                  "curve": [(x, round(_coverage(alt_days, x, {dept: 1.0}) or 0, 3))
+                            for x in range(max(0, (t or current_target) - 6),
+                                           min(len(population), (t or current_target) + 8) + 1)]}
+        options.append(option)
         if t is None:
             continue
-        lends = sum(1 for d in alt_days if d["spare"][dept] >= 1)
-        if alternative is None or (t, -lends) < (alternative["target"], -alternative["lend_days"]):
-            alternative = {"department": prep.departments.get(dept, dept), "target": t,
-                           "coverage": cov, "lend_days": lends}
+        # Fewest people to train first: a department that needs more
+        # target but already has the people trained is the cheaper switch.
+        if alternative is None or (option["new_trainees"], t, -lends) < (
+                alternative["new_trainees"], alternative["target"], -alternative["lend_days"]):
+            alternative = option
+    cell["options"] = sorted(options, key=lambda o: (o["new_trainees"] is None, o["new_trainees"] or 0))
 
+    cur_new = new_trainees(best, source_keys, weights) if best is not None else None
+    if cell["home_only"]:
+        # By policy only the home team staffs this process: a
+        # cross-training standard here should not exist, and a shortfall
+        # is a headcount question.
+        if coverage < bar:
+            owner_share = sum(d["owner_share"] for d in days) / len(days)
+            for extra in range(1, 400):
+                if _coverage(days, 0, {}, extra_vets=extra, owner_share=owner_share, vet_rate=vet_rate) >= bar:
+                    cell["hire"] = extra
+                    break
+        verdict = "home_only" if (current_target or cell.get("hire")) else "keep"
+        cell.update(verdict=verdict, alternative=None, new_target=0 if verdict == "home_only" else None,
+                    new_trainees=0, training_hours=0)
+        return cell
     if best is None:
         if alternative:
             verdict = "switch"
@@ -446,7 +636,12 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
                     cell["hire"] = extra
                     break
     elif coverage < bar:
-        verdict = "switch" if alternative and alternative["target"] < best - band else "increase"
+        # Switch when it means training fewer people, or as many people
+        # for a clearly smaller target: each head costs its training hours.
+        verdict = ("switch" if alternative and (
+            alternative["new_trainees"] < (cur_new or 0)
+            or (alternative["new_trainees"] == cur_new and alternative["target"] < best - band))
+            else "increase")
     elif max(best, cell["peak_xt"]) < current_target - band:
         # Never below the most cross-trainees the floor actually used on
         # one shift: the replay says fewer would have done, but a target
@@ -456,10 +651,25 @@ def evaluate_cell(prep, process, shift, current_target, sources, settings, scena
         cell["best"], cell["best_coverage"] = best, _coverage(days, best, weights)
     else:
         verdict = "keep"
+    season = protected_season_near(scenario["start"] if scenario else prep.today, settings.get("seasons"),
+                                   settings.get("protect_weeks", 8)) if settings.get("seasons") else None
+    if verdict == "decrease" and season:
+        # The replay would cut the pool; the season says it is about to be
+        # needed, and rebuilding it after costs every head its training.
+        cell["held_from"] = best
+        cell["season"] = season["name"]
+        verdict = "hold"
     cell["verdict"] = verdict
     cell["alternative"] = alternative if verdict == "switch" else None
     cell["new_target"] = {"increase": best, "decrease": best,
                           "switch": alternative["target"] if alternative else None}.get(verdict)
+    if verdict == "switch" and alternative:
+        cell["new_trainees"] = alternative["new_trainees"]
+    elif verdict == "increase":
+        cell["new_trainees"] = cur_new
+    else:
+        cell["new_trainees"] = 0
+    cell["training_hours"] = (cell["new_trainees"] or 0) * train_hours
     return cell
 
 
@@ -502,6 +712,21 @@ def evidence(cell):
         lines.append(f"Even with all {cell['cap']} people in the source departments trained, coverage "
                      f"reaches {round((cell.get('best_coverage') or 0) * 100)}%. About "
                      f"{cell.get('hire', '?')} more veterans in {cell['owner']} would reach the bar.")
+    if cell.get("home_only"):
+        who = " or ".join(cell["policy"]) or cell["owner"]
+        lines.append(f"By policy only {who} staffs {cell['process']}: no cross-trainees here"
+                     + (f"; about {cell['hire']} more people would be needed in {who}." if cell.get("hire") else "."))
+    elif cell.get("disallowed"):
+        lines.append(f"{', '.join(cell['disallowed'])} may not staff {cell['process']} by policy, "
+                     f"so the standard's people from there count for nothing.")
+    if cell["verdict"] == "hold":
+        lines.append(f"The replay alone would cut this to {cell['held_from']}, but {cell['season']} is on or "
+                     f"close: the pool is held, because rebuilding it costs {cell['train_hours']:g} hours a head.")
+    if cell.get("new_trainees"):
+        lines.append(f"{cell['new_trainees']} people to train, {cell['training_hours']:g} training hours "
+                     f"at {cell['train_hours']:g} a head.")
+    if cell.get("season_note"):
+        lines.append(f"Past shifts {cell['season_note']}.")
     if cell.get("rules"):
         days_by = defaultdict(list)
         for dept, wd in cell["rules"]:
@@ -549,8 +774,8 @@ def evaluate(prep, standards, settings, department=None, shift=None, scenario=No
         result["id"] = f"{p}|{s}"
         results.append(result)
     processes = sorted({r["process"] for r in results}, key=lambda x: (prep.departments.get(prep.owner.get(_key(x)), "") or "", x))
-    changes = [r for r in results if r["verdict"] in ("increase", "decrease", "switch", "hire")]
-    order = {"hire": 0, "increase": 1, "switch": 2, "decrease": 3}
+    changes = [r for r in results if r["verdict"] in ("increase", "decrease", "switch", "hire", "home_only", "hold")]
+    order = {"home_only": 0, "hire": 1, "increase": 2, "switch": 3, "decrease": 4, "hold": 5}
     changes.sort(key=lambda r: (order[r["verdict"]], r["process"], SHIFTS.index(r["shift"])))
     return {
         "cells": {(r["process"], r["shift"]): r for r in results},
@@ -566,6 +791,100 @@ def evaluate(prep, standards, settings, department=None, shift=None, scenario=No
         "basis": "history" if scenario is None else "scenario",
         "scenario": scenario,
     }
+
+
+# -- the model's prediction, checked --------------------------------------------
+
+AI_ACTIONS = ("keep", "increase", "decrease", "switch", "hire", "hold", "remove")
+
+
+def check_prediction(prep, cell, pred, settings, scenario=None):
+    """What the language model proposed for one standard, held to the
+    same arithmetic as everything else. The model may weigh what the
+    replay cannot (a peak coming, the cost of retraining, a feedback
+    reason), so it is allowed to disagree; it is not allowed to break a
+    staffing policy, to name a department that does not exist, or to
+    have its pick's coverage taken on its word. The coverage and the
+    training hours shown beside a prediction are always recomputed here.
+    Returns None for an answer that cannot be read at all."""
+    if not isinstance(pred, dict) or pred.get("action") not in AI_ACTIONS:
+        return None
+    settings = dict(DEFAULTS, **(settings or {}))
+    process, shift = cell["id"].split("|", 1)
+    action = pred["action"]
+    flags, refused = [], None
+    try:
+        target = int(round(float(pred.get("target")))) if pred.get("target") is not None else None
+    except (TypeError, ValueError):
+        target = None
+    try:
+        hire = max(0, int(round(float(pred.get("hire") or 0))))
+    except (TypeError, ValueError):
+        hire = 0
+    try:
+        confidence = min(1.0, max(0.0, float(pred.get("confidence"))))
+    except (TypeError, ValueError):
+        confidence = None
+    if action in ("keep", "hold", "hire"):
+        target = cell["target"] if target is None else target
+    if action == "remove":
+        target = 0
+    names = {_key(n): n for n in (cell.get("sources") or [])}
+    names.update({_key(o["department"]): o["department"] for o in cell.get("options") or []})
+    source = pred.get("source")
+    if isinstance(source, list):
+        source = source[0] if len(source) == 1 else None
+    source_key = _key(source) if source else None
+    if source_key and source_key not in names:
+        refused = (f"{source} may not staff {cell['process']}" if cell.get("policy") is not None
+                   and source_key in prep.departments else f"{source} is not a department that can lend here")
+    if cell.get("home_only") and (target or 0) > 0:
+        refused = f"by policy only {' or '.join(cell['policy'] or [cell['owner']])} staffs {cell['process']}"
+    if target is not None and target < 0:
+        target = 0
+    # Every key, every time: the page renders these without guessing.
+    out = {"action": action, "target": target, "source": None, "hire": hire or None, "confidence": confidence,
+           "flags": flags, "refused": refused, "coverage": None, "new_trainees": None, "training_hours": None,
+           "agrees": False}
+    if refused:
+        return out
+    current = [_key(n) for n in cell.get("sources") or []]
+    use = [source_key] if source_key and (action == "switch" or source_key not in current) else current
+    out["source"] = " + ".join(names.get(k, k) for k in use) or None
+    if target is not None and use:
+        cap = sum(len(prep.people.get((k, shift), ())) for k in use)
+        if target > cap:
+            flags.append(f"{target} is more than the {cap} people on this shift in {out['source']}; judged at {cap}")
+            target = out["target"] = cap
+        split = {k: v for k, v in (cell.get("weights") or {}).items() if k in use} if use == current else None
+        recheck = evaluate_cell(prep, process, shift, target, split or use, settings, scenario, explore=False)
+        out["coverage"] = recheck.get("coverage")
+        out["new_trainees"] = recheck.get("new_at_target") or 0
+        out["training_hours"] = out["new_trainees"] * (cell.get("train_hours") or 0)
+        if out["coverage"] is not None and out["coverage"] < cell["bar"] - 1e-9 and not hire:
+            flags.append(f"below the {round(cell['bar'] * 100)}% bar on the replay")
+    computed = cell.get("new_target") if cell.get("new_target") is not None else cell["target"]
+    same = {"keep": ("keep", "hold"), "hold": ("hold", "keep"), "increase": ("increase",), "decrease": ("decrease",),
+            "switch": ("switch",), "hire": ("hire",), "remove": ("home_only",)}[action]
+    out["agrees"] = cell["verdict"] in same and (target is None or abs(target - computed) <= max(1, round(computed * .1)))
+    return out
+
+
+def season_volume(prep, process, shift, seasons):
+    """Average demand a day for a process and shift inside and outside
+    the seasons, from the days the data holds: the model is told how
+    different peak has been here, not asked to imagine it."""
+    inside, outside = [], []
+    for d, s in prep.days:
+        if s != shift:
+            continue
+        row = prep.pday.get((d, s, process))
+        if not row:
+            continue
+        (inside if season_on(d, seasons) else outside).append(prep.demand(row))
+    mean = lambda xs: round(sum(xs) / len(xs)) if xs else None
+    return {"in_season_units_a_day": mean(inside), "in_season_days": len(inside),
+            "out_of_season_units_a_day": mean(outside), "out_of_season_days": len(outside)}
 
 
 # -- one day, planned ahead ---------------------------------------------------
@@ -627,9 +946,12 @@ def day_plan(prep, process, shift, day, volume, rate=None, absence_pct=None,
     xt_all = prep.rate(p, "xt")[0]
 
     lenders = []
+    allowed = policy_for(prep, p, settings)
     for dept in sorted({_key(prep.home[l]) for l in trained if l in prep.home} - {owner}):
         people = trained & on_shift(dept)
-        if not people:
+        # A department the staffing policy keeps off this process is not
+        # a lender, however many of its people are trained on it.
+        if not people or (allowed is not None and dept not in allowed):
             continue
         hc = headcount(sorted(people), dept)
         dept_rate, basis = prep.rate(p, dept)

@@ -481,7 +481,8 @@ check("sample data renders the grid", r.status_code == 200 and "Standards by shi
 check("with the summary line and the reasons panel", "standards</span>" in html and " proposed" in html
       and "Why change these standards?" in html)
 check("and says plainly that it is sample data", "made-up site" in html)
-check("every verdict class is one of the six", all(v in ("keep", "increase", "decrease", "switch", "hire", "no_data")
+check("every verdict class is one of the eight", all(v in ("keep", "increase", "decrease", "switch", "hire", "no_data",
+                                                            "hold", "home_only")
       for v in __import__("re").findall(r'class="xs-cell xs-(\w+)"', html)))
 check("without a model the reasons are the computed evidence", "Computed evidence" in html
       and "replayed shifts missed plan" in html)
@@ -696,6 +697,163 @@ data = c.get("/ld-management/cross-training/model/standards-explain?sample=1").g
 check("when the model is down nothing is replaced and nothing errors", data["status"] == "error"
       and not data["slots"])
 bedrock_client.set_transport(None)
+
+print("\n6. Context: staffing policies, seasons, training")
+
+
+def ctx_cell(prep, target, settings, sources=("Pick",)):
+    paths = [{"process": "Pack", "shift": "early", "target": target / len(sources),
+              "source_departments": [s]} for s in sources]
+    return X.evaluate(prep, paths, settings)["cells"][("Pack", "early")]
+
+
+pol, bad = X.parse_policies("SPP = Pack Singles\nRebin = home\ndept:Ship Dock = home\nnot a policy")
+check("policies read as written; 'home' means the home department only",
+      pol == {"process:spp": ["pack singles"], "process:rebin": [], "dept:ship dock": []} and bad == ["not a policy"],
+      (pol, bad))
+sea, bad = X.parse_seasons("Peak = 11-20 to 01-03 protect\nSummer = 07-01 to 08-31\nBroken = 13-40 to 01-01")
+check("seasons read as written, across the new year, and a bad date is reported",
+      [x["name"] for x in sea] == ["Peak", "Summer"] and sea[0]["protect"] and not sea[1]["protect"]
+      and bad == ["Broken = 13-40 to 01-01"], (sea, bad))
+check("a date in January is inside a November-to-January season",
+      X.season_on("2027-01-02", sea)["name"] == "Peak" and X.season_on("2027-01-04", sea) is None)
+check("the default training is 40 hours a person", db.XT_DEFAULT_TRAIN_HOURS == 40.0)
+
+prep = world()
+c = ctx_cell(prep, 2, {"policies": {"process:pack": []}})
+check("a home-only process: the cross-training standard should be removed",
+      c["verdict"] == "home_only" and c["new_target"] == 0 and c["home_only"], c["verdict"])
+check("and the evidence says it is policy", any("By policy only PackDept" in x for x in c["evidence"]), c["evidence"])
+c = ctx_cell(world(vets=4), 2, {"policies": {"dept:packdept": []}})
+check("a department rule covers its processes; short of people it is a hire, not training",
+      c["verdict"] == "home_only" and c.get("hire") == 2 and c["training_hours"] == 0, (c["verdict"], c.get("hire")))
+c = ctx_cell(world(ship_n=10, ship_need=5), 2, {"policies": {"process:pack": ["ship"]}})
+check("a source the policy forbids counts for nobody, and the switch is to one it allows",
+      c["disallowed"] == ["Pick"] and c["verdict"] == "switch" and c["alternative"]["department"] == "Ship"
+      and all(o["department"] != "Pick" for o in c["options"]), (c["verdict"], c.get("disallowed")))
+check("without the policy the same standard is kept", ctx_cell(world(ship_n=10, ship_need=5), 2, {})["verdict"] == "keep")
+
+peak = {"seasons": [{"name": "Peak", "start": "11-20", "end": "01-03", "protect": True}], "protect_weeks": 8}
+c = ctx_cell(prep, 10, peak)
+check("in a protected season a cut becomes a hold", c["verdict"] == "hold" and c["held_from"] == 2
+      and c["season"] == "Peak", (c["verdict"], c.get("held_from")))
+check("and says why: rebuilding costs the training hours",
+      any("rebuilding it costs 40 hours a head" in x for x in c["evidence"]), c["evidence"])
+check("judged on peak days only", c["season_note"] == "judged on Peak days only" and c["days"] == 10)
+c = ctx_cell(prep, 10, dict(peak, seasons=[dict(peak["seasons"][0], protect=False)]))
+check("an unprotected season still cuts", c["verdict"] == "decrease", c["verdict"])
+c = ctx_cell(prep, 10, dict(peak, seasons=[{"name": "Summer", "start": "06-01", "end": "06-30", "protect": True}]))
+check("a protected season months away does not hold anything", c["verdict"] == "decrease", c["verdict"])
+c = ctx_cell(prep, 2, {"seasons": [{"name": "Early", "start": "11-20", "end": "11-22", "protect": False}]})
+check("outside a season its days are left out of the replay", c["days"] == 7
+      and c["season_note"] == "season days left out", (c["days"], c["season_note"]))
+c = ctx_cell(prep, 2, {"seasons": [{"name": "Long", "start": "11-20", "end": "11-25", "protect": False}]})
+check("with under a week left, the replay mixes and says so", c["days"] == 10
+      and "too few days" in c["season_note"], (c["days"], c["season_note"]))
+
+c = ctx_cell(world(vets=4), 2, {})
+check("an increase counts the people to train beyond those trained now",
+      c["verdict"] == "increase" and c["new_target"] == 3 and c["trained_now"] == 2 and c["new_trainees"] == 1
+      and c["training_hours"] == 40, (c["verdict"], c.get("new_target"), c.get("new_trainees")))
+c = ctx_cell(world(vets=4), 2, {"train_hours": {"pack": 12}})
+check("a process's own training hours replace the default", c["training_hours"] == 12, c["training_hours"])
+check("and the grid line carries the hours", "40 h training" in application._xt_cell_text(
+      ctx_cell(world(vets=4), 2, {}), 0.95)[1])
+
+print("\n7. The model's predictions, checked")
+c = ctx_cell(world(vets=4), 2, {})
+p = X.check_prediction(prep_v4 := world(vets=4), c, {"action": "increase", "target": 3, "confidence": .8}, {})
+check("a pick the arithmetic agrees with is recomputed and marked so",
+      p["coverage"] == 1.0 and p["new_trainees"] == 1 and p["training_hours"] == 40 and p["agrees"], p)
+p = X.check_prediction(prep_v4, c, {"action": "keep", "target": 2, "coverage": 1.0}, {})
+check("the model's own coverage is never taken: keep at 2 replays at 0% and is flagged below the bar",
+      p["coverage"] == 0.0 and any("below the 95% bar" in f for f in p["flags"]) and not p["agrees"], p)
+p = X.check_prediction(prep_v4, c, {"action": "increase", "target": 500}, {})
+check("a target bigger than the source's people is judged at what there is",
+      p["target"] == 10 and any("more than the 10 people" in f for f in p["flags"]), p)
+p = X.check_prediction(prep_v4, c, {"action": "switch", "source": "Nowhere", "target": 2}, {})
+check("a department that cannot lend is refused", p["refused"] and p["coverage"] is None, p)
+home = ctx_cell(world(), 2, {"policies": {"process:pack": []}})
+p = X.check_prediction(world(), home, {"action": "keep", "target": 2}, {"policies": {"process:pack": []}})
+check("a cross-training target on a home-only process is refused", p["refused"] and "by policy" in p["refused"], p)
+p = X.check_prediction(world(), home, {"action": "remove"}, {"policies": {"process:pack": []}})
+check("removing it agrees with the policy", not p["refused"] and p["agrees"], p)
+check("an answer that is not one of the actions is ignored",
+      X.check_prediction(prep_v4, c, {"action": "double it"}, {}) is None)
+
+predict_payloads = []
+
+
+def predict_stub(body):
+    payload = json.loads(body["messages"][0]["content"])
+    if "standards" not in payload:
+        return stub(body)
+    predict_payloads.append(payload)
+    out = []
+    first = next((st["id"] for st in payload["standards"] if not st["home_only"]), None)
+    for st in payload["standards"]:
+        if st["home_only"]:
+            other = (st["options"] or [{"department": "Receive"}])[0]["department"]
+            out.append({"id": st["id"], "action": "switch", "source": other, "target": 3, "confidence": .9,
+                        "reasoning": "Cross-train them anyway."})
+        elif st["id"] == first:
+            out.append({"id": st["id"], "action": "increase", "target": st["current_target"] + 1,
+                        "confidence": .7, "reasoning": "Peak needs 31337 more people."})
+        else:
+            out.append({"id": st["id"], "action": "keep", "target": st["current_target"], "confidence": .6,
+                        "reasoning": f"Coverage is {round((st['coverage_now'] or 0) * 100)}% now."})
+    return {"content": [{"type": "text", "text": json.dumps({"predictions": out})}], "stop_reason": "end_turn"}
+
+
+os.environ["LDIS_BEDROCK_MODEL_ID"] = os.environ.get("LDIS_BEDROCK_MODEL_ID") or "stub-model"
+bedrock_client.set_transport(predict_stub)
+pc = client("SCN2")
+html = pc.get("/ld-management/cross-training?tab=model&sample=1", follow_redirects=True).get_data(as_text=True)
+check("the page asks for predictions and has a slot in every judged cell",
+      "/model/standards-predict" in html and 'data-llm-slot="ai:' in html and 'data-llm-slot="ai-summary"' in html)
+data = pc.get("/ld-management/cross-training/model/standards-predict?sample=1").get_json()
+sent = predict_payloads[-1] if predict_payloads else {"context": {}, "standards": []}
+check("the endpoint answers with grid and summary slots", data.get("status") == "ok"
+      and any(k.startswith("ai:") for k in data["slots"]) and "ai-summary" in data["slots"], data.get("status"))
+check("the model is told the season, the training hours and the policies",
+      sent["context"].get("seasons")
+      and sent["context"].get("train_hours_default") == db.get_xt_cost_model()["default_train_hours"]
+      and all("home_only" in st and "options" in st and "curve" in st for st in sent["standards"]))
+homes = [st for st in sent["standards"] if st["home_only"]]
+check("a pick that breaks a staffing policy is refused, and the page says so",
+      (not homes) or (data["counted"]["refused"] >= len(homes) and "Refused" in data["slots"]["ai:" + homes[0]["id"]]),
+      data.get("counted"))
+check("a sentence with an invented figure is dropped", data["dropped"] >= 1
+      and not any("31337" in v for v in data["slots"].values()))
+check("no login leaves the server", not any("smp0" in json.dumps(x) for x in predict_payloads))
+bedrock_client.set_transport(lambda body: (_ for _ in ()).throw(RuntimeError("down")))
+data = pc.get("/ld-management/cross-training/model/standards-predict?sample=1").get_json()
+check("when the model is down, no prediction and nothing errors", data["status"] == "error" and not data["slots"])
+bedrock_client.set_transport(None)
+os.environ.pop("LDIS_BEDROCK_MODEL_ID", None)
+
+fc = client(SITE2)
+r = fc.post("/ld-management/cross-training/model/config", data={"seasons": "Peak = 11-31 to 01-03"},
+            follow_redirects=True)
+db.set_current_site(SITE2)
+check("a season that is not a date is refused and not saved", "Could not read 1 seasons" in r.get_data(as_text=True)
+      and db.get_app_setting("xt_seasons") is None)
+db.set_current_site("SCN2")
+fc.post("/ld-management/cross-training/model/config",
+        data={"policies": "Rebin = home", "seasons": "", "default_train_hours": "32"})
+db.set_current_site(SITE2)
+st = application._xt_eval_settings()
+check("saved policies and training hours are used; a cleared season list stays cleared",
+      st["policies"] == {"process:rebin": []} and st["seasons"] == [] and st["default_train_hours"] == 32, st)
+conn = db.get_db()
+conn.execute("DELETE FROM app_settings WHERE key IN (?,?,?,?)",
+             ("xt_staffing_policies", "xt_seasons", "xt_default_train_hours", "xt_protect_weeks"))
+conn.commit()
+conn.close()
+db.set_current_site("SCN2")
+st = application._xt_eval_settings()
+check("unsaved, the site's defaults apply: Peak from 20 November, SPP from Pack Singles",
+      st["seasons"][0]["start"] == "11-20" and st["policies"]["process:spp"] == ["pack singles"])
 
 print("\n" + "=" * 62)
 if fails:

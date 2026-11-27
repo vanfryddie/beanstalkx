@@ -4930,7 +4930,9 @@ def process_volume_coverage():
 # Defaults, not facts: a site sets its own on the Definitions tab. They
 # are here so the cost side of a recommendation says something from the
 # first day rather than nothing until somebody fills a form in.
-XT_DEFAULT_TRAIN_HOURS = 8.0
+# Forty hours: SCN2's real figure for taking someone from untrained to
+# Proficient on a process, the cost the user asked every standard to carry.
+XT_DEFAULT_TRAIN_HOURS = 40.0
 XT_DEFAULT_HOURLY_COST = 20.0
 XT_DEFAULT_SHIFT_HOURS = 9.5
 # Trained people are not all available at once: holidays, absence, the

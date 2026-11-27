@@ -177,3 +177,31 @@ Everything in `CLAUDE.md` applies, and three things bear directly:
   panel (same Bedrock client, same vetting), and a one-day plan. The
   path-by-path model above is kept, folded below it. Data contract:
   `LDIS_Day_Plan_Data_Spec.md`.
+- **27 Nov — the model predicts, the app checks.** The model used only
+  to word the arithmetic's verdicts. It now also makes its own
+  prediction for every standard (`/model/standards-predict`, one
+  batched call of up to 36 standards, fetched after the page loads,
+  cached like every call). It returns an action (keep, increase,
+  decrease, switch, hire, hold, remove), a target, a source, a confidence
+  and its reasoning.
+  - **Its inputs:**
+    - coverage curves for the current sources and every allowed
+      alternative;
+    - trained-now counts;
+    - staffing policies, seasons (with in- and out-of-season volume),
+      training hours and cost per hour;
+    - the forecast and its accuracy;
+    - feedback, the track record and site notes.
+  - **The app then:**
+    - refuses policy-breaking picks;
+    - recomputes coverage and training hours for the rest on the same
+      replay;
+    - flags any pick below the bar;
+    - marks agreement with the computed verdict;
+    - vets the reasoning.
+
+  The grid shows the AI pick under each computed verdict, and the Why
+  panel shows it in full with the checks. The deterministic side gained
+  staffing policies, protected seasons ("hold") and training cost (40 h
+  a person); see CLAUDE.md, "Context the replay respects".
+

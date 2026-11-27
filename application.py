@@ -5231,12 +5231,28 @@ def _xt_eval_settings():
     def setting(key, default, low, high):
         value = db._as_number(db.get_app_setting(key))
         return default if value is None else max(low, min(high, value))
+    cost = db.get_xt_cost_model()
+    policy_text = db.get_app_setting("xt_staffing_policies")
+    season_text = db.get_app_setting("xt_seasons")
+    # None means never saved: the defaults apply. An empty string is a
+    # site that cleared them on purpose, and must stay cleared.
+    policy_text = xt_planning.DEFAULT_POLICIES if policy_text is None else policy_text
+    season_text = xt_planning.DEFAULT_SEASONS if season_text is None else season_text
+    policies, bad_policies = xt_planning.parse_policies(policy_text)
+    seasons, bad_seasons = xt_planning.parse_seasons(season_text)
     return {
         "coverage_bar": setting("xt_eval_coverage_bar", 95, 50, 100) / 100.0,
         "absence_pct": setting("xt_eval_absence_pct", 8, 0, 60),
         "window_weeks": int(setting("xt_eval_window_weeks", 8, 2, 52)),
         "band": 1,
-        "shift_hours": db.get_xt_cost_model()["shift_hours"],
+        "shift_hours": cost["shift_hours"],
+        "policies": policies, "policy_text": policy_text, "bad_policies": bad_policies,
+        "seasons": seasons, "season_text": season_text, "bad_seasons": bad_seasons,
+        "protect_weeks": int(setting("xt_protect_weeks", 8, 0, 26)),
+        "default_train_hours": cost["default_train_hours"],
+        "hourly_cost": cost["hourly_cost"],
+        "train_hours": {(name or "").strip().lower(): row.get("train_hours")
+                        for name, row in cost["per_process"].items() if row.get("train_hours")},
     }
 
 
@@ -5294,8 +5310,14 @@ def _xt_cell_text(cell, bar):
         line = f"Switch to {cell['alternative']['department']} · {cell['new_target']}"
     elif verdict == "hire":
         line = f"Hire {cell.get('hire') or '?'} veterans"
+    elif verdict == "hold":
+        line = f"Hold for {cell.get('season') or 'the season'} · replay says {cell.get('held_from')}"
+    elif verdict == "home_only":
+        line = "Home team only" + (f" · hire {cell['hire']}" if cell.get("hire") else " · remove standard")
     else:
         line = "No data to judge"
+    if cell.get("training_hours"):
+        line += f" · {cell['training_hours']:g} h training"
     return f"{sources} · {cell['target']}", line
 
 
@@ -5315,6 +5337,15 @@ def _xt_change_headline(cell):
         where = cell["owner"] if (cell["owner"] or "").lower() == cell["process"].lower() \
             else f"{cell['owner']} for {cell['process']}"
         return f"Hire {cell.get('hire') or '?'} veterans into {where}"
+    if v == "hold":
+        return (f"Hold {sources} → {cell['process']} at {cell['target']} through {cell.get('season')}"
+                f" (replay alone: {cell.get('held_from')})")
+    if v == "home_only":
+        who = " or ".join(cell.get("policy") or []) or cell["owner"]
+        tail = f"; hire {cell['hire']} into {who}" if cell.get("hire") else ""
+        if not cell.get("sources"):
+            return f"{cell['process']}: {who} only, by policy{tail}"
+        return f"Remove the {sources} → {cell['process']} standard: {who} only, by policy{tail}"
     return cell["process"]
 
 
@@ -5373,11 +5404,21 @@ def build_standards_view(scenario="general"):
     scenario_key = (repr(sorted((k, str(v)) for k, v in scenario.items() if k != "lines"))
                     + repr(sorted((scenario.get("lines") or {}).items()))) if scenario else None
     eval_key = (department, shift, settings["coverage_bar"], settings["band"], settings["absence_pct"], scenario_key,
-                repr(sorted(learning["calibration"].items())))
+                repr(sorted(learning["calibration"].items())),
+                # Policies, seasons and training hours change verdicts, so a
+                # saved edit must not be answered from the old evaluation.
+                repr(sorted(settings["policies"].items())), settings["season_text"], settings["protect_weeks"],
+                settings["default_train_hours"], repr(sorted(settings["train_hours"].items())))
     if eval_key not in memo["evaluations"]:
         memo["evaluations"][eval_key] = xt_planning.evaluate(prep, paths, settings, department, shift, scenario)
     result = memo["evaluations"][eval_key]
     view["result"] = result
+    # For the prediction endpoint, which re-runs the replay on the model's
+    # picks; never rendered.
+    view["_prep"], view["_scenario"] = prep, scenario
+    # A policy naming a process or department the data does not have is
+    # doing nothing; the configuration says so instead of letting it pass.
+    view["unmatched_policies"] = xt_planning.unmatched_policies(prep, settings["policies"])
     view["departments"] = sorted({d for d in prep.departments.values() if d}, key=str.lower)
     by_process = {}
     for (process, s), cell in result["cells"].items():
@@ -5632,6 +5673,176 @@ def xt_standards_explain():
     return jsonify({"status": status, "slots": slots, "dropped": dropped})
 
 
+CLM_LLM_SYSTEM_PREDICT = """You are the cross-training planner for a fulfilment centre. For each \
+standard below (how many people from a source department are trained on another department's \
+process, per shift) predict what the standard should be for the period ahead, and say why.
+
+The application has already replayed past shifts. For each standard you get: coverage (the share \
+of replayed shifts that met plan) at each target for the current sources ("curve"), the same for \
+every other department allowed to lend ("options", with how many of its people are trained now \
+and would need training), the computed verdict, the staffing policy, the season, the forecast and \
+its accuracy, volume in and out of season, training hours per person and cost per hour, and the \
+managers' feedback and track record. Coverage is computed; you do not recompute it.
+
+What the arithmetic cannot weigh and you must:
+- Seasons. A replay of normal weeks under-states peak, and peak volume falls on some departments \
+far more than others. Fewer people needed on a process during peak (inbound, typically) does not \
+mean its cross-training pool should shrink: the people are still needed after, and a pool cut now \
+costs every head its training hours to rebuild. Think about the season ahead, not only the past.
+- Training cost. Every new trainee costs the training hours given. Prefer the department whose \
+people are already trained, prefer holding over cutting and re-training, and do not raise a target \
+beyond what the coverage curve shows is useful.
+- Staffing policies are hard limits. A process marked home_only is staffed by its home department \
+only: the answer is "remove" (and a hire figure if the home team is short), never a target from \
+another department. Never name a department that is not in that standard's sources or options.
+- Feedback and track record are evidence: a manager's reason that still applies should change \
+your answer; applied recommendations that under-delivered mean be more cautious there.
+
+Actions: keep, increase, decrease, switch (to one other department, named in "source"), hire \
+(veterans into the home department; give "hire"), hold (keep the current target through a season \
+although the replay would cut it), remove (no cross-training standard). Give the target you \
+predict (whole people), and a confidence from 0 to 1 that it is right for the period ahead.
+
+The application will recompute coverage and training for your pick and show it beside yours; a \
+pick below the bar is shown as such. You may disagree with the computed verdict when the context \
+calls for it: say what in the context does.
+
+Reasoning: two to four sentences a site manager can check. Quote only numbers that appear in that \
+standard's data or in the shared context, exactly as given (a share may be written as a \
+percentage). Name only departments and processes in that standard's data.
+
+Reply with JSON only: {"predictions": [{"id": "<id as given>", "action": "...", "target": 0, \
+"source": "<department or null>", "hire": 0, "confidence": 0.0, "reasoning": "..."}]}"""
+
+XT_PREDICT_MAX = 48
+
+
+@application.route("/ld-management/cross-training/model/standards-predict")
+def xt_standards_predict():
+    """The model's own prediction for each standard, fetched after the
+    page has loaded. The model weighs what the replay cannot (the season
+    ahead, the cost of training, feedback); the app then re-runs the
+    replay on every pick, refuses picks that break a staffing policy,
+    and shows the recomputed coverage and training hours beside it.
+    Any failure leaves the page's computed verdicts as they are."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"status": "login"}), 401
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return jsonify({"status": "denied"}), 403
+    try:
+        view = build_standards_view(request.args.get("scenario") or "general")
+        result, prep, settings = view.get("result"), view.get("_prep"), view["settings"]
+        if not result or prep is None:
+            return jsonify({"status": "nothing", "slots": {}})
+        change_ids = {c["id"] for c in result["changes"]}
+        cells = sorted((c for c in result["cells"].values() if c["verdict"] != "no_data"),
+                       key=lambda c: (c["id"] not in change_ids, abs((c.get("coverage") or 0) - c["bar"])))
+        cells = cells[:XT_PREDICT_MAX]
+        if not cells:
+            return jsonify({"status": "nothing", "slots": {}})
+        learning = view.get("learning") or {}
+        record = defaultdict(list)
+        for o in learning.get("outcomes", []):
+            if o.get("achieved") is not None:
+                record[o["process"].strip().lower()].append({
+                    "shift": o["shift"], "target": o["proposed_target"],
+                    "predicted_coverage": round(o["predicted_coverage"], 3), "achieved_coverage": round(o["achieved"], 3)})
+        forecast = {(f["key"], f["shift"]): f for f in view.get("forecast") or []}
+        seasons = settings.get("seasons") or []
+        today = prep.today
+        sc = view.get("_scenario")
+        ahead = xt_planning.protected_season_near(today, seasons, settings.get("protect_weeks", 8)) if seasons else None
+        context = {
+            "today": today.isoformat(), "coverage_bar": settings["coverage_bar"],
+            "season_now": (xt_planning.season_on(today, seasons) or {}).get("name"),
+            "protected_season_on_or_within_weeks": ({"name": ahead["name"], "weeks": settings.get("protect_weeks", 8)}
+                                                     if ahead else None),
+            "seasons": [{"name": x["name"], "from": x["start"], "to": x["end"], "protect": x["protect"]} for x in seasons],
+            "train_hours_default": settings.get("default_train_hours"), "cost_per_hour": settings.get("hourly_cost"),
+            "basis": result["basis"],
+            "scenario": {"name": sc["name"], "start": sc["start"], "weeks": sc["weeks"],
+                         "volume_pct": round((sc.get("multiplier") or 1) * 100)} if sc else None,
+            "site_notes": learning.get("notes") or None,
+            "lending_rules": [{"department": r["department"], "shift": r.get("shift") or "all",
+                               "weekdays": [learning["weekdays"][w] for w in r["weekdays"]],
+                               "reason": r.get("reason")} for r in learning.get("rules", [])],
+        }
+        items = []
+        for c in cells:
+            key = c["id"].split("|", 1)[0]
+            f = forecast.get((key, c["shift"]))
+            items.append({
+                "id": c["id"], "process": c["process"], "shift": c["shift"], "owner": c["owner"],
+                "current_target": c["target"], "sources": c.get("sources"),
+                "trained_now_by_source": c.get("trained_by_source"),
+                "policy_allowed_departments": c.get("policy"), "home_only": c.get("home_only"),
+                "not_allowed_by_policy": c.get("disallowed") or None,
+                "computed": {"verdict": c["verdict"], "new_target": c.get("new_target"),
+                             "held_from": c.get("held_from"), "hire": c.get("hire"),
+                             "new_trainees": c.get("new_trainees"), "training_hours": c.get("training_hours"),
+                             "switch_to": (c.get("alternative") or {}).get("department")},
+                "coverage_now": round(c["coverage"], 3) if c.get("coverage") is not None else None,
+                "bar_used": round(c["bar"], 3), "replayed_shifts": c["days"], "season_note": c.get("season_note"),
+                "peak_cross_trainees_used": c.get("peak_xt"), "lend_days": c.get("lend_days"),
+                "curve": c.get("curve"),
+                "options": [{k: o[k] for k in ("department", "target", "coverage", "trained_now", "new_trainees",
+                                               "lend_days", "people", "curve")} for o in (c.get("options") or [])[:6]],
+                "train_hours_per_person": c.get("train_hours"),
+                "volume_by_season": xt_planning.season_volume(prep, key, c["shift"], seasons) if seasons else None,
+                "forecast": {"units_a_day_next_4_weeks": f["forecast"], "trend_pct_a_week": f["trend_pct"],
+                             "accuracy": (f.get("quality") or {}).get("accuracy")} if f else None,
+                "manager_feedback": [{"on": (x.get("created_at") or "")[:10], "decision": x["decision"],
+                                      "verdict_then": x.get("verdict"), "reason": x.get("reason"),
+                                      "reason_kind": x.get("reason_kind")} for x in c.get("feedback") or []],
+                "track_record": record.get(c["process"].strip().lower(), [])[:6],
+            })
+        payload = {"context": context, "standards": items}
+        answer, status = bedrock_client.ask_json(CLM_LLM_SYSTEM_PREDICT, payload, max_tokens=8000)
+        if answer is None:
+            return jsonify({"status": status, "note": CLM_LLM_UNAVAILABLE.get(status, "unavailable"), "slots": {}})
+        by_id = {c["id"]: c for c in cells}
+        payload_by_id = {i["id"]: i for i in items}
+        shared = _clm_numbers(context)
+        slots, dropped, extra, counted = {}, 0, [], {"agree": 0, "differ": 0, "refused": 0}
+        for pred in (answer.get("predictions") or []) if isinstance(answer, dict) else []:
+            if not isinstance(pred, dict) or pred.get("id") not in by_id:
+                continue
+            cell = by_id[pred["id"]]
+            checked = xt_planning.check_prediction(prep, cell, pred, settings, view.get("_scenario"))
+            if checked is None:
+                continue
+            allowed = _clm_numbers(payload_by_id[pred["id"]]) | shared | _clm_numbers(
+                {k: checked.get(k) for k in ("target", "hire", "coverage", "training_hours", "new_trainees")})
+            kept, lost = _clm_vet_reasons([pred.get("reasoning")], allowed, 1)
+            dropped += lost
+            checked["reasoning"] = kept[0] if kept else None
+            checked["label"] = _xt_ai_label(checked)
+            counted["refused" if checked.get("refused") else "agree" if checked.get("agrees") else "differ"] += 1
+            slots["ai:" + cell["id"]] = render_template("_xt_model_llm.html", part="ai_cell", item=checked)
+            if cell["id"] in change_ids:
+                slots["aiwhy:" + cell["id"]] = render_template("_xt_model_llm.html", part="ai_why",
+                                                                item=checked, cell=cell)
+            elif not checked.get("agrees"):
+                extra.append((cell, checked))
+        slots["ai-summary"] = render_template("_xt_model_llm.html", part="ai_summary", counted=counted,
+                                              extra=extra, dropped=dropped, model_id=bedrock_client.model_id())
+    except Exception:
+        application.logger.exception("Standards prediction failed")
+        return jsonify({"status": "error", "note": CLM_LLM_UNAVAILABLE["error"], "slots": {}})
+    return jsonify({"status": status, "slots": slots, "dropped": dropped, "counted": counted})
+
+
+def _xt_ai_label(p):
+    """The model's pick in the grid's own words."""
+    if p.get("refused"):
+        return "Refused"
+    a, t, src = p["action"], p.get("target"), p.get("source")
+    return {"keep": f"Keep {t}", "hold": f"Hold {t}", "increase": f"Increase to {t}",
+            "decrease": f"Decrease to {t}", "switch": f"Switch to {src} · {t}",
+            "hire": f"Hire {p.get('hire') or '?'}", "remove": "Remove standard"}[a]
+
+
 @application.route("/ld-management/cross-training/model/scenario", methods=["POST"])
 def xt_scenario_save():
     """Save a scenario: planned units a day and planned rate per process
@@ -5786,7 +5997,9 @@ def xt_eval_config_save():
                      "can change the evaluation settings.")
     for field, key, low, high in (("coverage_bar", "xt_eval_coverage_bar", 50, 100),
                                   ("absence_pct", "xt_eval_absence_pct", 0, 60),
-                                  ("window_weeks", "xt_eval_window_weeks", 2, 52)):
+                                  ("window_weeks", "xt_eval_window_weeks", 2, 52),
+                                  ("protect_weeks", "xt_protect_weeks", 0, 26),
+                                  ("default_train_hours", "xt_default_train_hours", 1, 400)):
         raw = (request.form.get(field) or "").strip()
         if not raw:
             continue
@@ -5799,6 +6012,18 @@ def xt_eval_config_save():
             flash(f"{field.replace('_', ' ').capitalize()} must be between {low} and {high}.", "warning")
             return redirect(url_for("cross_training", tab="model"))
         db.set_app_setting(key, value, updated_by=login_id)
+    for field, key, parse in (("policies", "xt_staffing_policies", xt_planning.parse_policies),
+                              ("seasons", "xt_seasons", xt_planning.parse_seasons)):
+        if field not in request.form:
+            continue
+        text = (request.form.get(field) or "").strip()
+        _parsed, bad = parse(text)
+        if bad:
+            flash(f"Could not read {len(bad)} {field} line(s): " + "; ".join(bad[:3])
+                  + (". Policies look like 'SPP = Pack Singles' or 'Rebin = home'." if field == "policies"
+                     else ". Seasons look like 'Peak = 11-20 to 01-03 protect'."), "warning")
+            return redirect(url_for("cross_training", tab="model"))
+        db.set_app_setting(key, text, updated_by=login_id)
     mapping = {}
     for line in (request.form.get("function_map") or "").splitlines():
         if "=" in line:

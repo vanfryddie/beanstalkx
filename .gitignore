@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 *.db
+# SQLite's write-ahead files sit beside each database while it is open.
+*.db-shm
+*.db-wal
 *.sqlite3
 instance/
 perf/__pycache__/
