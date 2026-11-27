@@ -2449,6 +2449,50 @@ def init_db():
             updated_at TEXT,
             UNIQUE(process, shift)
         );
+        CREATE TABLE IF NOT EXISTS employee_roster (
+            employee_login TEXT PRIMARY KEY,
+            employee_id TEXT,
+            full_name TEXT,
+            department_id TEXT,
+            management_area_id TEXT,
+            shift_pattern TEXT,
+            shift TEXT,
+            employment_type TEXT,
+            job_title TEXT,
+            start_date TEXT,
+            status TEXT,
+            manager_name TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS shift_calendar (
+            cohort TEXT NOT NULL,
+            work_date TEXT NOT NULL,
+            shift_code TEXT,
+            side TEXT,
+            shift TEXT,
+            pattern TEXT,
+            main_process TEXT,
+            start_at TEXT,
+            end_at TEXT,
+            hours REAL,
+            source TEXT,
+            uploaded_at TEXT,
+            PRIMARY KEY (cohort, work_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_shift_calendar_code ON shift_calendar(shift_code, work_date);
+        CREATE TABLE IF NOT EXISTS associate_day (
+            work_date TEXT NOT NULL,
+            shift TEXT NOT NULL,
+            employee_login TEXT NOT NULL,
+            process TEXT NOT NULL,
+            fclm_function TEXT,
+            units REAL,
+            hours REAL,
+            source TEXT,
+            uploaded_at TEXT,
+            PRIMARY KEY (work_date, shift, employee_login, process)
+        );
+        CREATE INDEX IF NOT EXISTS idx_associate_day_date ON associate_day(work_date);
         """
     )
         # Safe migrations for columns added after the tables above first
@@ -2508,6 +2552,8 @@ def init_db():
             ("floor_snapshots", "reader_version", "TEXT"),
             ("process_volume", "plan_hours", "REAL"),
             ("process_volume", "plan_rate", "REAL"),
+            ("process_volume", "department", "TEXT"),
+            ("process_volume", "plan_units", "REAL"),
         ]:
             if USE_POSTGRES:
                 # Postgres supports IF NOT EXISTS directly — no exception
@@ -4747,6 +4793,10 @@ def ingest_process_volume_csv(file_bytes, filename, uploaded_by=None):
                                or row.get("planned rate") or row.get("target rate"))
         plan_hours = _as_number(row.get("plan_hours") or row.get("plan hours")
                                 or row.get("planned hours"))
+        plan_units = _as_number(row.get("plan_units") or row.get("plan units")
+                                or row.get("planned units") or row.get("planned volume"))
+        department = _clean(row.get("department") or row.get("home department")
+                            or row.get("fclm mapped"))
         # Either side of the plan implies the other: a planned rate over
         # the volume is the planned hours, and vice versa. Storing both
         # means the page never has to re-derive it and get it subtly
@@ -4762,16 +4812,17 @@ def ingest_process_volume_csv(file_bytes, filename, uploaded_by=None):
         fc = _clean(row.get("fc")) or get_current_site()
         cur.execute(
             """INSERT INTO process_volume (fc, work_date, shift, process, units, hours,
-                                           plan_rate, plan_hours,
+                                           plan_rate, plan_hours, plan_units, department,
                                            source, uploaded_by, uploaded_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT (fc, work_date, shift, process) DO UPDATE SET
                  units=excluded.units, hours=excluded.hours,
                  plan_rate=excluded.plan_rate, plan_hours=excluded.plan_hours,
+                 plan_units=excluded.plan_units, department=excluded.department,
                  source=excluded.source,
                  uploaded_by=excluded.uploaded_by, uploaded_at=excluded.uploaded_at""",
             (fc, work_date, shift, process, units, hours, plan_rate, plan_hours,
-             filename, uploaded_by, now))
+             plan_units, department, filename, uploaded_by, now))
         loaded += 1
     cur.execute(
         "INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
@@ -10511,3 +10562,247 @@ def decide_role_request(request_id, approve, decided_by, role_if_approved=None):
         )
         conn.commit()
         conn.close()
+
+
+# ====================================================================
+# Cross-training planning data: roster, shift calendar, associate day
+#
+# Three of the five inputs the cross-training standards evaluation
+# reads (the other two, Hours on Function and process volume, have their
+# own ingesters above). The shapes are written down for a site in
+# LDIS_Day_Plan_Data_Spec.md, and the downloadable templates on the Data
+# Upload tab are generated from the same sample the page can show, so a
+# file built from a template always loads.
+# ====================================================================
+
+def _roster_date(value):
+    """The roster writes dates as 'Tue Nov 03 00:00:00 UTC 2026' — Java's
+    Date.toString — which none of the spreadsheet shapes match."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%a %b %d %H:%M:%S UTC %Y", "%a %b %d %H:%M:%S %Z %Y"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return _volume_date(text)
+
+
+def ingest_roster_csv(file_bytes, filename, uploaded_by=None):
+    """The employee roster (employeeList export). Full replace: the file
+    is the list of who is employed today, so anyone it no longer contains
+    has left and must stop counting as available.
+
+    Home department is deliberately NOT taken from here. The roster's
+    Department ID is a cost centre — at SCN2 one code covers RSP, Pack
+    Multis, Ship Dock and Pack Singles — so home department comes from
+    Hours on Function's 'fclm mapped', which the roster's Management Area
+    ID agrees with one-for-one. Both IDs are stored for reference."""
+    text = file_bytes.decode("utf-8-sig")
+    rows = []
+    skipped = 0
+    for raw in csv.DictReader(io.StringIO(text)):
+        row = _ci_row(raw)
+        login = (_clean(row.get("user id") or row.get("employee login") or row.get("login")) or "").lower()
+        if not login:
+            skipped += 1
+            continue
+        pattern = _clean(row.get("shift pattern") or row.get("shift"))
+        rows.append((login, _clean(row.get("employee id")), _clean(row.get("employee name") or row.get("name")),
+                     _clean(row.get("department id")), _clean(row.get("management area id")),
+                     pattern, _derive_shift(pattern), _clean(row.get("employment type")),
+                     _clean(row.get("job title")), _roster_date(row.get("employment start date")),
+                     _clean(row.get("employee status")) or "Active", _clean(row.get("manager name"))))
+    if not rows:
+        # An empty or unreadable file is not "everybody left". Replacing
+        # with nothing would mark the whole site unavailable.
+        raise ValueError("no rows with a User ID were found — is this the employee list export?")
+    conn = get_db()
+    now = _now()
+    conn.execute("DELETE FROM employee_roster")
+    seen = set()
+    for row in rows:
+        if row[0] in seen:
+            continue
+        seen.add(row[0])
+        conn.execute(
+            "INSERT INTO employee_roster (employee_login, employee_id, full_name, department_id, "
+            "management_area_id, shift_pattern, shift, employment_type, job_title, start_date, "
+            "status, manager_name, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row + (now,))
+    conn.execute("INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
+                 (filename, "employee_roster", now, len(seen)))
+    conn.commit()
+    conn.close()
+    return {"loaded": len(seen), "skipped": skipped}
+
+
+def _calendar_stamp(value):
+    text = (value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y %H:%M"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def ingest_shift_calendar_csv(file_bytes, filename, uploaded_by=None):
+    """The SSPOT shift calendar: one row per cohort per working day.
+
+    A cohort is a shift pattern code plus a side — 'L58F12XE-OB' — and a
+    day off is a day with no row, which is why this is an upsert per
+    (cohort, day) rather than a replace: a file covering next month must
+    not delete the history the evaluation replays. A night belongs to the
+    calendar day it starts on, which is how the export already writes it."""
+    text = file_bytes.decode("utf-8-sig")
+    conn = get_db()
+    now = _now()
+    loaded, skipped = 0, 0
+    first, last = None, None
+    for raw in csv.DictReader(io.StringIO(text)):
+        row = _ci_row(raw)
+        cohort = _clean(row.get("cohort"))
+        day = _volume_date(row.get("calendar day") or row.get("date"))
+        start = _calendar_stamp(row.get("start time"))
+        end = _calendar_stamp(row.get("end time"))
+        if not cohort or not day:
+            skipped += 1
+            continue
+        code, _, side = cohort.rpartition("-")
+        if not code:
+            code, side = cohort, ""
+        hours = round((end - start).total_seconds() / 3600, 2) if start and end and end > start else None
+        conn.execute(
+            "INSERT INTO shift_calendar (cohort, work_date, shift_code, side, shift, pattern, "
+            "main_process, start_at, end_at, hours, source, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (cohort, work_date) DO UPDATE SET shift_code=excluded.shift_code, "
+            "side=excluded.side, shift=excluded.shift, pattern=excluded.pattern, "
+            "main_process=excluded.main_process, start_at=excluded.start_at, end_at=excluded.end_at, "
+            "hours=excluded.hours, source=excluded.source, uploaded_at=excluded.uploaded_at",
+            (cohort, day, code, side, _derive_shift(code), _clean(row.get("shift pattern")),
+             _clean(row.get("main process")), start.isoformat(sep=" ") if start else None,
+             end.isoformat(sep=" ") if end else None, hours, filename, now))
+        loaded += 1
+        first = min(first or day, day)
+        last = max(last or day, day)
+    conn.execute("INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
+                 (filename, "shift_calendar", now, loaded))
+    conn.commit()
+    conn.close()
+    return {"loaded": loaded, "skipped": skipped, "first_day": first, "last_day": last}
+
+
+def get_function_process_map():
+    """FCLM function name -> process, for associate-day files that carry
+    FCLM's own function names (MultiLowDensityPick, RF Pick) instead of
+    the Merged Functions vocabulary. Kept as one setting: it is a short
+    list a manager edits, not data."""
+    raw = get_app_setting("xt_function_process_map") or "{}"
+    try:
+        value = json.loads(raw)
+        return {str(k).strip().lower(): str(v).strip() for k, v in value.items() if v}
+    except (ValueError, AttributeError):
+        return {}
+
+
+def ingest_associate_day_csv(file_bytes, filename, uploaded_by=None):
+    """Units and hours per associate, per process, per shift, per day.
+
+    Replaces the days the file covers and nothing else: re-sending a
+    corrected day must drop a row the correction no longer contains (a
+    labour move booked against the wrong process), while the weeks before
+    it stay. Rows whose process cannot be named — no process column and
+    an FCLM function with no mapping — are counted and reported by name,
+    never loaded under a guess."""
+    text = file_bytes.decode("utf-8-sig")
+    mapping = get_function_process_map()
+    prepared, skipped, unmapped = {}, 0, {}
+    for raw in csv.DictReader(io.StringIO(text)):
+        row = _ci_row(raw)
+        day = _volume_date(row.get("date") or row.get("work_date"))
+        shift = _volume_shift(row.get("shift"))
+        login = (_clean(row.get("employee_login") or row.get("employee login") or row.get("login")
+                        or row.get("user id")) or "").lower()
+        function = _clean(row.get("fclm_function") or row.get("fclm function") or row.get("function"))
+        process = _clean(row.get("process") or row.get("merged function") or row.get("merged functions"))
+        if not process and function:
+            process = mapping.get(function.lower())
+            if not process:
+                unmapped[function] = unmapped.get(function, 0) + 1
+                continue
+        if not day or not shift or not login or not process:
+            skipped += 1
+            continue
+        key = (day, shift, login, process)
+        units = _as_number(row.get("units")) or 0.0
+        hours = _as_number(row.get("hours") or row.get("paid hours")) or 0.0
+        # The same person on the same process twice in one file (two FCLM
+        # functions that map to one process) is one row of work.
+        if key in prepared:
+            prepared[key] = (prepared[key][0], prepared[key][1] + units, prepared[key][2] + hours)
+        else:
+            prepared[key] = (function, units, hours)
+    conn = get_db()
+    now = _now()
+    days = sorted({k[0] for k in prepared})
+    for day in days:
+        conn.execute("DELETE FROM associate_day WHERE work_date = ?", (day,))
+    for (day, shift, login, process), (function, units, hours) in prepared.items():
+        conn.execute(
+            "INSERT INTO associate_day (work_date, shift, employee_login, process, fclm_function, "
+            "units, hours, source, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (day, shift, login, process, function, units, hours, filename, now))
+    conn.execute("INSERT INTO uploads (filename, section, uploaded_at, row_count) VALUES (?,?,?,?)",
+                 (filename, "associate_day", now, len(prepared)))
+    conn.commit()
+    conn.close()
+    return {"loaded": len(prepared), "skipped": skipped, "days": len(days),
+            "first_day": days[0] if days else None, "last_day": days[-1] if days else None,
+            "unmapped": sorted(unmapped.items(), key=lambda kv: -kv[1])}
+
+
+def planning_data_status():
+    """What each of the five inputs holds, for the upload cards and the
+    page's readiness line."""
+    conn = get_db()
+
+    def one(sql):
+        return dict(conn.execute(sql).fetchone())
+    status = {
+        "roster": one("SELECT COUNT(*) AS n, MAX(updated_at) AS updated FROM employee_roster"),
+        "hours": one("SELECT COUNT(DISTINCT employee_login) AS n, MAX(updated_at) AS updated FROM xt_hours"),
+        "calendar": one("SELECT COUNT(*) AS n, MIN(work_date) AS first_day, MAX(work_date) AS last_day "
+                        "FROM shift_calendar"),
+        "process_day": one("SELECT COUNT(*) AS n, MIN(work_date) AS first_day, MAX(work_date) AS last_day, "
+                           "SUM(CASE WHEN plan_units IS NOT NULL THEN 1 ELSE 0 END) AS with_plan "
+                           "FROM process_volume"),
+        "associate_day": one("SELECT COUNT(*) AS n, MIN(work_date) AS first_day, MAX(work_date) AS last_day "
+                             "FROM associate_day"),
+    }
+    conn.close()
+    return status
+
+
+def load_planning_data(since=None):
+    """Everything the standards evaluation reads, as plain rows. The
+    evaluation itself (xt_planning.py) is pure arithmetic over these, so
+    the in-memory sample and a site's real tables go through one path."""
+    conn = get_db()
+    roster = [dict(r) for r in conn.execute(
+        "SELECT employee_login, shift_pattern, shift FROM employee_roster").fetchall()]
+    hours = [dict(r) for r in conn.execute(
+        "SELECT LOWER(employee_login) AS employee_login, fclm_mapped, merged_function, "
+        "trained_status, shift_pattern, shift FROM xt_hours WHERE employee_login IS NOT NULL").fetchall()]
+    params = (since,) if since else ()
+    where = " WHERE work_date >= ?" if since else ""
+    calendar = [dict(r) for r in conn.execute(
+        "SELECT shift_code, side, shift, work_date, hours FROM shift_calendar" + where, params).fetchall()]
+    process_day = [dict(r) for r in conn.execute(
+        "SELECT work_date, shift, process, department, units, hours, plan_units, plan_rate "
+        "FROM process_volume" + where, params).fetchall()]
+    associate_day = [dict(r) for r in conn.execute(
+        "SELECT work_date, shift, employee_login, process, units, hours FROM associate_day" + where, params).fetchall()]
+    conn.close()
+    return {"roster": roster, "hours": hours, "calendar": calendar,
+            "process_day": process_day, "associate_day": associate_day}

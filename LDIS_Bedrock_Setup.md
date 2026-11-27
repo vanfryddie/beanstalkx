@@ -1,117 +1,164 @@
-# Setting up Amazon Bedrock for the Cross Learning Model
+# Setting up Amazon Bedrock for LDIS — a click-by-click guide
 
-This switches on the generated explanations on
-**Cross Training → Cross Learning Model**. Until it is set up, the tab works
-exactly as before, plus two new sections that need no model at all: the
-target review ("Are the targets right?") and the forecast form ("Plan for a
-forecast").
+This switches on the **generated explanations** in LDIS: the "Why change
+these standards?" panel on **Cross Training → Cross Learning Model**,
+and the generated readings further down that tab. Without it, everything
+still works. The panel then shows the computed evidence instead of
+written explanations.
 
-Everything below happens in the AWS console of **the account and region the
-Elastic Beanstalk environment runs in**. Allow about 30 minutes, most of it
-waiting for model access.
+You do not need to know AWS. Follow the steps in order, and stop at the
+checkpoints (✅) to confirm each step worked before moving on.
 
-> **About the button names.** This guide was written without access to the
-> AWS documentation or your console, so menu labels may differ slightly from
-> what you see. Every step that matters is checked by a script you run on the
-> server (step 6), which reports what your account actually allows. The AWS
-> CLI commands below report the same facts and do not depend on the console
-> layout.
+**Time:** about 30–45 minutes, mostly waiting for AWS.
+**You need:** a login to the AWS console for the account that runs LDIS,
+with permission to change IAM roles and Elastic Beanstalk settings (an
+administrator usually has this). You also need the new LDIS zip file.
+
+> **A note on button names.** AWS renames and moves console buttons from
+> time to time. If a button is not exactly where this guide says, look
+> for the same words nearby, or use the search box at the top of the
+> console. Step 7 runs a check script on the server that reports what is
+> wrong in plain words, so a mislabelled button cannot leave you guessing.
 
 ---
 
 ## Which model, and why
 
-**Use Claude Opus 5.5 (Anthropic)**, through an inference profile in your
-geography (`eu.` if your environment is in an EU region).
+**Use Claude Opus 5.5.** If your account does not offer it, use
+**Claude Sonnet 5.5** instead.
 
-- **The job is judgement, not volume.** The model weighs 60 paths of
-  targets, rates, hours and department shares, then argues for a reading. How
-  well it reasons is what the feature is for. Opus is Anthropic's strongest
-  general model below the far more expensive Fable tier.
-- **The volume is tiny.** A review runs only when the data behind the tab
-  changes. Answers are cached for 12 hours, and a forecast is one short call.
-  Expect a few calls a day, so the price difference between models hardly
-  matters. Bedrock prices its own per-token rates; check the Bedrock pricing
-  page for your region.
-- **The fallback is Claude Sonnet 5.5.** If Opus 5.5 is not offered in your
-  region, or access is slow to come through, Sonnet 5.5 is faster and
-  cheaper. Switching is one environment property (step 5); no code changes.
-- **Not Haiku.** It is good at short classification, but weaker at the
-  multi-factor argument this tab exists to show.
-- **Not Fable.** It is several times the price, for a task that does not
-  need it.
-
-Do not type a model id from this page or from memory. Bedrock ids are
-region-prefixed and they change. Copy the id your account shows you (step 3).
+- The job is to weigh dozens of figures (targets, rates, hours,
+  department shares) and argue for a change in a way a manager can check.
+  That is reasoning, and Opus is Anthropic's strongest general model for
+  it.
+- LDIS calls it rarely: once when the data changes, then it reuses the
+  answer for 12 hours. Cost per call barely matters at that volume. For
+  prices, search "Amazon Bedrock pricing" and look at your region.
+- Sonnet 5.5 is faster and cheaper, and good enough if Opus is not
+  available. Switching later is one setting (step 5); no code changes.
 
 ---
 
-## Step 1 — Find the environment's region and instance role
+## Step 1 — Find your LDIS environment's region and its role
 
-1. Open **Elastic Beanstalk** → **Environments** → your LDIS environment.
-2. The **region** is in the top-right corner of the console (for example
-   *Europe (Ireland) eu-west-1*). Use this same region for every step below.
-3. Open **Configuration** → **Service access**. Note the **EC2 instance
-   profile**. On most environments it is `aws-elasticbeanstalk-ec2-role`.
-   This is the identity the app calls Bedrock as.
+1. Sign in to the AWS console.
+2. Click the **search box at the top** of the page, type **Elastic
+   Beanstalk**, and click **Elastic Beanstalk** in the results.
+3. In the left menu click **Environments**. Click the **name** of your
+   LDIS environment in the list.
+4. **Write down the region.** It is in the **top-right corner** of the
+   console, next to your account name, for example *Europe (Ireland)*.
+   Click it to see the code, for example `eu-west-1`. Write down the code.
+   **Every step below happens in this same region.** If the region ever
+   changes in the top-right corner, change it back.
+5. In the left menu, under your environment's name, click
+   **Configuration**.
+6. Find the box called **Service access** (on some consoles: *Security*).
+   **Write down the "EC2 instance profile".** It is usually
+   `aws-elasticbeanstalk-ec2-role`. This is the identity LDIS uses to
+   call AWS.
+7. **Write down your account ID.** Click your account name in the
+   **top-right corner**. The 12-digit number in the menu is your account
+   ID.
 
-## Step 2 — Get access to the model
+✅ You have: a region code, an instance profile name, and a 12-digit
+account ID.
 
-1. Open **Amazon Bedrock** in that region.
-2. Find **Model access** in the left menu (on newer consoles it may sit under
-   *Configure* or *Bedrock configurations*).
-   - **If there is a Model access page:** choose *Modify model access* or
-     *Request access*, tick **Anthropic → Claude Opus 5.5** (and **Claude
-     Sonnet 5.5** as the fallback), and submit.
-   - **If there is no such page,** your console grants access to serverless
-     models on first use. Nothing to tick. Step 4's optional Marketplace
-     statement may be needed once instead.
-3. **Anthropic asks once per account for a short use-case form.** If the
-   console prompts for it, fill it in: a company name, a website, and a
-   sentence such as *"Internal learning & development analytics: explaining
-   cross-training headcount targets to site managers."*
-4. Wait until the model shows **Access granted** (usually minutes, sometimes
-   longer).
+## Step 2 — Get access to the Claude model
 
-## Step 3 — Copy the inference profile id
+1. Click the **search box at the top**, type **Bedrock**, and click
+   **Amazon Bedrock**.
+2. Check the **top-right corner** still shows the region from step 1.
+3. In the **left menu**, scroll to the bottom and click **Model access**.
+   It may sit under a heading such as *Bedrock configurations* or
+   *Configure and learn*. If the menu is collapsed, click the **☰** icon
+   at the top left first.
 
-Current Claude models are served through **inference profiles**, ids that
-start with a geography prefix such as `eu.`, `us.`, `apac.` or `global.`.
-A bare model id gets refused with an "on-demand throughput isn't supported"
-error.
+   **If you see a Model access page:**
 
-1. In Bedrock, open **Cross-region inference** (sometimes under *Infer* or
-   *Inference profiles*).
-2. Find **Claude Opus 5.5**. Prefer the profile for your own geography, for
-   example `eu.` for an EU region. A `global.` profile may route requests to
-   any AWS region worldwide. The app sends no names or logins (only rates,
-   hours, targets and department names), but staying in-geography is the
-   cleaner choice for an EU site.
-3. Copy two things: the **inference profile ID** and its **ARN**.
+   4. Click **Modify model access** (or **Enable specific models**, or
+      **Manage model access**).
+   5. Scroll to **Anthropic**. Tick **Claude Opus 5.5**, and also
+      **Claude Sonnet 5.5** as a fallback.
+   6. Click **Next** at the bottom.
+   7. If a form asks for **use case details** (Anthropic asks once per
+      account), fill it in:
+      - Company name: your company
+      - Company website: your company's site
+      - Intended users: *Internal employees*
+      - Use case: *Internal learning & development analytics: explaining
+        cross-training headcount targets to site managers.*
 
-Or from CloudShell (the `>_` icon in the console header), in the same region:
+      Click **Submit**.
+   8. Click **Submit** (or **Save changes**) on the review page.
+   9. Wait. Refresh the page every few minutes until **Access status**
+      for the models says **Access granted**. This usually takes minutes,
+      sometimes longer.
+
+   **If there is no Model access page:** your account turns on models
+   automatically the first time they are used. Skip to step 3. If step 7
+   later reports `marketplace`, step 4 explains the one extra permission
+   needed.
+
+✅ Claude Opus 5.5 shows **Access granted**, or there was no Model access
+page at all.
+
+## Step 3 — Copy the inference profile ID
+
+Current Claude models are called through an **inference profile**: an
+ID that starts with a geography, such as `eu.`, `us.`, `apac.` or
+`global.`.
+
+1. Still in Amazon Bedrock, in the **left menu** click
+   **Cross-region inference** (it may sit under *Infer* or *Inference
+   and assessment*).
+2. In the list, find the row for **Claude Opus 5.5**.
+   - **For an EU region, pick the profile whose ID starts with `eu.`**.
+     It keeps requests inside EU regions. One starting `global.` may send
+     them to any AWS region in the world. LDIS sends no names or logins
+     to the model, only figures and department names, but staying in the
+     EU is the cleaner choice for an EU site.
+3. Click the profile's name. **Copy and save two things:**
+   - the **Inference profile ID**, for example something starting with
+     `eu.anthropic.`;
+   - the **Inference profile ARN**, a long line starting with
+     `arn:aws:bedrock:`.
+4. On the same page, find the list of **models** or **destination
+   regions** the profile sends requests to, and **copy every model ARN**
+   it shows. Each one looks like
+   `arn:aws:bedrock:eu-west-3::foundation-model/…`.
+
+**If you cannot find those ARNs on the page,** use CloudShell instead:
+
+1. Click the **CloudShell icon** (a small `>_` square) in the **top bar**
+   of the console. A terminal opens at the bottom of the screen; the first
+   time takes about a minute.
+2. Paste this and press Enter (it lists the Claude profiles):
 
 ```bash
 aws bedrock list-inference-profiles --query "inferenceProfileSummaries[?contains(inferenceProfileId, 'anthropic')].[inferenceProfileId,inferenceProfileArn]" --output table
 ```
 
-Then list the model ARNs that profile routes to. You need them in step 4:
+3. Then paste this, replacing `PASTE_PROFILE_ID` with the ID you chose,
+   and press Enter (it lists the model ARNs for step 4):
 
 ```bash
 aws bedrock get-inference-profile --inference-profile-identifier PASTE_PROFILE_ID --query "models[].modelArn" --output text
 ```
 
-## Step 4 — Let the instance role call it
+✅ You have saved: one profile ID, one profile ARN, and one or more model
+ARNs.
 
-1. Open **IAM** → **Roles** → the role from step 1
-   (`aws-elasticbeanstalk-ec2-role`).
-2. **Add permissions** → **Create inline policy** → **JSON**, and paste the
-   policy below. Replace the placeholders:
-   - `PROFILE_ARN`: the inference profile ARN from step 3.
-   - The `foundation-model` lines: every ARN the `get-inference-profile`
-     command printed. A cross-region profile forwards each request to the
-     model in one of several regions, so the role needs the model in each of
-     them, not only your own.
+## Step 4 — Allow LDIS to call the model
+
+1. Click the **search box at the top**, type **IAM**, and click **IAM**.
+2. In the left menu click **Roles**.
+3. In the role list's search box, type the instance profile name from
+   step 1 (usually `aws-elasticbeanstalk-ec2-role`) and click it.
+4. Find the **Permissions** tab (it is open by default). Click the
+   **Add permissions** button, then **Create inline policy**.
+5. At the top of the policy editor, click **JSON**.
+6. **Delete everything** in the editor box and paste this:
 
 ```json
 {
@@ -122,9 +169,9 @@ aws bedrock get-inference-profile --inference-profile-identifier PASTE_PROFILE_I
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
       "Resource": [
-        "PROFILE_ARN",
-        "arn:aws:bedrock:REGION_1::foundation-model/MODEL_ID",
-        "arn:aws:bedrock:REGION_2::foundation-model/MODEL_ID"
+        "PASTE_PROFILE_ARN",
+        "PASTE_MODEL_ARN_1",
+        "PASTE_MODEL_ARN_2"
       ]
     },
     {
@@ -141,15 +188,32 @@ aws bedrock get-inference-profile --inference-profile-identifier PASTE_PROFILE_I
 }
 ```
 
-3. Name it `ldis-bedrock-invoke` and save.
+7. Replace the placeholders, keeping the quotation marks:
+   - `PASTE_PROFILE_ARN`: the profile ARN from step 3.
+   - `PASTE_MODEL_ARN_1`, `PASTE_MODEL_ARN_2`: the model ARNs from step 3,
+     one per line. Add a line for each extra ARN (with a comma after every
+     line except the last), or delete the spare line if there is only one.
+     **The role needs every model ARN the profile lists.** A cross-region
+     profile forwards each request to one of several regions, so a missing
+     region makes calls fail some of the time.
+8. Click **Next** at the bottom.
+9. In **Policy name**, type `ldis-bedrock-invoke`.
+10. Click **Create policy**.
 
-The second statement only lets the step 6 probe list what the account offers.
-It is read-only, and you can remove it once everything works.
+The second block only lets the step 7 check list which models your
+account offers. It reads, it changes nothing, and you can delete it once
+everything works.
 
-**Optional, only if the probe reports `marketplace`:** on accounts where
-access is granted on first use, the first call subscribes the account to the
-model through AWS Marketplace. To allow that once, add this statement, run
-the probe again, then delete the statement:
+✅ The role's Permissions tab now lists `ldis-bedrock-invoke`.
+
+**Only if step 7 later says `marketplace`:** on accounts where models
+switch on at first use, that first call subscribes the account through
+AWS Marketplace, which needs two more permissions once:
+
+1. Go back to this role → **Permissions** → click `ldis-bedrock-invoke` →
+   **Edit** → **JSON**.
+2. Inside the `"Statement": [ … ]` list, after the last `}` of the second
+   block, type a comma and paste:
 
 ```json
 {
@@ -160,106 +224,143 @@ the probe again, then delete the statement:
 }
 ```
 
-## Step 5 — Tell the app which model to use
+3. **Next** → **Save changes**. Run step 7 again. Once it says OK, remove
+   this block the same way.
 
-1. **Elastic Beanstalk** → your environment → **Configuration** →
-   **Updates, monitoring, and logging** → **Edit** → scroll to
-   **Environment properties**.
-2. Add:
+## Step 5 — Tell LDIS which model to use
+
+1. Go back to **Elastic Beanstalk** (search box at the top) →
+   **Environments** → click your LDIS environment.
+2. In the left menu click **Configuration**.
+3. Find the box **Updates, monitoring, and logging** and click its
+   **Edit** button.
+4. Scroll down to **Environment properties**.
+5. Click **Add environment property** and fill in:
 
 | Name | Value |
 |---|---|
-| `LDIS_BEDROCK_MODEL_ID` | the inference profile **ID** from step 3, e.g. what starts `eu.anthropic.` |
-| `AWS_REGION` | the region from step 1, e.g. `eu-west-1`, if not already set |
+| `LDIS_BEDROCK_MODEL_ID` | the **profile ID** from step 3 (not the ARN) |
 
-3. **Apply.** The environment restarts with the new values.
+6. **If there is no `AWS_REGION` row already**, click **Add environment
+   property** again and add:
 
-Optional properties (leave unset unless needed):
+| Name | Value |
+|---|---|
+| `AWS_REGION` | the region code from step 1, for example `eu-west-1` |
 
-| Name | Default | When to set it |
-|---|---|---|
-| `LDIS_BEDROCK_TIMEOUT` | `60` | Seconds to wait for an answer. Keep it under 100: gunicorn stops a worker at 120. |
-| `LDIS_BEDROCK_ANTHROPIC_VERSION` | `bedrock-2023-05-31` | Only if the probe's log shows Bedrock rejecting the `anthropic_version` field. |
+7. Scroll to the bottom and click **Apply**.
+8. Wait. The environment shows **Updating** with a spinner, then turns
+   back to **Ok** (green). That takes a few minutes.
 
-> **About `AWS_REGION`:** the app's S3 client reads the same variable, and
-> falls back to `us-east-1` when it is unset. If the S3 bucket is in the
-> environment's region (the usual case), setting it is correct for both. After
-> applying, upload and download one file to confirm S3 still works.
+> **About `AWS_REGION`:** LDIS's file storage (S3) reads the same
+> setting, and without it falls back to `us-east-1`. If your S3 bucket is
+> in the environment's region (the usual case), this is correct for both.
+> After step 6, upload and download any one file in LDIS to confirm file
+> storage still works.
 
-To switch off the generated explanations, delete `LDIS_BEDROCK_MODEL_ID`.
-To switch model, change it.
+✅ The environment is green again, and the two properties appear under
+Environment properties.
 
-## Step 6 — Deploy, then prove it from the server
+## Step 6 — Deploy the new LDIS version
 
-1. Deploy the new zip: **Elastic Beanstalk** → environment → **Upload and
-   deploy**.
-2. Open a shell on the instance, with `eb ssh` or with **EC2 → the instance →
-   Connect → Session Manager**. Then:
+1. In Elastic Beanstalk, click your environment's name to open its
+   overview page.
+2. Click **Upload and deploy**.
+3. Click **Choose file** and pick the new LDIS zip file.
+4. In **Version label**, type something you will recognise, for example
+   `ldis-xt-standards-2026-11-27`.
+5. Click **Deploy**.
+6. Wait for the environment to go back to **Ok** (green): a few minutes.
+
+✅ Green, and LDIS opens in your browser as normal.
+
+## Step 7 — Check it from the server
+
+This runs a small check on the LDIS server itself. It uses the role,
+region and model the app really uses, and it tells you in plain words
+which step, if any, is missing.
+
+1. Click the **search box at the top**, type **EC2**, and click **EC2**.
+2. In the left menu click **Instances**.
+3. Tick the box next to the instance whose **Name** is your LDIS
+   environment's name.
+4. Click the **Connect** button at the top.
+5. Click the **Session Manager** tab, then **Connect**. A black terminal
+   opens in a new browser tab.
+   - If Session Manager says it is not available, use the **EC2 Instance
+     Connect** tab and **Connect** instead. If neither works, ask whoever
+     manages the AWS account to run this step with `eb ssh`.
+6. In the terminal, paste each line and press Enter after each:
 
 ```bash
 sudo -i
 ```
 
 ```bash
-cd /var/app/current && source /var/app/venv/*/bin/activate && python3 perf/bedrock_probe.py
+cd /var/app/current && source /var/app/venv/*/bin/activate
 ```
 
-The probe reads the environment properties itself, prints the region, the
-role it runs as and the models and profiles the account offers, then makes
-one real call through the app's own code. It ends with one of:
+```bash
+python3 perf/bedrock_probe.py
+```
 
-| Result | What to do |
-|---|---|
-| `OK - the Cross Learning Model tab will show generated explanations.` | Done. |
-| `iam` | Step 4: the policy is missing, or names a different profile or model ARN. |
-| `model_access` | Step 2: access not granted yet, or the use-case form is outstanding. |
-| `marketplace` | Step 4's optional Marketplace statement, once. |
-| `needs_profile` | Step 3: `LDIS_BEDROCK_MODEL_ID` holds a bare model id. Use the profile id. |
-| `timeout` | Try again. If it repeats, the instance may have no route to `bedrock-runtime` (a private subnet needs a NAT gateway or a Bedrock VPC endpoint). |
+7. Read the **last line**:
 
-To try another id without changing the environment:
+| The check says | What it means | What to do |
+|---|---|---|
+| `OK - the Cross Learning Model tab will show generated explanations.` | Everything works. | Go to step 8. |
+| `iam` | The role may not call the model. | Step 4: check the policy is on the right role, and that every ARN is pasted exactly. |
+| `model_access` | The model is not switched on for the account. | Step 2: wait for "Access granted", or finish the use-case form. |
+| `marketplace` | First use needs the Marketplace permission. | The "Only if step 7 says marketplace" part of step 4, once. |
+| `needs_profile` | The setting holds a bare model ID. | Step 5: use the **profile ID** (starts `eu.`, `us.` and so on). |
+| `timeout` | No answer in time. | Run it again. If it repeats, the server may have no internet route to Bedrock. Ask whoever manages the network for a NAT gateway or a Bedrock VPC endpoint. |
+| `LDIS_BEDROCK_MODEL_ID is not set` | Step 5 did not apply. | Redo step 5 and wait for green. |
+
+The check also lists which Claude models and profiles your account
+offers. To try a different one without changing settings:
 
 ```bash
 python3 perf/bedrock_probe.py PASTE_ANOTHER_PROFILE_ID
 ```
 
-## Step 7 — Check the tab
+8. Type `exit` twice and close the tab.
 
-Open **Cross Training → Cross Learning Model**. The page loads as before.
-Within a minute:
+## Step 8 — See it in LDIS
 
-- an overview appears under **What it concluded**, marked *Generated
-  explanation*;
-- each card gets a dashed box with a judgement (*Target too high / too low /
-  About right*), the target the model suggests next to the computed one, and
-  its reasons;
-- the **Are the targets right?** table fills its *Generated reading* column;
-- a forecast you enter gets a generated recommendation: which department to
-  draw people from and why, or whether to raise home headcount instead.
+1. Open LDIS → **Cross Training** → **Cross Learning Model**.
+2. Until your own process-day and associate-day files are loaded, tick
+   **Sample data** to see the page working.
+3. Within a minute, entries in **Why change these standards?** change
+   from the computed evidence to short written explanations, each marked
+   **Generated**, and the footer reads **Amazon Bedrock explanations**.
 
-If something goes wrong, the page shows one quiet line ("No generated
-explanations: …") and everything else stays as it was. Server-side
-details are in **Logs → Request logs → Last 100 lines**: look for
-`Bedrock call failed (<reason>)`.
+If something goes wrong later, the page keeps the computed evidence and
+carries on. To see why:
+
+1. Elastic Beanstalk → your environment → **Logs** in the left menu.
+2. **Request logs** → **Last 100 lines** → **Download** (or the link that
+   appears).
+3. Look for a line containing `Bedrock call failed (`. The word in
+   brackets is one of the reasons in the table in step 7.
 
 ---
 
-## How it behaves, for reference
+## Switching it off, or changing model
 
-- **What is sent.** Per path: targets, trained counts, volume, hours, rate
-  against plan, the computed recommendation and how it was worked out, and
-  the hours by own department and by people cross-trained in, with
-  department names. **No associate names or logins.** A test fails if any are
-  ever added.
-- **What the model may change.** Nothing that is computed. Its suggested
-  target is shown *beside* the computed one, flagged when they differ. A
-  departure with no valid reason is discarded.
-- **What is checked.** Any sentence quoting a number the page does not
-  show is removed before display, and the page says how many were removed.
-  A department the forecast did not offer as a candidate is refused. A
-  judgement that contradicts its own suggested target is dropped.
-- **Speed.** The tab never waits for the model. The review is asked in
-  batches of 15 paths at once, so the wait is the slowest batch. Each answer
-  is cached for 12 hours per server process, until the data changes.
-- **When it fails.** Missing access, timeouts, throttling, refusals and
-  unreadable answers all leave the page as it was without the model.
+- **Off:** Step 5, delete the `LDIS_BEDROCK_MODEL_ID` row, **Apply**.
+  LDIS goes back to computed evidence only.
+- **Different model:** Step 5, change the value to another profile ID,
+  **Apply**. If the new model's profile lists different model ARNs, add
+  them to the policy in step 4.
+
+## What LDIS sends, and what it does with the answer
+
+- **Sent:** per proposed change, the figures the page already shows:
+  targets, coverage, replayed shifts, how often each department could
+  lend, rates, and department and process names. **No associate names or
+  logins.** A test fails if one is ever added.
+- **Checked:** any sentence from the model that quotes a number the page
+  did not compute is thrown away before display. The model words the
+  explanation; it never decides a target.
+- **When it fails:** missing access, timeouts and odd answers all leave
+  the page showing the computed evidence. The tab never waits on the model.

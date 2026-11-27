@@ -1,0 +1,34 @@
+{#- The five files the cross-training standards evaluation reads, in one
+    place, each with what it holds now. Two are exports a site already
+    has, the shift calendar is SSPOT's, and the last two are built for
+    this — with templates generated from the same sample the page shows,
+    so a file built from one always loads. -#}
+<div class="panel" id="planning-data">
+  <h2 class="panel-title">Cross-training planning data</h2>
+  <p style="font-size:12.5px; color:var(--text-lo); margin-top:-8px;">
+    The five files behind <a href="{{ url_for('cross_training', tab='model') }}">Cross Training → Cross Learning Model</a>.
+    Column names are read case-insensitively, and the exports can be uploaded as they come.
+    The full description is in <code>LDIS_Day_Plan_Data_Spec.md</code>.
+  </p>
+  <div class="xp-list">
+    {% for k in planning_kinds %}
+    {% set st = planning_status[k.status] %}
+    <div class="xp-row">
+      <div class="xp-what">
+        <strong>{{ loop.index }}. {{ k.label }}</strong> <span class="xi-dim">{{ k.export }}</span>
+        <span>{{ k.detail }} <em>{{ k.grain | capitalize }}.</em></span>
+        <span class="xp-state {{ 'is-loaded' if st.n else 'is-missing' }}">
+          {% if st.n %}{{ '{:,}'.format(st.n) }} {{ 'people' if k.key in ('roster', 'hours') else 'rows' }}{% if st.first_day %}, {{ st.first_day }} to {{ st.last_day }}{% endif %}{% if k.key == 'process_day' and st.n %} · {{ st.with_plan or 0 }} with planned units{% endif %}
+          {% else %}Not loaded yet{% endif %}
+        </span>
+      </div>
+      <form class="xp-form" method="POST" action="{{ url_for('xt_planning_upload') }}" enctype="multipart/form-data">
+        <input type="hidden" name="kind" value="{{ k.key }}">
+        <input type="file" name="file" accept=".csv" required aria-label="{{ k.label }} file">
+        <button class="btn btn-gold btn-sm" type="submit">Upload</button>
+        {% if k.template %}<a class="btn btn-ghost btn-sm" href="{{ url_for('xt_planning_template', kind=k.key) }}">Template</a>{% endif %}
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+</div>

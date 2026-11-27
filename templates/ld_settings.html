@@ -695,6 +695,8 @@
     </div>
   </div>
 
+  {% include "_xt_planning_uploads.html" %}
+
   <div class="panel">
     <h2 class="panel-title">Current data set</h2>
     <p style="color:var(--text-lo); font-size:13.5px;">{{ freshness.n or 0 }} rows imported via CSV so far{% if freshness.ts %}, last import {{ freshness.ts[:16].replace('T',' ') }} UTC{% endif %}. Cross-Training data: {{ xt_freshness.n or 0 }} rows{% if xt_freshness.ts %}, last import {{ xt_freshness.ts[:16].replace('T',' ') }} UTC{% endif %} — each upload fully replaces it (a census, not a delta). Manually-added single records aren't counted in the totals above but do feed the scorecards.</p>

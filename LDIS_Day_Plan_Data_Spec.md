@@ -151,6 +151,11 @@ On that example day, `examplb` (home department RSP, say) was a labour
 move. They are counted as a cross-trainee on Pack Singles for 3h at about
 97 an hour, and RSP lost those 3h from Pick.
 
+**Include indirect hours too**, as rows with process `Indirect` (or the
+indirect function's own name) and units 0. Someone who came in but was
+not needed on a direct process otherwise looks absent, so their
+department looks shorter than it was and lends less in the replay.
+
 **Do not add the home department, trained status or name to this file.**
 Those come from files 1 and 2 as they stood on the day. Repeating them per
 row only creates copies that drift out of date. The login is enough.
@@ -187,6 +192,14 @@ weekday instead of relying on a typed-in percentage.
 - **The shift calendar (1b)** should cover the same history as files 3
   and 4 (to replay past shifts) plus 4–6 weeks ahead (to plan). Re-sent
   days replace earlier ones.
+
+## Where the files go
+
+**L&D Settings → Data Upload → Cross-training planning data** lists all
+five, shows what each holds, and has an Upload button for each. Process
+day and associate day also have a **Template** button: a filled-in
+example built around your own standards, with invented people. Static
+copies are in `data_templates/` in the repository.
 
 ## Checks the tool will run on upload
 
@@ -278,9 +291,9 @@ target, gives coverage as a function of the target.
 
 | Verdict | Rule |
 |---|---|
-| **Keep · NN% coverage** | The current target reaches 95%, and no target lower by more than the band also reaches it. NN is the current target's coverage. |
+| **Keep · NN% coverage** | The current target reaches 95%, and no target lower by more than the band also reaches it. The band is 1 person or 10% of the target, whichever is larger. NN is the current target's coverage. |
 | **Increase to N** | The current target is under 95%. N is the smallest target that reaches 95%. |
-| **Decrease to N** | A target lower by more than the band still reaches 95%. N is the smallest such. |
+| **Decrease to N** | A target lower by more than the band still reaches 95%. N is the smallest such, but never below the most cross-trainees actually used on one shift in the window. |
 | **Switch to *source* · N** | Another department reaches 95% with the same or a smaller target, because it could spare people on more shifts. Shown with both departments' "could lend on k of n shifts". |
 | **Hire, don't train** | No target reaches 95%, even with every trained person in the source department, because the sources cannot spare people on enough shifts. The cell shows how many veterans P would need instead. |
 

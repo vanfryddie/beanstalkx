@@ -35,6 +35,8 @@
     The verdicts, targets and costs are the computed ones.{% if partial %} Some paths have no
     generated reading this time because part of the request did not come back.{% endif %}</p>
 </div>
+{% elif part == "why" %}
+<p><span class="clm-llm-tag">Generated</span> {{ text }}</p>
 {% elif part == "forecast" %}
 <div class="clm-llm">
   <div class="clm-llm-head"><span class="clm-llm-tag">Generated explanation</span>

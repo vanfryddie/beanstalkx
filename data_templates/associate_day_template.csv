@@ -1,0 +1,706 @@
+date,shift,employee_login,process,fclm_function,units,hours
+2026-11-29,early,smp00292,Pack Singles,,1228,8.75
+2026-11-29,early,smp00285,Pack Singles,,1310,8.75
+2026-11-29,early,smp00276,Pack Singles,,1194,8.75
+2026-11-29,early,smp00277,Pack Singles,,1230,8.75
+2026-11-29,early,smp00282,Pack Singles,,1214,8.75
+2026-11-29,early,smp00295,Pack Singles,,1303,8.75
+2026-11-29,early,smp00284,Pack Singles,,1340,8.75
+2026-11-29,early,smp00287,Pack Singles,,1130,8.75
+2026-11-29,early,smp00294,Pack Singles,,1346,8.75
+2026-11-29,early,smp00221,Pack Multis,,1138,8.75
+2026-11-29,early,smp00207,Pack Multis,,1165,8.75
+2026-11-29,early,smp00208,Pack Multis,,1294,8.75
+2026-11-29,early,smp00214,Pack Multis,,1323,8.75
+2026-11-29,early,smp00206,Pack Multis,,1189,8.75
+2026-11-29,early,smp00224,Pack Multis,,1212,8.75
+2026-11-29,early,smp00218,Pack Multis,,1338,8.75
+2026-11-29,early,smp00205,Pack Multis,,1168,8.75
+2026-11-29,early,smp00202,Pack Multis,,1285,8.75
+2026-11-29,early,smp00225,Pack Multis,,1243,8.75
+2026-11-29,early,smp00401,Pick,,1134,8.75
+2026-11-29,early,smp00388,Pick,,1346,8.75
+2026-11-29,early,smp00394,Pick,,1325,8.75
+2026-11-29,early,smp00420,Pick,,1185,8.75
+2026-11-29,early,smp00378,Pick,,1229,8.75
+2026-11-29,early,smp00418,Pick,,1165,8.75
+2026-11-29,early,smp00370,Pick,,1171,8.75
+2026-11-29,early,smp00392,Pick,,1309,8.75
+2026-11-29,early,smp00366,Pick,,1311,8.75
+2026-11-29,early,smp00415,Pick,,1159,8.75
+2026-11-29,early,smp00395,Pick,,1180,8.75
+2026-11-29,early,smp00413,Pick,,1171,8.75
+2026-11-29,early,smp00422,Pick,,1200,8.75
+2026-11-29,early,smp00402,Stow Each Nike,,917,8.75
+2026-11-29,early,smp00421,Stow Each Nike,,984,8.75
+2026-11-29,early,smp00424,Stow Each Nike,,892,8.75
+2026-11-29,early,smp00396,Stow Each Nike,,985,8.75
+2026-11-29,early,smp00387,Stow Each Nike,,1043,8.75
+2026-11-29,early,smp00406,Stow Each Nike,,939,8.75
+2026-11-29,early,smp00407,Stow Each Nike,,1002,8.75
+2026-11-29,early,smp00397,Stow Each Nike,,1029,8.75
+2026-11-29,early,smp00380,Stow Each Nike,,1054,8.75
+2026-11-29,early,smp00368,Stow Each Nike,,1049,8.75
+2026-11-29,early,smp00381,Stow Each Nike,,909,8.75
+2026-11-29,early,smp00426,Stow Each Nike,,911,8.75
+2026-11-29,early,smp00409,Stow Each Nike,,952,8.75
+2026-11-29,early,smp00412,Stow Each Nike,,888,8.75
+2026-11-29,early,smp00365,Stow Each Nike,,1009,8.75
+2026-11-29,early,smp00590,Each Receive,,1019,8.75
+2026-11-29,early,smp00564,Each Receive,,1041,8.75
+2026-11-29,early,smp00574,Each Receive,,997,8.75
+2026-11-29,early,smp00569,Each Receive,,952,8.75
+2026-11-29,early,smp00572,Each Receive,,917,8.75
+2026-11-29,early,smp00578,Each Receive,,975,8.75
+2026-11-29,early,smp00555,Each Receive,,929,8.75
+2026-11-29,early,smp00573,Each Receive,,982,8.75
+2026-11-29,early,smp00584,Each Receive,,916,8.75
+2026-11-29,early,smp00565,Each Receive,,1057,8.75
+2026-11-29,early,smp00570,Each Receive,,1046,8.75
+2026-11-29,early,smp00560,Each Receive,,928,8.75
+2026-11-29,early,smp00562,Each Receive,,980,8.75
+2026-11-29,early,smp00571,Each Receive,,972,8.75
+2026-11-29,early,smp00585,Each Receive,,1021,8.75
+2026-11-29,early,smp00580,Each Receive,,1032,8.75
+2026-11-29,early,smp00563,Each Receive,,918,8.75
+2026-11-29,early,smp00576,Each Receive,,1000,8.75
+2026-11-29,early,smp00577,Each Receive,,1021,8.75
+2026-11-29,early,smp00014,Chutings,,1138,8.75
+2026-11-29,early,smp00009,Chutings,,1260,8.75
+2026-11-29,early,smp00030,Chutings,,1324,8.75
+2026-11-29,early,smp00012,Chutings,,1227,8.75
+2026-11-29,early,smp00003,Chutings,,1242,8.75
+2026-11-29,early,smp00010,Chutings,,1152,8.75
+2026-11-29,early,smp00027,Chutings,,1289,8.75
+2026-11-29,early,smp00029,Chutings,,1152,8.75
+2026-11-29,early,smp00036,Chutings,,1252,8.75
+2026-11-29,early,smp00013,Chutings,,1172,8.75
+2026-11-29,early,smp00001,Chutings,,1342,8.75
+2026-11-29,early,smp00025,Chutings,,1347,8.75
+2026-11-29,early,smp00011,Chutings,,1265,8.75
+2026-11-29,early,smp00016,Chutings,,1154,8.75
+2026-11-29,early,smp00674,SLAM KO,,988,8.75
+2026-11-29,early,smp00681,SLAM KO,,923,8.75
+2026-11-29,early,smp00666,SLAM KO,,991,8.75
+2026-11-29,early,smp00663,SLAM KO,,949,8.75
+2026-11-29,early,smp00669,SLAM KO,,998,8.75
+2026-11-29,early,smp00685,SLAM KO,,914,8.75
+2026-11-29,early,smp00667,SLAM KO,,892,8.75
+2026-11-29,early,smp00683,SLAM KO,,917,8.75
+2026-11-29,early,smp00672,SLAM KO,,1006,8.75
+2026-11-29,early,smp00661,SLAM KO,,965,8.75
+2026-11-29,early,smp00664,SLAM KO,,944,8.75
+2026-11-29,early,smp00678,SLAM KO,,1032,8.75
+2026-11-29,early,smp00680,SLAM KO,,1021,8.75
+2026-11-29,early,smp00670,SLAM KO,,896,8.75
+2026-11-29,early,smp00118,OBPS work,,819,8.75
+2026-11-29,early,smp00115,OBPS work,,802,8.75
+2026-11-29,early,smp00125,OBPS work,,890,8.75
+2026-11-29,early,smp00130,OBPS work,,807,8.75
+2026-11-29,early,smp00105,OBPS work,,902,8.75
+2026-11-29,early,smp00099,OBPS work,,818,8.75
+2026-11-29,early,smp00112,OBPS work,,825,8.75
+2026-11-29,early,smp00120,OBPS work,,823,8.75
+2026-11-29,early,smp00127,OBPS work,,791,8.75
+2026-11-29,early,smp00107,OBPS work,,901,8.75
+2026-11-29,early,smp00128,OBPS work,,878,8.75
+2026-11-29,early,smp00106,OBPS work,,905,8.75
+2026-11-29,early,smp00109,OBPS work,,885,8.75
+2026-11-29,early,smp00032,Indirect,,0,8.75
+2026-11-29,early,smp00005,Indirect,,0,8.75
+2026-11-29,early,smp00015,Indirect,,0,8.75
+2026-11-29,early,smp00300,Indirect,,0,8.75
+2026-11-29,early,smp00293,Indirect,,0,8.75
+2026-11-29,early,smp00375,Indirect,,0,8.75
+2026-11-29,early,smp00227,Indirect,,0,8.75
+2026-11-29,early,smp00429,Indirect,,0,8.75
+2026-11-29,early,smp00022,Indirect,,0,8.75
+2026-11-29,early,smp00557,Indirect,,0,8.75
+2026-11-29,early,smp00385,Indirect,,0,8.75
+2026-11-29,early,smp00217,Indirect,,0,8.75
+2026-11-29,early,smp00428,Indirect,,0,8.75
+2026-11-29,early,smp00020,Indirect,,0,8.75
+2026-11-29,early,smp00673,Indirect,,0,8.75
+2026-11-29,early,smp00384,Indirect,,0,8.75
+2026-11-29,early,smp00111,Indirect,,0,8.75
+2026-11-29,early,smp00414,Indirect,,0,8.75
+2026-11-29,early,smp00203,Indirect,,0,8.75
+2026-11-29,early,smp00591,Indirect,,0,8.75
+2026-11-29,early,smp00593,Indirect,,0,8.75
+2026-11-29,early,smp00007,Indirect,,0,8.75
+2026-11-29,early,smp00376,Indirect,,0,8.75
+2026-11-29,early,smp00575,Indirect,,0,8.75
+2026-11-29,early,smp00559,Indirect,,0,8.75
+2026-11-29,early,smp00677,Indirect,,0,8.75
+2026-11-29,early,smp00108,Indirect,,0,8.75
+2026-11-29,early,smp00556,Indirect,,0,8.75
+2026-11-29,early,smp00423,Indirect,,0,8.75
+2026-11-29,early,smp00393,Indirect,,0,8.75
+2026-11-29,early,smp00419,Indirect,,0,8.75
+2026-11-29,early,smp00223,Indirect,,0,8.75
+2026-11-29,early,smp00373,Indirect,,0,8.75
+2026-11-29,early,smp00110,Indirect,,0,8.75
+2026-11-29,early,smp00579,Indirect,,0,8.75
+2026-11-29,early,smp00399,Indirect,,0,8.75
+2026-11-29,early,smp00561,Indirect,,0,8.75
+2026-11-29,early,smp00408,Indirect,,0,8.75
+2026-11-29,early,smp00019,Indirect,,0,8.75
+2026-11-29,early,smp00404,Indirect,,0,8.75
+2026-11-29,early,smp00098,Indirect,,0,8.75
+2026-11-29,early,smp00592,Indirect,,0,8.75
+2026-11-29,early,smp00114,Indirect,,0,8.75
+2026-11-29,early,smp00117,Indirect,,0,8.75
+2026-11-29,early,smp00100,Indirect,,0,8.75
+2026-11-29,early,smp00382,Indirect,,0,8.75
+2026-11-29,early,smp00210,Indirect,,0,8.75
+2026-11-29,early,smp00675,Indirect,,0,8.75
+2026-11-29,early,smp00586,Indirect,,0,8.75
+2026-11-29,early,smp00283,Indirect,,0,8.75
+2026-11-29,early,smp00211,Indirect,,0,8.75
+2026-11-29,early,smp00226,Indirect,,0,8.75
+2026-11-29,early,smp00035,Indirect,,0,8.75
+2026-11-29,early,smp00588,Indirect,,0,8.75
+2026-11-29,early,smp00676,Indirect,,0,8.75
+2026-11-29,early,smp00102,Indirect,,0,8.75
+2026-11-29,early,smp00568,Indirect,,0,8.75
+2026-11-29,early,smp00417,Indirect,,0,8.75
+2026-11-29,early,smp00405,Indirect,,0,8.75
+2026-11-29,early,smp00367,Indirect,,0,8.75
+2026-11-29,early,smp00372,Indirect,,0,8.75
+2026-11-29,early,smp00411,Indirect,,0,8.75
+2026-11-29,early,smp00123,Indirect,,0,8.75
+2026-11-29,early,smp00566,Indirect,,0,8.75
+2026-11-29,early,smp00216,Indirect,,0,8.75
+2026-11-29,early,smp00281,Indirect,,0,8.75
+2026-11-29,early,smp00386,Indirect,,0,8.75
+2026-11-29,early,smp00290,Indirect,,0,8.75
+2026-11-29,early,smp00212,Indirect,,0,8.75
+2026-11-29,early,smp00008,Indirect,,0,8.75
+2026-11-29,early,smp00028,Indirect,,0,8.75
+2026-11-29,early,smp00665,Indirect,,0,8.75
+2026-11-29,early,smp00126,Indirect,,0,8.75
+2026-11-29,early,smp00288,Indirect,,0,8.75
+2026-11-29,early,smp00291,Indirect,,0,8.75
+2026-11-29,early,smp00280,Indirect,,0,8.75
+2026-11-29,early,smp00006,Indirect,,0,8.75
+2026-11-29,early,smp00023,Indirect,,0,8.75
+2026-11-29,early,smp00554,Indirect,,0,8.75
+2026-11-29,early,smp00391,Indirect,,0,8.75
+2026-11-29,early,smp00026,Indirect,,0,8.75
+2026-11-29,early,smp00103,Indirect,,0,8.75
+2026-11-29,early,smp00034,Indirect,,0,8.75
+2026-11-29,early,smp00289,Indirect,,0,8.75
+2026-11-29,early,smp00390,Indirect,,0,8.75
+2026-11-29,early,smp00296,Indirect,,0,8.75
+2026-11-29,early,smp00286,Indirect,,0,8.75
+2026-11-29,early,smp00679,Indirect,,0,8.75
+2026-11-29,early,smp00119,Indirect,,0,8.75
+2026-11-29,early,smp00671,Indirect,,0,8.75
+2026-11-29,early,smp00567,Indirect,,0,8.75
+2026-11-29,early,smp00427,Indirect,,0,8.75
+2026-11-29,early,smp00024,Indirect,,0,8.75
+2026-11-29,early,smp00002,Indirect,,0,8.75
+2026-11-29,early,smp00097,Indirect,,0,8.75
+2026-11-29,early,smp00581,Indirect,,0,8.75
+2026-11-29,early,smp00122,Indirect,,0,8.75
+2026-11-29,early,smp00558,Indirect,,0,8.75
+2026-11-29,early,smp00297,Indirect,,0,8.75
+2026-11-29,early,smp00377,Indirect,,0,8.75
+2026-11-29,early,smp00400,Indirect,,0,8.75
+2026-11-29,early,smp00410,Indirect,,0,8.75
+2026-11-29,early,smp00124,Indirect,,0,8.75
+2026-11-29,early,smp00684,Indirect,,0,8.75
+2026-11-29,early,smp00662,Indirect,,0,8.75
+2026-11-29,early,smp00299,Indirect,,0,8.75
+2026-11-29,early,smp00116,Indirect,,0,8.75
+2026-11-29,early,smp00298,Indirect,,0,8.75
+2026-11-29,early,smp00018,Indirect,,0,8.75
+2026-11-29,early,smp00004,Indirect,,0,8.75
+2026-11-29,early,smp00215,Indirect,,0,8.75
+2026-11-29,early,smp00374,Indirect,,0,8.75
+2026-11-29,early,smp00279,Indirect,,0,8.75
+2026-11-29,early,smp00121,Indirect,,0,8.75
+2026-11-29,early,smp00389,Indirect,,0,8.75
+2026-11-29,early,smp00369,Indirect,,0,8.75
+2026-11-29,early,smp00371,Indirect,,0,8.75
+2026-11-29,early,smp00209,Indirect,,0,8.75
+2026-11-29,early,smp00204,Indirect,,0,8.75
+2026-11-29,early,smp00222,Indirect,,0,8.75
+2026-11-29,early,smp00033,Indirect,,0,8.75
+2026-11-29,early,smp00129,Indirect,,0,8.75
+2026-11-29,early,smp00219,Indirect,,0,8.75
+2026-11-29,early,smp00113,Indirect,,0,8.75
+2026-11-29,early,smp00430,Indirect,,0,8.75
+2026-11-29,early,smp00213,Indirect,,0,8.75
+2026-11-29,early,smp00104,Indirect,,0,8.75
+2026-11-29,early,smp00589,Indirect,,0,8.75
+2026-11-29,early,smp00582,Indirect,,0,8.75
+2026-11-29,early,smp00021,Indirect,,0,8.75
+2026-11-29,early,smp00383,Indirect,,0,8.75
+2026-11-29,early,smp00101,Indirect,,0,8.75
+2026-11-29,late,smp00301,Pack Singles,,1193,8.75
+2026-11-29,late,smp00306,Pack Singles,,1171,8.75
+2026-11-29,late,smp00311,Pack Singles,,1287,8.75
+2026-11-29,late,smp00327,Pack Singles,,1217,8.75
+2026-11-29,late,smp00307,Pack Singles,,1288,8.75
+2026-11-29,late,smp00318,Pack Singles,,1283,8.75
+2026-11-29,late,smp00322,Pack Singles,,1258,8.75
+2026-11-29,late,smp00326,Pack Singles,,1154,8.75
+2026-11-29,late,smp00325,Pack Singles,,1162,8.75
+2026-11-29,late,smp00317,Pack Singles,,1276,8.75
+2026-11-29,late,smp00320,Pack Singles,,1216,8.75
+2026-11-29,late,smp00244,Pack Multis,,1346,8.75
+2026-11-29,late,smp00235,Pack Multis,,1284,8.75
+2026-11-29,late,smp00231,Pack Multis,,1129,8.75
+2026-11-29,late,smp00242,Pack Multis,,1241,8.75
+2026-11-29,late,smp00234,Pack Multis,,1303,8.75
+2026-11-29,late,smp00248,Pack Multis,,1297,8.75
+2026-11-29,late,smp00240,Pack Multis,,1184,8.75
+2026-11-29,late,smp00239,Pack Multis,,1198,8.75
+2026-11-29,late,smp00233,Pack Multis,,1209,8.75
+2026-11-29,late,smp00230,Pack Multis,,1179,8.75
+2026-11-29,late,smp00237,Pack Multis,,1162,8.75
+2026-11-29,late,smp00247,Pack Multis,,1160,8.75
+2026-11-29,late,smp00462,Pick,,1280,8.75
+2026-11-29,late,smp00443,Pick,,1243,8.75
+2026-11-29,late,smp00476,Pick,,1292,8.75
+2026-11-29,late,smp00479,Pick,,1149,8.75
+2026-11-29,late,smp00454,Pick,,1194,8.75
+2026-11-29,late,smp00436,Pick,,1346,8.75
+2026-11-29,late,smp00444,Pick,,1243,8.75
+2026-11-29,late,smp00472,Pick,,1318,8.75
+2026-11-29,late,smp00439,Pick,,1217,8.75
+2026-11-29,late,smp00446,Pick,,1326,8.75
+2026-11-29,late,smp00438,Stow Each Nike,,1034,8.75
+2026-11-29,late,smp00478,Stow Each Nike,,1042,8.75
+2026-11-29,late,smp00433,Stow Each Nike,,1017,8.75
+2026-11-29,late,smp00463,Stow Each Nike,,977,8.75
+2026-11-29,late,smp00480,Stow Each Nike,,1023,8.75
+2026-11-29,late,smp00458,Stow Each Nike,,963,8.75
+2026-11-29,late,smp00449,Stow Each Nike,,1011,8.75
+2026-11-29,late,smp00470,Stow Each Nike,,1053,8.75
+2026-11-29,late,smp00481,Stow Each Nike,,907,8.75
+2026-11-29,late,smp00440,Stow Each Nike,,961,8.75
+2026-11-29,late,smp00441,Stow Each Nike,,984,8.75
+2026-11-29,late,smp00434,Stow Each Nike,,1016,8.75
+2026-11-29,late,smp00605,Each Receive,,889,8.75
+2026-11-29,late,smp00601,Each Receive,,985,8.75
+2026-11-29,late,smp00604,Each Receive,,912,8.75
+2026-11-29,late,smp00611,Each Receive,,898,8.75
+2026-11-29,late,smp00623,Each Receive,,931,8.75
+2026-11-29,late,smp00608,Each Receive,,962,8.75
+2026-11-29,late,smp00606,Each Receive,,971,8.75
+2026-11-29,late,smp00596,Each Receive,,986,8.75
+2026-11-29,late,smp00598,Each Receive,,892,8.75
+2026-11-29,late,smp00617,Each Receive,,911,8.75
+2026-11-29,late,smp00610,Each Receive,,1024,8.75
+2026-11-29,late,smp00619,Each Receive,,893,8.75
+2026-11-29,late,smp00620,Each Receive,,940,8.75
+2026-11-29,late,smp00600,Each Receive,,1009,8.75
+2026-11-29,late,smp00612,Each Receive,,1043,8.75
+2026-11-29,late,smp00607,Each Receive,,961,8.75
+2026-11-29,late,smp00603,Each Receive,,917,8.75
+2026-11-29,late,smp00613,Each Receive,,984,8.75
+2026-11-29,late,smp00053,Chutings,,1146,8.75
+2026-11-29,late,smp00065,Chutings,,1305,8.75
+2026-11-29,late,smp00043,Chutings,,1329,8.75
+2026-11-29,late,smp00049,Chutings,,1264,8.75
+2026-11-29,late,smp00060,Chutings,,1203,8.75
+2026-11-29,late,smp00037,Chutings,,1257,8.75
+2026-11-29,late,smp00055,Chutings,,1248,8.75
+2026-11-29,late,smp00057,Chutings,,1209,8.75
+2026-11-29,late,smp00071,Chutings,,1306,8.75
+2026-11-29,late,smp00066,Chutings,,1265,8.75
+2026-11-29,late,smp00061,Chutings,,1291,8.75
+2026-11-29,late,smp00042,Chutings,,1343,8.75
+2026-11-29,late,smp00052,Chutings,,1143,8.75
+2026-11-29,late,smp00069,Chutings,,1221,8.75
+2026-11-29,late,smp00064,Chutings,,1153,8.75
+2026-11-29,late,smp00045,Chutings,,1136,8.75
+2026-11-29,late,smp00699,SLAM KO,,933,8.75
+2026-11-29,late,smp00693,SLAM KO,,1035,8.75
+2026-11-29,late,smp00697,SLAM KO,,1005,8.75
+2026-11-29,late,smp00702,SLAM KO,,931,8.75
+2026-11-29,late,smp00716,SLAM KO,,952,8.75
+2026-11-29,late,smp00698,SLAM KO,,948,8.75
+2026-11-29,late,smp00696,SLAM KO,,898,8.75
+2026-11-29,late,smp00688,SLAM KO,,967,8.75
+2026-11-29,late,smp00689,SLAM KO,,939,8.75
+2026-11-29,late,smp00695,SLAM KO,,952,8.75
+2026-11-29,late,smp00713,SLAM KO,,1043,8.75
+2026-11-29,late,smp00709,SLAM KO,,1048,8.75
+2026-11-29,late,smp00691,SLAM KO,,1058,8.75
+2026-11-29,late,smp00715,SLAM KO,,941,8.75
+2026-11-29,late,smp00137,OBPS work,,885,8.75
+2026-11-29,late,smp00136,OBPS work,,862,8.75
+2026-11-29,late,smp00150,OBPS work,,801,8.75
+2026-11-29,late,smp00154,OBPS work,,879,8.75
+2026-11-29,late,smp00139,OBPS work,,847,8.75
+2026-11-29,late,smp00155,OBPS work,,824,8.75
+2026-11-29,late,smp00164,OBPS work,,826,8.75
+2026-11-29,late,smp00163,OBPS work,,902,8.75
+2026-11-29,late,smp00135,OBPS work,,909,8.75
+2026-11-29,late,smp00152,OBPS work,,879,8.75
+2026-11-29,late,smp00160,OBPS work,,845,8.75
+2026-11-29,late,smp00161,OBPS work,,873,8.75
+2026-11-29,late,smp00148,OBPS work,,876,8.75
+2026-11-29,late,smp00142,OBPS work,,777,8.75
+2026-11-29,late,smp00134,OBPS work,,850,8.75
+2026-11-29,late,smp00153,OBPS work,,843,8.75
+2026-11-29,late,smp00162,OBPS work,,871,8.75
+2026-11-29,late,smp00158,OBPS work,,865,8.75
+2026-11-29,late,smp00448,Indirect,,0,8.75
+2026-11-29,late,smp00465,Indirect,,0,8.75
+2026-11-29,late,smp00708,Indirect,,0,8.75
+2026-11-29,late,smp00166,Indirect,,0,8.75
+2026-11-29,late,smp00236,Indirect,,0,8.75
+2026-11-29,late,smp00308,Indirect,,0,8.75
+2026-11-29,late,smp00464,Indirect,,0,8.75
+2026-11-29,late,smp00595,Indirect,,0,8.75
+2026-11-29,late,smp00453,Indirect,,0,8.75
+2026-11-29,late,smp00044,Indirect,,0,8.75
+2026-11-29,late,smp00597,Indirect,,0,8.75
+2026-11-29,late,smp00599,Indirect,,0,8.75
+2026-11-29,late,smp00602,Indirect,,0,8.75
+2026-11-29,late,smp00063,Indirect,,0,8.75
+2026-11-29,late,smp00246,Indirect,,0,8.75
+2026-11-29,late,smp00250,Indirect,,0,8.75
+2026-11-29,late,smp00132,Indirect,,0,8.75
+2026-11-29,late,smp00467,Indirect,,0,8.75
+2026-11-29,late,smp00609,Indirect,,0,8.75
+2026-11-29,late,smp00312,Indirect,,0,8.75
+2026-11-29,late,smp00703,Indirect,,0,8.75
+2026-11-29,late,smp00437,Indirect,,0,8.75
+2026-11-29,late,smp00714,Indirect,,0,8.75
+2026-11-29,late,smp00243,Indirect,,0,8.75
+2026-11-29,late,smp00432,Indirect,,0,8.75
+2026-11-29,late,smp00302,Indirect,,0,8.75
+2026-11-29,late,smp00070,Indirect,,0,8.75
+2026-11-29,late,smp00461,Indirect,,0,8.75
+2026-11-29,late,smp00324,Indirect,,0,8.75
+2026-11-29,late,smp00232,Indirect,,0,8.75
+2026-11-29,late,smp00304,Indirect,,0,8.75
+2026-11-29,late,smp00614,Indirect,,0,8.75
+2026-11-29,late,smp00046,Indirect,,0,8.75
+2026-11-29,late,smp00241,Indirect,,0,8.75
+2026-11-29,late,smp00711,Indirect,,0,8.75
+2026-11-29,late,smp00457,Indirect,,0,8.75
+2026-11-29,late,smp00041,Indirect,,0,8.75
+2026-11-29,late,smp00319,Indirect,,0,8.75
+2026-11-29,late,smp00145,Indirect,,0,8.75
+2026-11-29,late,smp00455,Indirect,,0,8.75
+2026-11-29,late,smp00229,Indirect,,0,8.75
+2026-11-29,late,smp00452,Indirect,,0,8.75
+2026-11-29,late,smp00228,Indirect,,0,8.75
+2026-11-29,late,smp00594,Indirect,,0,8.75
+2026-11-29,late,smp00615,Indirect,,0,8.75
+2026-11-29,late,smp00058,Indirect,,0,8.75
+2026-11-29,late,smp00624,Indirect,,0,8.75
+2026-11-29,late,smp00165,Indirect,,0,8.75
+2026-11-29,late,smp00618,Indirect,,0,8.75
+2026-11-29,late,smp00328,Indirect,,0,8.75
+2026-11-29,late,smp00616,Indirect,,0,8.75
+2026-11-29,late,smp00303,Indirect,,0,8.75
+2026-11-29,late,smp00314,Indirect,,0,8.75
+2026-11-29,late,smp00475,Indirect,,0,8.75
+2026-11-29,late,smp00477,Indirect,,0,8.75
+2026-11-29,late,smp00435,Indirect,,0,8.75
+2026-11-29,late,smp00694,Indirect,,0,8.75
+2026-11-29,late,smp00040,Indirect,,0,8.75
+2026-11-29,late,smp00149,Indirect,,0,8.75
+2026-11-29,late,smp00067,Indirect,,0,8.75
+2026-11-29,late,smp00141,Indirect,,0,8.75
+2026-11-29,late,smp00686,Indirect,,0,8.75
+2026-11-29,late,smp00622,Indirect,,0,8.75
+2026-11-29,late,smp00701,Indirect,,0,8.75
+2026-11-29,late,smp00310,Indirect,,0,8.75
+2026-11-29,late,smp00459,Indirect,,0,8.75
+2026-11-29,late,smp00704,Indirect,,0,8.75
+2026-11-29,late,smp00705,Indirect,,0,8.75
+2026-11-29,late,smp00469,Indirect,,0,8.75
+2026-11-29,late,smp00245,Indirect,,0,8.75
+2026-11-29,late,smp00131,Indirect,,0,8.75
+2026-11-29,late,smp00625,Indirect,,0,8.75
+2026-11-29,late,smp00249,Indirect,,0,8.75
+2026-11-29,late,smp00442,Indirect,,0,8.75
+2026-11-29,late,smp00707,Indirect,,0,8.75
+2026-11-29,late,smp00143,Indirect,,0,8.75
+2026-11-29,late,smp00140,Indirect,,0,8.75
+2026-11-29,late,smp00251,Indirect,,0,8.75
+2026-11-29,late,smp00468,Indirect,,0,8.75
+2026-11-29,late,smp00460,Indirect,,0,8.75
+2026-11-29,late,smp00147,Indirect,,0,8.75
+2026-11-29,late,smp00039,Indirect,,0,8.75
+2026-11-29,late,smp00072,Indirect,,0,8.75
+2026-11-29,late,smp00144,Indirect,,0,8.75
+2026-11-29,late,smp00050,Indirect,,0,8.75
+2026-11-29,late,smp00700,Indirect,,0,8.75
+2026-11-29,late,smp00473,Indirect,,0,8.75
+2026-11-29,late,smp00690,Indirect,,0,8.75
+2026-11-29,late,smp00062,Indirect,,0,8.75
+2026-11-29,late,smp00138,Indirect,,0,8.75
+2026-11-29,late,smp00474,Indirect,,0,8.75
+2026-11-29,late,smp00156,Indirect,,0,8.75
+2026-11-29,late,smp00238,Indirect,,0,8.75
+2026-11-29,late,smp00451,Indirect,,0,8.75
+2026-11-29,late,smp00059,Indirect,,0,8.75
+2026-11-29,late,smp00157,Indirect,,0,8.75
+2026-11-29,late,smp00315,Indirect,,0,8.75
+2026-11-29,late,smp00159,Indirect,,0,8.75
+2026-11-29,late,smp00305,Indirect,,0,8.75
+2026-11-29,late,smp00056,Indirect,,0,8.75
+2026-11-29,late,smp00447,Indirect,,0,8.75
+2026-11-29,late,smp00038,Indirect,,0,8.75
+2026-11-29,late,smp00471,Indirect,,0,8.75
+2026-11-29,late,smp00151,Indirect,,0,8.75
+2026-11-29,late,smp00313,Indirect,,0,8.75
+2026-11-29,late,smp00621,Indirect,,0,8.75
+2026-11-29,late,smp00692,Indirect,,0,8.75
+2026-11-29,late,smp00710,Indirect,,0,8.75
+2026-11-29,late,smp00323,Indirect,,0,8.75
+2026-11-29,late,smp00450,Indirect,,0,8.75
+2026-11-29,late,smp00316,Indirect,,0,8.75
+2026-11-29,late,smp00146,Indirect,,0,8.75
+2026-11-29,late,smp00054,Indirect,,0,8.75
+2026-11-29,late,smp00712,Indirect,,0,8.75
+2026-11-29,night,smp00356,Pack Singles,,1259,8.5
+2026-11-29,night,smp00350,Pack Singles,,1176,8.5
+2026-11-29,night,smp00349,Pack Singles,,1118,8.5
+2026-11-29,night,smp00362,Pack Singles,,1248,8.5
+2026-11-29,night,smp00358,Pack Singles,,1212,8.5
+2026-11-29,night,smp00343,Pack Singles,,1236,8.5
+2026-11-29,night,smp00339,Pack Singles,,1181,8.5
+2026-11-29,night,smp00342,Pack Singles,,1264,8.5
+2026-11-29,night,smp00336,Pack Singles,,1166,8.5
+2026-11-29,night,smp00334,Pack Singles,,1271,8.5
+2026-11-29,night,smp00360,Pack Singles,,1202,8.5
+2026-11-29,night,smp00361,Pack Singles,,1125,8.5
+2026-11-29,night,smp00348,Pack Singles,,1234,8.5
+2026-11-29,night,smp00253,Pack Multis,,1112,8.5
+2026-11-29,night,smp00260,Pack Multis,,1220,8.5
+2026-11-29,night,smp00266,Pack Multis,,1114,8.5
+2026-11-29,night,smp00255,Pack Multis,,1248,8.5
+2026-11-29,night,smp00268,Pack Multis,,1139,8.5
+2026-11-29,night,smp00261,Pack Multis,,1278,8.5
+2026-11-29,night,smp00259,Pack Multis,,1299,8.5
+2026-11-29,night,smp00273,Pack Multis,,1162,8.5
+2026-11-29,night,smp00252,Pack Multis,,1271,8.5
+2026-11-29,night,smp00508,Pick,,1171,8.5
+2026-11-29,night,smp00551,Pick,,1209,8.5
+2026-11-29,night,smp00541,Pick,,1144,8.5
+2026-11-29,night,smp00514,Pick,,1230,8.5
+2026-11-29,night,smp00548,Pick,,1305,8.5
+2026-11-29,night,smp00497,Pick,,1161,8.5
+2026-11-29,night,smp00516,Pick,,1283,8.5
+2026-11-29,night,smp00522,Pick,,1281,8.5
+2026-11-29,night,smp00486,Pick,,1159,8.5
+2026-11-29,night,smp00535,Pick,,1237,8.5
+2026-11-29,night,smp00544,Pick,,1238,8.5
+2026-11-29,night,smp00547,Pick,,1114,8.5
+2026-11-29,night,smp00515,Pick,,1136,8.5
+2026-11-29,night,smp00531,Pick,,1247,8.5
+2026-11-29,night,smp00488,Pick,,1108,8.5
+2026-11-29,night,smp00534,Pick,,1145,8.5
+2026-11-29,night,smp00532,Pick,,1137,8.5
+2026-11-29,night,smp00545,Pick,,1154,8.5
+2026-11-29,night,smp00494,Pick,,1105,8.5
+2026-11-29,night,smp00510,Stow Each Nike,,889,8.5
+2026-11-29,night,smp00553,Stow Each Nike,,961,8.5
+2026-11-29,night,smp00526,Stow Each Nike,,1018,8.5
+2026-11-29,night,smp00530,Stow Each Nike,,912,8.5
+2026-11-29,night,smp00489,Stow Each Nike,,1011,8.5
+2026-11-29,night,smp00520,Stow Each Nike,,913,8.5
+2026-11-29,night,smp00507,Stow Each Nike,,1001,8.5
+2026-11-29,night,smp00533,Stow Each Nike,,891,8.5
+2026-11-29,night,smp00509,Stow Each Nike,,940,8.5
+2026-11-29,night,smp00523,Stow Each Nike,,980,8.5
+2026-11-29,night,smp00529,Stow Each Nike,,898,8.5
+2026-11-29,night,smp00524,Stow Each Nike,,883,8.5
+2026-11-29,night,smp00646,Each Receive,,901,8.5
+2026-11-29,night,smp00645,Each Receive,,867,8.5
+2026-11-29,night,smp00654,Each Receive,,1028,8.5
+2026-11-29,night,smp00634,Each Receive,,929,8.5
+2026-11-29,night,smp00648,Each Receive,,884,8.5
+2026-11-29,night,smp00639,Each Receive,,943,8.5
+2026-11-29,night,smp00627,Each Receive,,889,8.5
+2026-11-29,night,smp00655,Each Receive,,989,8.5
+2026-11-29,night,smp00626,Each Receive,,998,8.5
+2026-11-29,night,smp00643,Each Receive,,937,8.5
+2026-11-29,night,smp00660,Each Receive,,901,8.5
+2026-11-29,night,smp00642,Each Receive,,885,8.5
+2026-11-29,night,smp00081,Chutings,,1116,8.5
+2026-11-29,night,smp00090,Chutings,,1111,8.5
+2026-11-29,night,smp00093,Chutings,,1112,8.5
+2026-11-29,night,smp00089,Chutings,,1261,8.5
+2026-11-29,night,smp00092,Chutings,,1237,8.5
+2026-11-29,night,smp00078,Chutings,,1292,8.5
+2026-11-29,night,smp00076,Chutings,,1212,8.5
+2026-11-29,night,smp00082,Chutings,,1282,8.5
+2026-11-29,night,smp00087,Chutings,,1242,8.5
+2026-11-29,night,smp00719,SLAM KO,,915,8.5
+2026-11-29,night,smp00724,SLAM KO,,900,8.5
+2026-11-29,night,smp00728,SLAM KO,,866,8.5
+2026-11-29,night,smp00726,SLAM KO,,886,8.5
+2026-11-29,night,smp00718,SLAM KO,,1009,8.5
+2026-11-29,night,smp00722,SLAM KO,,869,8.5
+2026-11-29,night,smp00738,SLAM KO,,895,8.5
+2026-11-29,night,smp00739,SLAM KO,,907,8.5
+2026-11-29,night,smp00737,SLAM KO,,885,8.5
+2026-11-29,night,smp00742,SLAM KO,,925,8.5
+2026-11-29,night,smp00744,SLAM KO,,898,8.5
+2026-11-29,night,smp00720,SLAM KO,,990,8.5
+2026-11-29,night,smp00730,SLAM KO,,932,8.5
+2026-11-29,night,smp00731,SLAM KO,,952,8.5
+2026-11-29,night,smp00172,OBPS work,,836,8.5
+2026-11-29,night,smp00195,OBPS work,,828,8.5
+2026-11-29,night,smp00169,OBPS work,,864,8.5
+2026-11-29,night,smp00175,OBPS work,,860,8.5
+2026-11-29,night,smp00186,OBPS work,,884,8.5
+2026-11-29,night,smp00189,OBPS work,,760,8.5
+2026-11-29,night,smp00174,OBPS work,,846,8.5
+2026-11-29,night,smp00184,OBPS work,,805,8.5
+2026-11-29,night,smp00198,OBPS work,,759,8.5
+2026-11-29,night,smp00170,OBPS work,,872,8.5
+2026-11-29,night,smp00171,OBPS work,,882,8.5
+2026-11-29,night,smp00190,OBPS work,,837,8.5
+2026-11-29,night,smp00188,OBPS work,,788,8.5
+2026-11-29,night,smp00182,OBPS work,,767,8.5
+2026-11-29,night,smp00194,OBPS work,,810,8.5
+2026-11-29,night,smp00177,OBPS work,,804,8.5
+2026-11-29,night,smp00338,Indirect,,0,8.5
+2026-11-29,night,smp00077,Indirect,,0,8.5
+2026-11-29,night,smp00539,Indirect,,0,8.5
+2026-11-29,night,smp00084,Indirect,,0,8.5
+2026-11-29,night,smp00733,Indirect,,0,8.5
+2026-11-29,night,smp00359,Indirect,,0,8.5
+2026-11-29,night,smp00732,Indirect,,0,8.5
+2026-11-29,night,smp00083,Indirect,,0,8.5
+2026-11-29,night,smp00173,Indirect,,0,8.5
+2026-11-29,night,smp00543,Indirect,,0,8.5
+2026-11-29,night,smp00347,Indirect,,0,8.5
+2026-11-29,night,smp00355,Indirect,,0,8.5
+2026-11-29,night,smp00191,Indirect,,0,8.5
+2026-11-29,night,smp00651,Indirect,,0,8.5
+2026-11-29,night,smp00484,Indirect,,0,8.5
+2026-11-29,night,smp00499,Indirect,,0,8.5
+2026-11-29,night,smp00180,Indirect,,0,8.5
+2026-11-29,night,smp00546,Indirect,,0,8.5
+2026-11-29,night,smp00345,Indirect,,0,8.5
+2026-11-29,night,smp00647,Indirect,,0,8.5
+2026-11-29,night,smp00086,Indirect,,0,8.5
+2026-11-29,night,smp00183,Indirect,,0,8.5
+2026-11-29,night,smp00511,Indirect,,0,8.5
+2026-11-29,night,smp00552,Indirect,,0,8.5
+2026-11-29,night,smp00745,Indirect,,0,8.5
+2026-11-29,night,smp00185,Indirect,,0,8.5
+2026-11-29,night,smp00504,Indirect,,0,8.5
+2026-11-29,night,smp00341,Indirect,,0,8.5
+2026-11-29,night,smp00331,Indirect,,0,8.5
+2026-11-29,night,smp00272,Indirect,,0,8.5
+2026-11-29,night,smp00635,Indirect,,0,8.5
+2026-11-29,night,smp00490,Indirect,,0,8.5
+2026-11-29,night,smp00527,Indirect,,0,8.5
+2026-11-29,night,smp00528,Indirect,,0,8.5
+2026-11-29,night,smp00080,Indirect,,0,8.5
+2026-11-29,night,smp00652,Indirect,,0,8.5
+2026-11-29,night,smp00723,Indirect,,0,8.5
+2026-11-29,night,smp00717,Indirect,,0,8.5
+2026-11-29,night,smp00540,Indirect,,0,8.5
+2026-11-29,night,smp00538,Indirect,,0,8.5
+2026-11-29,night,smp00351,Indirect,,0,8.5
+2026-11-29,night,smp00629,Indirect,,0,8.5
+2026-11-29,night,smp00193,Indirect,,0,8.5
+2026-11-29,night,smp00254,Indirect,,0,8.5
+2026-11-29,night,smp00740,Indirect,,0,8.5
+2026-11-29,night,smp00743,Indirect,,0,8.5
+2026-11-29,night,smp00656,Indirect,,0,8.5
+2026-11-29,night,smp00353,Indirect,,0,8.5
+2026-11-29,night,smp00506,Indirect,,0,8.5
+2026-11-29,night,smp00746,Indirect,,0,8.5
+2026-11-29,night,smp00657,Indirect,,0,8.5
+2026-11-29,night,smp00640,Indirect,,0,8.5
+2026-11-29,night,smp00500,Indirect,,0,8.5
+2026-11-29,night,smp00344,Indirect,,0,8.5
+2026-11-29,night,smp00633,Indirect,,0,8.5
+2026-11-29,night,smp00495,Indirect,,0,8.5
+2026-11-29,night,smp00274,Indirect,,0,8.5
+2026-11-29,night,smp00513,Indirect,,0,8.5
+2026-11-29,night,smp00536,Indirect,,0,8.5
+2026-11-29,night,smp00727,Indirect,,0,8.5
+2026-11-29,night,smp00550,Indirect,,0,8.5
+2026-11-29,night,smp00485,Indirect,,0,8.5
+2026-11-29,night,smp00332,Indirect,,0,8.5
+2026-11-29,night,smp00735,Indirect,,0,8.5
+2026-11-29,night,smp00329,Indirect,,0,8.5
+2026-11-29,night,smp00192,Indirect,,0,8.5
+2026-11-29,night,smp00650,Indirect,,0,8.5
+2026-11-29,night,smp00075,Indirect,,0,8.5
+2026-11-29,night,smp00095,Indirect,,0,8.5
+2026-11-29,night,smp00346,Indirect,,0,8.5
+2026-11-29,night,smp00354,Indirect,,0,8.5
+2026-11-29,night,smp00641,Indirect,,0,8.5
+2026-11-29,night,smp00721,Indirect,,0,8.5
+2026-11-29,night,smp00521,Indirect,,0,8.5
+2026-11-29,night,smp00197,Indirect,,0,8.5
+2026-11-29,night,smp00537,Indirect,,0,8.5
+2026-11-29,night,smp00262,Indirect,,0,8.5
+2026-11-29,night,smp00503,Indirect,,0,8.5
+2026-11-29,night,smp00483,Indirect,,0,8.5
+2026-11-29,night,smp00168,Indirect,,0,8.5
+2026-11-29,night,smp00741,Indirect,,0,8.5
+2026-11-29,night,smp00357,Indirect,,0,8.5
+2026-11-29,night,smp00256,Indirect,,0,8.5
+2026-11-29,night,smp00199,Indirect,,0,8.5
+2026-11-29,night,smp00258,Indirect,,0,8.5
+2026-11-29,night,smp00352,Indirect,,0,8.5
+2026-11-29,night,smp00201,Indirect,,0,8.5
+2026-11-29,night,smp00330,Indirect,,0,8.5
+2026-11-29,night,smp00637,Indirect,,0,8.5
+2026-11-29,night,smp00167,Indirect,,0,8.5
+2026-11-29,night,smp00335,Indirect,,0,8.5
+2026-11-29,night,smp00512,Indirect,,0,8.5
+2026-11-29,night,smp00498,Indirect,,0,8.5
+2026-11-29,night,smp00658,Indirect,,0,8.5
+2026-11-29,night,smp00736,Indirect,,0,8.5
+2026-11-29,night,smp00725,Indirect,,0,8.5
+2026-11-29,night,smp00502,Indirect,,0,8.5
+2026-11-29,night,smp00094,Indirect,,0,8.5
+2026-11-29,night,smp00542,Indirect,,0,8.5
+2026-11-29,night,smp00549,Indirect,,0,8.5
+2026-11-29,night,smp00270,Indirect,,0,8.5
+2026-11-29,night,smp00088,Indirect,,0,8.5
+2026-11-29,night,smp00179,Indirect,,0,8.5
+2026-11-29,night,smp00178,Indirect,,0,8.5
+2026-11-29,night,smp00265,Indirect,,0,8.5
+2026-11-29,night,smp00271,Indirect,,0,8.5
+2026-11-29,night,smp00257,Indirect,,0,8.5
+2026-11-29,night,smp00505,Indirect,,0,8.5
+2026-11-29,night,smp00496,Indirect,,0,8.5
+2026-11-29,night,smp00644,Indirect,,0,8.5
+2026-11-29,night,smp00659,Indirect,,0,8.5
+2026-11-29,night,smp00263,Indirect,,0,8.5
+2026-11-29,night,smp00519,Indirect,,0,8.5
+2026-11-29,night,smp00333,Indirect,,0,8.5
+2026-11-29,night,smp00491,Indirect,,0,8.5
+2026-11-29,night,smp00200,Indirect,,0,8.5
+2026-11-29,night,smp00734,Indirect,,0,8.5
+2026-11-29,night,smp00269,Indirect,,0,8.5
+2026-11-29,night,smp00501,Indirect,,0,8.5
+2026-11-29,night,smp00632,Indirect,,0,8.5
+2026-11-29,night,smp00264,Indirect,,0,8.5
+2026-11-29,night,smp00364,Indirect,,0,8.5
+2026-11-29,night,smp00482,Indirect,,0,8.5
+2026-11-29,night,smp00085,Indirect,,0,8.5
+2026-11-29,night,smp00275,Indirect,,0,8.5
+2026-11-29,night,smp00340,Indirect,,0,8.5
+2026-11-29,night,smp00649,Indirect,,0,8.5
+2026-11-29,night,smp00631,Indirect,,0,8.5
+2026-11-29,night,smp00636,Indirect,,0,8.5
+2026-11-29,night,smp00638,Indirect,,0,8.5
+2026-11-29,night,smp00196,Indirect,,0,8.5
+2026-11-29,night,smp00073,Indirect,,0,8.5
+2026-11-29,night,smp00079,Indirect,,0,8.5
+2026-11-29,night,smp00492,Indirect,,0,8.5
+2026-11-29,night,smp00267,Indirect,,0,8.5
+2026-11-29,night,smp00176,Indirect,,0,8.5
+2026-11-29,night,smp00091,Indirect,,0,8.5

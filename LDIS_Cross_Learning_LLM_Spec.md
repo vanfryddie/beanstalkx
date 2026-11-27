@@ -171,3 +171,9 @@ Everything in `CLAUDE.md` applies, and three things bear directly:
 - **Batches**: the review is asked 15 paths per call, concurrently, so one
   long answer cannot outrun gunicorn's 120s worker timeout.
 - **Tests**: `perf/test_cross_learning_llm.py`.
+- **27 Nov — cross-training standards view.** The tab now leads with
+  the replay-based standards grid from the mockup (`xt_planning.py`,
+  `templates/_xt_standards.html`), the "Why change these standards?"
+  panel (same Bedrock client, same vetting), and a one-day plan. The
+  path-by-path model above is kept, folded below it. Data contract:
+  `LDIS_Day_Plan_Data_Spec.md`.

@@ -17,6 +17,7 @@ import db
 import oidc_auth
 import tickety_client
 import bedrock_client
+import xt_planning
 
 application = Flask(__name__)
 application.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
@@ -3420,9 +3421,11 @@ def cross_training():
         conn.close()
 
     model = forecast = forecast_args = None
+    standards_view = None
     if tab == "model":
         model = build_cross_learning_model(request.args.get("period") or "month",
                                            scenario=scenario)
+        standards_view = build_standards_view(scenario)
         # The forecast is pure arithmetic and is answered with the page;
         # only its explanation is fetched afterwards.
         key, volume, rate = _clm_forecast_args()
@@ -3461,6 +3464,8 @@ def cross_training():
         insights=(build_xt_insights(insights_period, scenario=scenario)
                   if tab == "insights" else None),
         model=model,
+        sv=standards_view,
+        function_map=db.get_function_process_map() if tab == "model" else {},
         forecast=forecast,
         forecast_args=forecast_args,
     )
@@ -3716,6 +3721,22 @@ def _xt_defined_paths(scenario):
                     "direction": direction,
                 })
     paths.sort(key=lambda p: ((p["label"] or "").lower(), p["shift"]))
+    return paths
+
+
+def _xt_paths_with_sources(scenario):
+    """The defined paths, each with the departments it trains people
+    from. Shared by the Cross Learning Model and the standards
+    evaluation, which must agree on what a standard's source is."""
+    paths = _xt_defined_paths(scenario)
+    sources_by_standard = {d["id"]: d.get("source") or [] for d in db.get_xt_standard_defs(scenario)}
+    internal_sources = {t["label"]: [t["source_dept"]] for t in db.get_internal_xt_targets()
+                        if t.get("source_dept")}
+    for path in paths:
+        if path["kind"] == "standard":
+            path["source_departments"] = sources_by_standard.get(path["id"], [])
+        else:
+            path["source_departments"] = internal_sources.get(path["label"], [])
     return paths
 
 
@@ -4428,15 +4449,7 @@ def build_cross_learning_model(period="month", scenario="general"):
     contributors = _clm_contributor_rows(window_column)
 
     # The paths, with the source departments the constellation needs.
-    paths = _xt_defined_paths(scenario)
-    sources_by_standard = {d["id"]: d.get("source") or [] for d in db.get_xt_standard_defs(scenario)}
-    internal_sources = {t["label"]: [t["source_dept"]] for t in db.get_internal_xt_targets()
-                        if t.get("source_dept")}
-    for path in paths:
-        if path["kind"] == "standard":
-            path["source_departments"] = sources_by_standard.get(path["id"], [])
-        else:
-            path["source_departments"] = internal_sources.get(path["label"], [])
+    paths = _xt_paths_with_sources(scenario)
 
     volume_by_process = {}
     for (process, shift), entries in volume["per_path"].items():
@@ -5169,6 +5182,382 @@ def xt_model_forecast_explain():
     return jsonify({"status": status, "dropped": vetted["dropped"], "slots": {
         "forecast": render_template("_xt_model_llm.html", part="forecast", item=vetted,
                                     forecast=forecast, model_id=bedrock_client.model_id())}})
+
+# ====================================================================
+# Cross-training standards: the evaluation the Cross Learning Model tab
+# leads with. The arithmetic is in xt_planning.py; this is where it meets
+# the site's data, its settings and the page.
+# ====================================================================
+
+# The five inputs, in the order the Data Upload tab lists them. Two are
+# exports a site already has; the shift calendar arrived on 27 Nov; the
+# last two are new and have downloadable templates.
+XT_PLANNING_KINDS = [
+    {"key": "roster", "label": "Employee roster", "export": "employeeList",
+     "grain": "one row per associate", "status": "roster",
+     "detail": "Who is employed today, and on which shift pattern. Replaces the previous roster."},
+    {"key": "hours", "label": "Hours on Function", "export": "LDMT Hours on Function",
+     "grain": "one row per associate and function", "status": "hours",
+     "detail": "Home department, and who is trained on what. Replaces the previous file."},
+    {"key": "calendar", "label": "Shift calendar", "export": "SSPOT Information",
+     "grain": "one row per shift cohort per working day", "status": "calendar",
+     "detail": "Who is scheduled on which day, and for how long. Days are added or replaced; history is kept."},
+    {"key": "process_day", "label": "Process day", "export": "built from FCLM / the plan",
+     "grain": "one row per date, shift and process", "status": "process_day", "template": True,
+     "detail": "Volume, hours and plan for every process. Days are added or replaced."},
+    {"key": "associate_day", "label": "Associate day", "export": "built from FCLM",
+     "grain": "one row per date, shift, associate and process", "status": "associate_day", "template": True,
+     "detail": "Units and hours each person booked on each process, indirect included. "
+               "The days in a file replace those days."},
+]
+_XT_PLANNING_INGEST = {
+    "roster": db.ingest_roster_csv,
+    "hours": db.ingest_xt_hours_csv,
+    "calendar": db.ingest_shift_calendar_csv,
+    "process_day": db.ingest_process_volume_csv,
+    "associate_day": db.ingest_associate_day_csv,
+}
+XT_EVAL_WINDOWS = (4, 8, 13, 26)
+
+
+def _xt_eval_settings():
+    """The evaluation's knobs, from app_settings, each clamped to a range
+    where it still means something."""
+    def setting(key, default, low, high):
+        value = db._as_number(db.get_app_setting(key))
+        return default if value is None else max(low, min(high, value))
+    return {
+        "coverage_bar": setting("xt_eval_coverage_bar", 95, 50, 100) / 100.0,
+        "absence_pct": setting("xt_eval_absence_pct", 8, 0, 60),
+        "window_weeks": int(setting("xt_eval_window_weeks", 8, 2, 52)),
+        "band": 1,
+        "shift_hours": db.get_xt_cost_model()["shift_hours"],
+    }
+
+
+_XT_PREP_CACHE = {}
+
+
+def _xt_prepared(sample, weeks, paths, shift_hours):
+    """The prepared data for a site (or the sample), kept between
+    requests until an upload changes it. Keyed on the newest upload id,
+    so loading any file starts afresh; per process, which is fine for a
+    cache that only saves time."""
+    conn = db.get_db()
+    newest = conn.execute("SELECT MAX(id) AS n FROM uploads").fetchone()["n"]
+    conn.close()
+    fingerprint = tuple(sorted((p.get("process") or "", p["shift"], p.get("target") or 0,
+                                tuple(p.get("source_departments") or [])) for p in paths))
+    key = (db.get_current_site(), bool(sample), weeks, newest, date.today().isoformat(),
+           hash(fingerprint), shift_hours)
+    if key not in _XT_PREP_CACHE:
+        if len(_XT_PREP_CACHE) > 6:
+            _XT_PREP_CACHE.clear()
+        if sample:
+            homes = db.xt_process_home_departments()
+            data = xt_planning.sample_data(
+                paths, owners={p["process"]: homes.get(p["process"]) for p in paths if p.get("process")},
+                weeks=max(weeks, 8) + 4)
+        else:
+            since = (date.today() - timedelta(weeks=weeks + 1)).isoformat()
+            data = db.load_planning_data(since=since)
+        _XT_PREP_CACHE[key] = (xt_planning.Prepared(data, window_weeks=weeks, shift_hours=shift_hours),
+                               {"evaluations": {}})
+    return _XT_PREP_CACHE[key]
+
+
+def _xt_cell_text(cell, bar):
+    """The two lines a grid cell shows."""
+    sources = " + ".join(cell.get("sources") or []) or "no source"
+    verdict = cell["verdict"]
+    if verdict == "keep":
+        line = f"Keep · {round(cell['coverage'] * 100)}% coverage"
+    elif verdict == "increase":
+        line = f"Increase to {cell['new_target']}"
+    elif verdict == "decrease":
+        line = f"Decrease to {cell['new_target']}"
+    elif verdict == "switch":
+        line = f"Switch to {cell['alternative']['department']} · {cell['new_target']}"
+    elif verdict == "hire":
+        line = f"Hire {cell.get('hire') or '?'} veterans"
+    else:
+        line = "No data to judge"
+    return f"{sources} · {cell['target']}", line
+
+
+def _xt_change_headline(cell):
+    sources = " + ".join(cell.get("sources") or []) or "no source"
+    v = cell["verdict"]
+    if v == "increase":
+        return f"Increase {sources} → {cell['process']}: {cell['target']} → {cell['new_target']}"
+    if v == "decrease":
+        return f"Decrease {sources} → {cell['process']}: {cell['target']} → {cell['new_target']}"
+    if v == "switch":
+        alt = cell["alternative"]["department"]
+        if alt in (cell.get("sources") or []):
+            return f"Train only {alt} → {cell['process']}: {cell['target']} → {cell['new_target']}"
+        return f"Replace {sources} → {cell['process']} with {alt} → {cell['process']}: {cell['new_target']}"
+    if v == "hire":
+        where = cell["owner"] if (cell["owner"] or "").lower() == cell["process"].lower() \
+            else f"{cell['owner']} for {cell['process']}"
+        return f"Hire {cell.get('hire') or '?'} veterans into {where}"
+    return cell["process"]
+
+
+def build_standards_view(scenario="general"):
+    """Everything the standards section of the page shows: the grid, the
+    changes, the filters, readiness, and the day plan when asked for."""
+    settings = _xt_eval_settings()
+    sample = request.args.get("sample") == "1"
+    try:
+        weeks = int(request.args.get("weeks") or settings["window_weeks"])
+    except ValueError:
+        weeks = settings["window_weeks"]
+    weeks = weeks if weeks in XT_EVAL_WINDOWS else settings["window_weeks"]
+    department = (request.args.get("dept") or "").strip() or None
+    shift = request.args.get("eval_shift") if request.args.get("eval_shift") in db.SHIFTS else None
+    status = db.planning_data_status()
+    ready = bool((status["process_day"]["n"] or 0) and (status["associate_day"]["n"] or 0))
+    paths = _xt_paths_with_sources(scenario)
+
+    view = {"sample": sample, "weeks": weeks, "windows": XT_EVAL_WINDOWS, "department": department,
+            "shift": shift, "settings": settings, "status": status, "ready": ready or sample,
+            "result": None, "rows": [], "changes": [], "day_plan": None, "departments": [],
+            "llm_enabled": bedrock_client.enabled()}
+    if not (ready or sample):
+        return view
+    prep, memo = _xt_prepared(sample, weeks, paths, settings["shift_hours"])
+    eval_key = (department, shift, settings["coverage_bar"], settings["band"], settings["absence_pct"])
+    if eval_key not in memo["evaluations"]:
+        memo["evaluations"][eval_key] = xt_planning.evaluate(prep, paths, settings, department, shift)
+    result = memo["evaluations"][eval_key]
+    view["result"] = result
+    view["departments"] = sorted({d for d in prep.departments.values() if d}, key=str.lower)
+    by_process = {}
+    for (process, s), cell in result["cells"].items():
+        top, bottom = _xt_cell_text(cell, settings["coverage_bar"])
+        cell["text"], cell["line"] = top, bottom
+        by_process.setdefault(process, {"process": process, "owner": cell["owner"], "cells": {}})["cells"][s] = cell
+    view["rows"] = sorted(by_process.values(), key=lambda r: ((r["owner"] or "").lower(), r["process"].lower()))
+    for cell in result["changes"]:
+        cell["headline"] = _xt_change_headline(cell)
+    view["changes"] = result["changes"]
+    view["processes"] = sorted({p.get("process") for p in paths if p.get("process")}, key=str.lower)
+    view["day_plan"] = _xt_day_plan_from_request(prep, settings)
+    return view
+
+
+def _xt_day_plan_from_request(prep, settings):
+    """The day plan, if the form was filled in. Bad input answers with
+    the reason rather than an error page."""
+    process = (request.args.get("dp_process") or "").strip()
+    if not process:
+        return None
+    shift = request.args.get("dp_shift") if request.args.get("dp_shift") in db.SHIFTS else "early"
+    try:
+        day = date.fromisoformat(request.args.get("dp_date") or "")
+        volume = float(request.args.get("dp_volume") or 0)
+        rate = float(request.args.get("dp_rate")) if request.args.get("dp_rate") else None
+        absence = float(request.args.get("dp_absence")) if request.args.get("dp_absence") else None
+    except ValueError:
+        return {"error": "Give a date (YYYY-MM-DD), a volume, and numbers for rate and absence if you set them."}
+    if volume <= 0 or (rate is not None and rate <= 0):
+        return {"error": "The volume, and the rate if given, must be above zero."}
+    others = {}
+    for key, value in request.args.items():
+        if key.startswith("vol_") and value.strip():
+            try:
+                others[key[4:]] = float(value)
+            except ValueError:
+                continue
+    plan = xt_planning.day_plan(prep, process, shift, day, volume, rate=rate, absence_pct=absence,
+                                other_volumes=others, settings=settings)
+    plan["form"] = {"process": process, "shift": shift, "date": day.isoformat(), "volume": volume,
+                    "rate": rate, "absence": absence}
+    return plan
+
+
+CLM_LLM_SYSTEM_STANDARDS = """You explain proposed changes to cross-training standards at a \
+fulfilment centre. A standard says how many people from a source department should be trained \
+on another department's process, per shift. Each change below was decided by the application \
+from a replay of past shifts: for every shift in the window, it checked whether the veterans who \
+were in, plus the cross-trainees the standard would provide (limited to what their own \
+department could spare after its own volume), would have met plan. Coverage is the share of \
+replayed shifts that met plan; the bar is given.
+
+For each change, write two or three sentences a site manager can check, using the evidence \
+given: why the current standard falls short or is more than the work needs, and why the proposed \
+one is better. Do not decide anything new and do not recompute.
+
+Rules:
+- Quote only numbers that appear in that change's data, exactly as given (a share may be written \
+as a percentage). Do not calculate new numbers.
+- Name only departments and processes that appear in that change's data.
+
+Reply with JSON only: {"changes": [{"id": "<id as given>", "explanation": "<2-3 sentences>"}]}"""
+
+
+@application.route("/ld-management/cross-training/model/standards-explain")
+def xt_standards_explain():
+    """The "Why change these standards?" panel in words, fetched after
+    the page has loaded. Same contract as the other explain endpoints:
+    any failure leaves the computed evidence lines where they are."""
+    login_id = _require_login()
+    if not login_id:
+        return jsonify({"status": "login"}), 401
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return jsonify({"status": "denied"}), 403
+    try:
+        view = build_standards_view(request.args.get("scenario") or "general")
+        changes = view["changes"][:12]
+        if not changes:
+            return jsonify({"status": "nothing", "slots": {}})
+        payload = {"coverage_bar": view["settings"]["coverage_bar"], "changes": [{
+            "id": c["id"], "process": c["process"], "shift": c["shift"], "owner": c["owner"],
+            "verdict": c["verdict"], "current_target": c["target"], "new_target": c.get("new_target"),
+            "sources": c.get("sources"), "alternative": c.get("alternative"),
+            "coverage_now": round(c["coverage"], 3) if c.get("coverage") is not None else None,
+            "replayed_shifts": c["days"], "missed_plan": c.get("missed"), "lend_days": c.get("lend_days"),
+            "peak_cross_trainees": c.get("peak_xt"), "veterans_to_hire": c.get("hire"),
+            "veteran_rate": c.get("vet_rate"), "cross_trainee_rate": c.get("xt_rate"),
+            "evidence": c["evidence"]} for c in changes]}
+        answer, status = bedrock_client.ask_json(CLM_LLM_SYSTEM_STANDARDS, payload, max_tokens=6000)
+        if answer is None:
+            return jsonify({"status": status, "note": CLM_LLM_UNAVAILABLE.get(status, "unavailable"),
+                            "slots": {}})
+        by_id = {c["id"]: c for c in payload["changes"]}
+        slots, dropped = {}, 0
+        for item in (answer.get("changes") or []) if isinstance(answer, dict) else []:
+            if not isinstance(item, dict) or item.get("id") not in by_id:
+                continue
+            allowed = _clm_numbers(by_id[item["id"]]) | _clm_numbers({"bar": payload["coverage_bar"]})
+            kept, lost = _clm_vet_reasons([item.get("explanation")], allowed, 1)
+            dropped += lost
+            if kept:
+                slots["why:" + item["id"]] = render_template("_xt_model_llm.html", part="why", text=kept[0])
+    except Exception:
+        application.logger.exception("Standards explanation failed")
+        return jsonify({"status": "error", "note": CLM_LLM_UNAVAILABLE["error"], "slots": {}})
+    return jsonify({"status": status, "slots": slots, "dropped": dropped})
+
+
+@application.route("/ld-management/cross-training/model/config", methods=["POST"])
+def xt_eval_config_save():
+    """The evaluation's settings: the coverage bar, the absence used where
+    it cannot be measured, the default window, and the FCLM function to
+    process mapping the associate-day upload uses."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if not _can_manage_xt_definitions(login_id, _effective_role()):
+        return _deny("Only admins, trainers, learning managers, and Senior Operations Managers "
+                     "can change the evaluation settings.")
+    for field, key, low, high in (("coverage_bar", "xt_eval_coverage_bar", 50, 100),
+                                  ("absence_pct", "xt_eval_absence_pct", 0, 60),
+                                  ("window_weeks", "xt_eval_window_weeks", 2, 52)):
+        raw = (request.form.get(field) or "").strip()
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            flash(f"{field.replace('_', ' ').capitalize()} must be a number.", "warning")
+            return redirect(url_for("cross_training", tab="model"))
+        if not low <= value <= high:
+            flash(f"{field.replace('_', ' ').capitalize()} must be between {low} and {high}.", "warning")
+            return redirect(url_for("cross_training", tab="model"))
+        db.set_app_setting(key, value, updated_by=login_id)
+    mapping = {}
+    for line in (request.form.get("function_map") or "").splitlines():
+        if "=" in line:
+            function, _, process = line.partition("=")
+            if function.strip() and process.strip():
+                mapping[function.strip()] = process.strip()
+    if request.form.get("function_map") is not None:
+        db.set_app_setting("xt_function_process_map", json.dumps(mapping), updated_by=login_id)
+    _XT_PREP_CACHE.clear()
+    flash("Evaluation settings saved.", "success")
+    return redirect(url_for("cross_training", tab="model"))
+
+
+@application.route("/ld-management/cross-training/planning-data/upload", methods=["POST"])
+def xt_planning_upload():
+    """One upload route for the five planning inputs, so the Data Upload
+    tab can show them together with what each one holds."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if _effective_role() not in ADMIN_TIER_ROLES:
+        return _deny("Uploading data is an L&D/Trainer function — you don't have access to it.")
+    kind = request.form.get("kind")
+    ingest = _XT_PLANNING_INGEST.get(kind)
+    f = request.files.get("file")
+    back = redirect(url_for("ld_settings", tab="data") + "#planning-data")
+    if not ingest:
+        flash("Choose which file this is.", "danger")
+        return back
+    if not f or not f.filename:
+        flash("Choose a CSV file first.", "warning")
+        return back
+    label = next(k["label"] for k in XT_PLANNING_KINDS if k["key"] == kind)
+    try:
+        result = ingest(f.read(), f.filename, uploaded_by=login_id)
+    except Exception as exc:
+        flash(f"{label}: import failed — {exc}", "danger")
+        return back
+    loaded = result.get("loaded") if isinstance(result, dict) else result
+    message = f"{label}: loaded {loaded:,} row(s)"
+    if isinstance(result, dict):
+        if result.get("first_day"):
+            message += f", {result['first_day']} to {result['last_day']}"
+        if result.get("skipped"):
+            message += f". {result['skipped']} skipped for want of a date, shift, login or process"
+        if result.get("unmapped"):
+            message += (". Not loaded — FCLM functions with no process mapping (set them under "
+                        "Configuration on the Cross Learning Model tab): " +
+                        ", ".join(f"{name} ({n})" for name, n in result["unmapped"][:8]))
+    _XT_PREP_CACHE.clear()
+    flash(message + ".", "warning" if isinstance(result, dict) and (result.get("skipped") or result.get("unmapped"))
+          else "success")
+    return back
+
+
+def _xt_template_rows(kind):
+    """A filled-in template, generated from the sample so it always loads:
+    one week of every process for process day, one day for associate day."""
+    homes = db.xt_process_home_departments()
+    paths = _xt_paths_with_sources("general")
+    data = xt_planning.sample_data(paths, owners={p["process"]: homes.get(p["process"])
+                                                  for p in paths if p.get("process")}, weeks=1)
+    if kind == "process_day":
+        header = ["date", "shift", "process", "department", "units", "hours", "plan_units", "plan_rate"]
+        rows = [[r["work_date"], r["shift"], r["process"], r["department"], r["units"], r["hours"],
+                 r["plan_units"], r["plan_rate"]] for r in data["process_day"]]
+    else:
+        last = max(r["work_date"] for r in data["associate_day"])
+        header = ["date", "shift", "employee_login", "process", "fclm_function", "units", "hours"]
+        rows = [[r["work_date"], r["shift"], r["employee_login"], r["process"], "", r["units"], r["hours"]]
+                for r in data["associate_day"] if r["work_date"] == last]
+    return header, rows
+
+
+@application.route("/ld-management/cross-training/planning-data/template/<kind>.csv")
+def xt_planning_template(kind):
+    """Download a template for one of the two files a site does not have
+    yet. The people in it are invented (logins smp00001…)."""
+    login_id = _require_login()
+    if not login_id:
+        return redirect(url_for("login"))
+    if kind not in ("process_day", "associate_day"):
+        return _deny("There is no template for that file.")
+    header, rows = _xt_template_rows(kind)
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(header)
+    writer.writerows(rows)
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={kind}_template.csv"})
+
 
 @application.route("/ld-management/cross-training/volume/upload", methods=["POST"])
 def xt_volume_upload():
@@ -7452,6 +7841,8 @@ def ld_settings():
         data_stale_after_days=db.DATA_STALE_AFTER_DAYS,
         freshness=db.data_freshness(),
         xt_freshness=db.xt_hours_freshness(),
+        planning_status=db.planning_data_status() if tab == "data" else None,
+        planning_kinds=XT_PLANNING_KINDS,
         weekdays=db.WEEKDAYS,
         weekday_short=db.WEEKDAY_SHORT,
         shift_time_sets=db.get_shift_time_sets() if tab == "shifts" else None,

@@ -1,0 +1,273 @@
+{#- Cross-training standards: every standard replayed against past
+    shifts, and what to do about each. The layout follows the mockup
+    agreed on 27 Nov: the grid of process × shift on the left, the
+    reasons for each proposed change on the right. Every figure comes
+    from xt_planning.py; the only generated text is the wording in the
+    right-hand panel, and only where a model is configured. -#}
+{% set v = sv %}
+{% set bar_pct = (v.settings.coverage_bar * 100) | round | int %}
+
+<div class="xs-head">
+  <h2 class="xs-title">Cross-training standards</h2>
+  <form class="xs-filters" method="GET" action="{{ url_for('cross_training') }}">
+    <input type="hidden" name="tab" value="model">
+    <input type="hidden" name="scenario" value="{{ scenario }}">
+    <input type="hidden" name="_fields" value="dept,eval_shift,weeks,sample">
+    <label class="xs-chip"><span class="sr-only">Department</span>
+      <select name="dept" onchange="this.form.submit()">
+        <option value="">All departments</option>
+        {% for d in v.departments %}<option value="{{ d }}" {{ 'selected' if v.department and v.department|lower == d|lower }}>{{ d }}</option>{% endfor %}
+      </select></label>
+    <label class="xs-chip"><span class="sr-only">Shift</span>
+      <select name="eval_shift" onchange="this.form.submit()">
+        <option value="">All shifts</option>
+        {% for key, label in shifts.items() %}<option value="{{ key }}" {{ 'selected' if v.shift == key }}>{{ label }}</option>{% endfor %}
+      </select></label>
+    <label class="xs-chip"><span class="sr-only">Window</span>
+      <select name="weeks" onchange="this.form.submit()">
+        {% for w in v.windows %}<option value="{{ w }}" {{ 'selected' if v.weeks == w }}>Last {{ w }} weeks</option>{% endfor %}
+      </select></label>
+    <label class="xs-chip xs-toggle"><input type="checkbox" name="sample" value="1" {{ 'checked' if v.sample }} onchange="this.form.submit()"> Sample data</label>
+    <span class="xs-actions">
+      <a class="btn btn-ghost btn-sm" href="#xs-config" onclick="document.getElementById('xs-config').open = true">Configuration</a>
+      <button class="btn btn-gold btn-sm" type="submit">Run evaluation</button>
+    </span>
+  </form>
+</div>
+
+{% if v.sample %}
+<p class="xs-banner">Sample data: a made-up site built around your own departments, processes and
+  standards, so the page can be seen working before your volume and associate-day files are loaded.
+  No real person's figures are in it, and its verdicts show how the page works, not what your site needs.
+  Turn the toggle off to see your own data.</p>
+{% endif %}
+
+{% if not v.ready %}
+<div class="xs-empty">
+  <strong>Nothing to replay yet.</strong>
+  <p>The evaluation needs <em>process day</em> (volume and plan per process) and <em>associate day</em>
+    (units and hours per person) — {{ v.status.process_day.n or 0 }} and {{ v.status.associate_day.n or 0 }}
+    rows loaded. Download the templates and load them on
+    <a href="{{ url_for('ld_settings', tab='data') }}#planning-data">Settings → Data Upload</a>, or switch on
+    <strong>Sample data</strong> above to see how it works.</p>
+</div>
+{% else %}
+{% set r = v.result %}
+<div class="xs-summary">
+  <span><strong>{{ r.processes | length }}</strong> processes · <strong>{{ r.shifts | length }}</strong> shifts ·
+    <strong>{{ r.standards }}</strong> standards</span>
+  <span><strong>{{ r.changes | length }}</strong> change{{ 's' if r.changes | length != 1 }} proposed ·
+    <strong>{{ r.kept }}</strong> kept{% if r.no_data %} · {{ r.no_data }} without data{% endif %}</span>
+</div>
+
+<div class="xs-layout">
+  <section class="xs-card xs-grid-card">
+    <h3>Standards by shift</h3>
+    <p class="xs-sub">Current source department and target headcount, and what the replay says.</p>
+    <div class="dash-table-scroll">
+      <table class="xs-grid">
+        <colgroup><col class="xs-col-proc">{% for s in r.shifts %}<col>{% endfor %}</colgroup>
+        <thead><tr><th scope="col">Department / process</th>
+          {% for s in r.shifts %}<th scope="col">{{ shifts.get(s, s) | replace(' Shift', '') }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for row in v.rows %}
+          <tr>
+            <th scope="row"><span class="xs-proc">{{ row.process }}</span>{% if row.owner and row.owner != row.process %}<span class="xs-owner">{{ row.owner }}</span>{% endif %}</th>
+            {% for s in r.shifts %}
+            {% set c = row.cells.get(s) %}
+            <td>
+              {% if c %}
+              <a class="xs-cell xs-{{ c.verdict }}" href="#why-{{ c.id | replace('|', '-') | replace(' ', '_') }}"
+                 title="{{ c.days }} shifts replayed{% if c.coverage is not none %}; {{ (c.coverage * 100) | round | int }}% met plan at the current target{% endif %}">
+                <span class="xs-cell-top">{{ c.text }}</span>
+                <span class="xs-cell-line">{{ c.line }}</span>
+              </a>
+              {% else %}<span class="xs-none">—</span>{% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="xs-foot">Coverage = % of replayed shifts meeting plan. Minimum {{ bar_pct }}%.
+      {{ r.replayed_days }} shift-days in the window, {{ r.window[0] }} to {{ r.window[1] }}.</p>
+  </section>
+
+  <aside class="xs-card xs-why">
+    <h3>Why change these standards?</h3>
+    {% if r.changes %}
+    <ol class="xs-changes">
+      {% for c in r.changes %}
+      <li id="why-{{ c.id | replace('|', '-') | replace(' ', '_') }}">
+        <span class="xs-why-where">{{ c.process }} · {{ shifts.get(c.shift, c.shift) | replace(' Shift', '') }}</span>
+        <strong class="xs-why-head xs-{{ c.verdict }}">{{ c.headline }}</strong>
+        <div class="xs-why-text" data-llm-slot="why:{{ c.id }}">
+          {% for line in c.evidence[:2] %}<p>{{ line }}</p>{% endfor %}
+        </div>
+        {% if c.evidence | length > 2 %}
+        <details class="xs-more"><summary>All the evidence</summary>
+          {% for line in c.evidence %}<p>{{ line }}</p>{% endfor %}
+        </details>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="xs-sub">Every standard with data covers at least {{ bar_pct }}% of replayed shifts and none
+      could be lower. Nothing to change.</p>
+    {% endif %}
+    <div class="xs-why-foot">
+      <a href="#xs-assumptions" onclick="document.getElementById('xs-assumptions').open = true">View evidence &amp; assumptions</a>
+      <span>{{ 'Amazon Bedrock explanations' if v.llm_enabled else 'Computed evidence' }}</span>
+    </div>
+  </aside>
+</div>
+<p class="xs-note">Recommendations are for review.</p>
+
+{# ------------------------------------------------------------------- #}
+<h3 class="dash-section-label" id="day-plan">Plan one day</h3>
+<p class="xi-note" style="margin-top:-6px;">
+  One process on one day: who will be there, at what rates, what the departments that lend people can
+  actually spare after their own volume, and the mix that has met plan on days like it.
+</p>
+{% set dp = v.day_plan %}
+<form class="clm-forecast-form" method="GET" action="{{ url_for('cross_training') }}#day-plan">
+  <input type="hidden" name="tab" value="model">
+  <input type="hidden" name="scenario" value="{{ scenario }}">
+  {% if v.sample %}<input type="hidden" name="sample" value="1">{% endif %}
+  <input type="hidden" name="weeks" value="{{ v.weeks }}">
+  <label>Process
+    <select name="dp_process" required>
+      {% for p in v.processes %}<option value="{{ p }}" {{ 'selected' if dp and dp.form and dp.form.process == p }}>{{ p }}</option>{% endfor %}
+    </select></label>
+  <label>Shift
+    <select name="dp_shift">{% for key, label in shifts.items() %}<option value="{{ key }}" {{ 'selected' if dp and dp.form and dp.form.shift == key }}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Date <input type="date" name="dp_date" required value="{{ dp.form.date if dp and dp.form else '' }}"></label>
+  <label>Volume (units) <input type="number" name="dp_volume" min="1" step="1" required value="{{ (dp.form.volume | int) if dp and dp.form else '' }}"></label>
+  <label>Rate (optional) <input type="number" name="dp_rate" min="0.1" step="0.1" value="{{ dp.form.rate if dp and dp.form and dp.form.rate else '' }}" placeholder="auto"></label>
+  <label>Absence % (optional) <input type="number" name="dp_absence" min="0" max="60" step="0.5" value="{{ dp.form.absence if dp and dp.form and dp.form.absence is not none else '' }}" placeholder="measured"></label>
+  {% if dp and dp.lenders %}
+  {% for l in dp.lenders %}{% for w in l.own_work %}
+  <label>{{ w.process }} volume <input type="number" name="vol_{{ l.key }}|{{ w.process | lower }}" min="0" step="1" value="{{ w.volume }}"></label>
+  {% endfor %}{% endfor %}
+  {% endif %}
+  <button class="btn btn-gold btn-sm" type="submit">Plan it</button>
+</form>
+
+{% if dp and dp.error %}
+<p class="viz-empty">{{ dp.error }}</p>
+{% elif dp %}
+<article class="clm-card xs-day">
+  <header>
+    <div class="clm-card-title">
+      <h4>{{ dp.process }} · {{ dp.weekday }} {{ dp.day }}</h4>
+      <span class="clm-card-meta">{{ shifts.get(dp.shift, dp.shift) }} · {{ dp.length }}h shift{{ '' if dp.length_from_calendar else ' (calendar has no length for that day — the default)' }} · home department {{ dp.owner or 'unknown' }}</span>
+    </div>
+    <span class="clm-verdict">{{ '{:,}'.format(dp.volume) }} units</span>
+  </header>
+  <div class="clm-figures">
+    <div class="clm-fig"><span class="clm-fig-label">Veterans available</span>
+      <strong>{{ dp.vets.available if dp.vets else '—' }}</strong>
+      <em>{% if dp.vets %}{{ dp.vets.scheduled }} of {{ dp.vets.trained }} scheduled, less {{ dp.vets.absence_pct }}% absence ({{ dp.vets.absence_basis }}){% if dp.vets.unknown %} · {{ dp.vets.unknown }} schedule unknown{% endif %}{% endif %}</em></div>
+    <div class="clm-fig"><span class="clm-fig-label">Veteran rate</span><strong>{{ dp.vet_rate or '—' }}</strong><em>units/h · they cover {{ '{:,}'.format(dp.vet_units) }}</em></div>
+    <div class="clm-fig"><span class="clm-fig-label">Cross-trainees deployed</span><strong>{{ dp.xt_heads }}</strong><em>cross-trainee rate {{ dp.xt_rate or '—' }}/h</em></div>
+    <div class="clm-fig"><span class="clm-fig-label">Still short</span><strong class="{{ 'is-under' if dp.shortfall_units }}">{{ '{:,}'.format(dp.shortfall_units) }}</strong><em>{% if dp.hire %}≈ {{ dp.hire }} more veterans{% else %}units uncovered{% endif %}</em></div>
+  </div>
+
+  <ul class="clm-actions">
+    {% if dp.plan %}
+    <li class="clm-action clm-action-add_source">Move {% for x in dp.plan %}{{ x.heads }} from {{ x.department }}{{ ', ' if not loop.last }}{% endfor %} — the departments with people to spare after their own volume, at the best rates first.</li>
+    {% endif %}
+    {% if dp.shortfall_units %}
+    <li class="clm-action clm-action-close_gap">After every veteran and every cross-trainee who can be spared, {{ '{:,}'.format(dp.shortfall_units) }} units are still uncovered. That is a headcount gap, not a training one: about {{ dp.hire }} more veterans in {{ dp.owner }}.</li>
+    {% elif not dp.plan %}
+    <li class="clm-action">The veterans cover it on their own.</li>
+    {% endif %}
+  </ul>
+
+  {% if dp.lenders %}
+  <div class="dash-table-scroll" style="margin-top:12px;">
+    <table class="dash-table">
+      <thead><tr><th scope="col">Cross-trainees from</th><th scope="col" class="num">Trained</th><th scope="col" class="num">Scheduled</th>
+        <th scope="col" class="num">Available</th><th scope="col" class="num">Rate here</th><th scope="col">Their own work that day</th>
+        <th scope="col" class="num">Spare people</th><th scope="col" class="num">Can move</th></tr></thead>
+      <tbody>
+        {% for l in dp.lenders %}
+        <tr>
+          <th scope="row">{{ l.department }}</th>
+          <td class="num mono">{{ l.trained }}</td>
+          <td class="num mono">{{ l.scheduled }}{% if l.unknown %} <span class="xi-dim">+{{ l.unknown }}?</span>{% endif %}</td>
+          <td class="num mono">{{ l.available }}</td>
+          <td class="num mono">{{ l.rate or '—' }}{% if l.rate_assumed %} <span class="xi-dim">assumed</span>{% endif %}</td>
+          <td class="wrap">{% for w in l.own_work %}{{ w.process }} {{ '{:,}'.format(w.volume) }} ({{ w.basis }}){{ '; ' if not loop.last }}{% else %}<span class="xi-dim">none recorded</span>{% endfor %}<br><span class="xi-dim">needs {{ l.own_need_heads }} of {{ l.people_available }} people</span></td>
+          <td class="num mono {{ 'is-down' if l.spare < 0 }}">{{ l.spare }}</td>
+          <td class="num mono">{{ l.deployable }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <p class="clm-detail">
+    {% if dp.history %}{{ dp.history | length }} past {{ shifts.get(dp.shift, dp.shift) | lower }}s had volume within 15% of this; {{ dp.history_met }} met plan.
+    {% if dp.typical %}On those, the work was done by about {{ dp.typical.vets }} veterans{% for k, n in dp.typical.xt.items() %}, {{ n }} from {{ k }}{% endfor %}.{% endif %}
+    {% else %}No past shift in the window had volume within 15% of this.{% endif %}
+  </p>
+</article>
+{% endif %}
+
+{% if can_manage_xt %}
+<details class="xi-more" id="xs-config">
+  <summary>Configuration</summary>
+  <form method="POST" action="{{ url_for('xt_eval_config_save') }}" class="xs-config">
+    <label>Coverage bar (%) <input type="number" name="coverage_bar" min="50" max="100" step="1" value="{{ bar_pct }}"></label>
+    <label>Absence where it cannot be measured (%) <input type="number" name="absence_pct" min="0" max="60" step="0.5" value="{{ v.settings.absence_pct }}"></label>
+    <label>Default window (weeks) <input type="number" name="window_weeks" min="2" max="52" step="1" value="{{ v.settings.window_weeks }}"></label>
+    <label class="xs-wide">FCLM function → process, one per line (for associate-day files that only carry FCLM names)
+      <textarea name="function_map" rows="4" placeholder="RF Pick = Pick&#10;MultiLowDensityPick = Pick">{% for k, p in function_map.items() %}{{ k }} = {{ p }}
+{% endfor %}</textarea></label>
+    <div><button class="btn btn-gold btn-sm" type="submit">Save</button></div>
+  </form>
+</details>
+{% endif %}
+
+<details class="xi-more" id="xs-assumptions">
+  <summary>Evidence &amp; assumptions</summary>
+  <div class="xi-note">
+    <p><strong>How a shift is replayed.</strong> For each past shift with volume: the veterans who were in
+      (booked any hours), at the veteran rate for the day's shift length, plus the cross-trainees the
+      standard would have provided — its target times the share of their department that was in that day,
+      never more than their department could spare after its own volume. The shift meets plan if that
+      covers the planned units. Coverage is the share that do; the recommended target is the smallest that
+      reaches {{ bar_pct }}%, and a decrease never goes below the most cross-trainees actually used on one shift.</p>
+    <p><strong>Switch</strong> is proposed when another department reaches the bar with fewer people trained.
+      <strong>Hire</strong> when no target does, because the sources cannot spare enough people on enough shifts.</p>
+    <p><strong>Rates</strong> are each group's units over hours on the process across the window. A department with
+      no history on a process takes the cross-trainee average, and the evidence says so.
+      <strong>Absence</strong> is measured as scheduled (shift calendar) with no hours booked, where there are at
+      least 20 scheduled person-days to measure; otherwise {{ v.settings.absence_pct }}%.</p>
+    <p><strong>Not modelled:</strong> which individuals moved, learning curves, and stoppages that headcount could
+      not have fixed — the bar sitting below 100% is what absorbs those.</p>
+  </div>
+</details>
+{% endif %}
+
+{% if v.llm_enabled and v.ready and v.result and v.result.changes %}
+<script>
+(function () {
+  var url = {{ url_for('xt_standards_explain', scenario=scenario, dept=v.department or '', eval_shift=v.shift or '',
+                       weeks=v.weeks, sample='1' if v.sample else '') | tojson }};
+  fetch(url, {credentials: 'same-origin'})
+    .then(function (r) { return r.ok ? r.json() : {slots: {}}; })
+    .catch(function () { return {slots: {}}; })
+    .then(function (data) {
+      Object.keys(data.slots || {}).forEach(function (key) {
+        var slot = document.querySelector('[data-llm-slot="' + key.replace(/"/g, '') + '"]');
+        if (slot) { slot.innerHTML = data.slots[key]; }
+      });
+    });
+})();
+</script>
+{% endif %}

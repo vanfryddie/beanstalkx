@@ -7,6 +7,10 @@
     somebody is asked to act on has to be arguable, and a recommendation
     whose reasoning is hidden is an opinion with a number on it. -#}
 
+{% include "_xt_standards.html" %}
+
+<details class="xi-more clm-legacy" id="clm-detail" {{ 'open' if forecast or request.args.get('fc_path') }}>
+<summary>The path-by-path model: inputs, verdicts, the target review and a quick forecast</summary>
 <div class="xi-head">
   <div>
     <h2 class="xi-title">Cross learning model</h2>
@@ -284,6 +288,8 @@
 </details>
 {% endif %}
 
+
+</details>
 
 {% if m.llm_enabled %}
 <script>

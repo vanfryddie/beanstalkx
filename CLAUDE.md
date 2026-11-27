@@ -117,6 +117,24 @@ deliberately accumulating lookup that nothing clears, so it must never be
 used to answer "is this person still here" — `logins_in_current_data()`
 reads only the tables an upload replaces or prunes.
 
+## Cross-training standards evaluation
+
+The Cross Learning Model tab leads with a replay of past shifts against
+every cross-training standard (`xt_planning.py`: pure arithmetic, no
+Flask, no database). It reads five inputs: roster, Hours on Function, the
+SSPOT shift calendar, process day (`process_volume`) and associate day.
+`db.load_planning_data()` feeds it a site's tables; `xt_planning.sample_data()`
+feeds it an invented site for the **Sample data** toggle.
+
+- **Sample people are invented** (`smp00001`…). A performance figure must
+  never be attached to a real login, even as a demonstration.
+- **Home department comes from Hours on Function**, not the roster: the
+  roster's Department ID is a cost centre spanning several departments.
+- **The language model only words the "Why" panel.** Every verdict and
+  number is computed; generated sentences go through `_clm_vet_reasons()`.
+- The data contract for sites is `LDIS_Day_Plan_Data_Spec.md`; templates
+  are in `data_templates/` and downloadable from the Data Upload tab.
+
 ## Front end
 
 **No external runtime dependencies. No CDN libraries.** Charts, sparklines,

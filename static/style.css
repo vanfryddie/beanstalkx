@@ -4999,3 +4999,78 @@ html[data-theme="dark"], :root:not([data-theme="light"]) {
 .clm-llm-why { color: var(--text-lo); font-size: 11.5px; }
 .clm-llm-status { margin: -4px 2px 12px; font-size: 12px; color: var(--text-lo); }
 .clm-llm-overview { margin: 0 0 14px; }
+
+/* Cross-training standards (the Cross Learning Model tab's lead view).
+   Increase and decrease are directions, not status, so they take the two
+   categorical hues; hire is a headcount gap and borrows slot 2's outline;
+   a cell the replay cannot judge stays neutral. */
+.xs-head { display: flex; flex-direction: column; gap: 12px; margin: 4px 0 14px; }
+.xs-title { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.01em; }
+.xs-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.xs-chip { display: inline-flex; align-items: center; gap: 6px; padding: 0 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel, transparent); font-size: 12.5px; }
+.xs-chip select { border: 0; background: transparent; color: inherit; font: inherit; padding: 6px 4px; max-width: 46vw; }
+.xs-toggle { padding: 6px 10px; cursor: pointer; }
+.xs-actions { margin-left: auto; display: inline-flex; gap: 8px; }
+.xs-banner { margin: 0 0 12px; padding: 9px 12px; border-radius: 9px; background: rgba(127,138,153,.12); font-size: 12px; color: var(--text-lo); max-width: 100ch; }
+.xs-empty { padding: 18px; border: 1px dashed var(--line); border-radius: 12px; font-size: 13px; color: var(--text-lo); }
+.xs-empty p { margin: 6px 0 0; }
+.xs-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 12px 16px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; }
+.xs-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.xs-card { padding: 16px 16px 12px; border: 1px solid var(--line); border-radius: 14px; min-width: 0; }
+.xs-card h3 { margin: 0; font-size: 19px; font-weight: 700; }
+.xs-sub { margin: 2px 0 10px; font-size: 12px; color: var(--text-lo); }
+.xs-grid { width: 100%; min-width: 600px; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
+.xs-grid col.xs-col-proc { width: 150px; }
+.xs-grid th { text-transform: none; letter-spacing: normal; }
+.xs-grid th, .xs-grid td { padding: 6px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.xs-grid thead th { font-size: 12px; font-weight: 600; }
+.xs-grid tbody th { white-space: nowrap; }
+.xs-proc { display: block; font-size: 14px; font-weight: 600; }
+.xs-owner { display: block; font-size: 10.5px; font-weight: 400; color: var(--text-lo); }
+.xs-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 5px 8px; border-radius: 8px; color: inherit; text-decoration: none; }
+.xs-cell:hover { background: rgba(127,138,153,.10); }
+.xs-cell-top, .xs-cell-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xs-cell-line { font-size: 11.5px; color: var(--text-lo); }
+.xs-increase, .xs-switch { background: rgba(42,120,214,.13); }
+.xs-increase .xs-cell-line, .xs-switch .xs-cell-line, strong.xs-increase, strong.xs-switch { color: var(--viz-series-1); font-weight: 600; }
+.xs-decrease { background: rgba(235,104,52,.14); }
+.xs-decrease .xs-cell-line, strong.xs-decrease { color: var(--viz-series-2); font-weight: 600; }
+.xs-hire { box-shadow: inset 0 0 0 1.5px var(--viz-series-2); }
+.xs-hire .xs-cell-line, strong.xs-hire { color: var(--viz-series-2); font-weight: 600; }
+.xs-no_data .xs-cell-line { font-style: italic; }
+strong.xs-increase, strong.xs-switch, strong.xs-decrease, strong.xs-hire { background: none; box-shadow: none; }
+.xs-none { color: var(--text-lo); }
+.xs-foot { margin: 10px 0 0; font-size: 11.5px; color: var(--text-lo); }
+.xs-why { display: flex; flex-direction: column; }
+.xs-changes { list-style: none; margin: 8px 0 0; padding: 0; max-height: 760px; overflow-y: auto; }
+.xs-changes li { padding: 10px 0; border-bottom: 1px solid var(--line); scroll-margin-top: 80px; }
+.xs-changes li:target { background: rgba(42,120,214,.07); }
+.xs-why-where { display: block; font-size: 11.5px; color: var(--text-lo); }
+.xs-why-head { display: block; margin: 2px 0 4px; font-size: 15.5px; line-height: 1.3; }
+.xs-why-text p, .xs-more p { margin: 2px 0; font-size: 12.5px; line-height: 1.5; }
+.xs-more summary { font-size: 11.5px; color: var(--text-lo); cursor: pointer; margin-top: 4px; }
+.xs-why-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; padding-top: 10px; font-size: 12px; }
+.xs-why-foot span { color: var(--text-lo); font-size: 11px; }
+.xs-note { margin: 8px 2px 22px; font-size: 12px; color: var(--text-lo); }
+.xs-config { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-top: 10px; }
+.xs-config label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-lo); min-width: 0; }
+.xs-config input { width: 10ch; }
+.xs-config .xs-wide { flex-basis: 100%; }
+.xs-config textarea { width: 100%; max-width: 60ch; font-family: var(--mono, monospace); font-size: 12px; }
+.clm-legacy > summary { font-weight: 600; }
+.xp-list { display: flex; flex-direction: column; gap: 8px; }
+.xp-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; }
+.xp-what { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; min-width: 0; flex: 1 1 320px; }
+.xp-what > span { color: var(--text-lo); }
+.xp-state { font-size: 11.5px; }
+.xp-state.is-missing { color: var(--viz-series-2); }
+.xp-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.xp-form input[type=file] { max-width: 100%; font-size: 12px; }
+@media (max-width: 980px) {
+  .xs-layout { grid-template-columns: 1fr; }
+  .xs-changes { max-height: none; }
+}
+@media (max-width: 720px) {
+  .xs-actions { margin-left: 0; }
+  .xs-title { font-size: 22px; }
+}
